@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ReForge AI Component Upload Page</title>
+<link href="https://fonts.googleapis.com/css2?family=Chivo:ital,wght@0,100..900;1,100..900&amp;family=Hanken+Grotesk:ital,wght@0,100..900;1,100..900&amp;family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "on-background": "#f0dfd5",
+                      "on-secondary-fixed-variant": "#304f00",
+                      "outline-variant": "#544337",
+                      "tertiary": "#ffb77e",
+                      "surface-bright": "#413730",
+                      "on-error-container": "#ffdad6",
+                      "primary": "#ffb77f",
+                      "primary-container": "#d47a25",
+                      "surface-container-lowest": "#140d07",
+                      "surface-container-highest": "#3d332c",
+                      "primary-fixed-dim": "#ffb77f",
+                      "error": "#ffb4ab",
+                      "on-secondary-fixed": "#102000",
+                      "on-error": "#690005",
+                      "surface": "#1a120c",
+                      "secondary-container": "#3a5f00",
+                      "inverse-on-surface": "#382e28",
+                      "inverse-primary": "#914c00",
+                      "tertiary-container": "#d47a23",
+                      "on-tertiary-fixed": "#2f1500",
+                      "on-primary-container": "#442000",
+                      "secondary": "#a7d46e",
+                      "on-tertiary-container": "#442100",
+                      "surface-tint": "#ffb77f",
+                      "on-surface-variant": "#dac2b2",
+                      "on-tertiary": "#4d2600",
+                      "error-container": "#93000a",
+                      "tertiary-fixed": "#ffdcc3",
+                      "on-surface": "#f0dfd5",
+                      "inverse-surface": "#f0dfd5",
+                      "on-tertiary-fixed-variant": "#6e3900",
+                      "surface-variant": "#3d332c",
+                      "tertiary-fixed-dim": "#ffb77e",
+                      "on-primary-fixed": "#2f1500",
+                      "primary-fixed": "#ffdcc3",
+                      "on-primary": "#4e2600",
+                      "surface-container-low": "#221a14",
+                      "on-primary-fixed-variant": "#6f3900",
+                      "surface-container-high": "#322821",
+                      "outline": "#a28d7e",
+                      "on-secondary-container": "#aad871",
+                      "secondary-fixed-dim": "#a7d46e",
+                      "surface-container": "#271e18",
+                      "background": "#1a120c",
+                      "on-secondary": "#1f3700",
+                      "surface-dim": "#1a120c",
+                      "secondary-fixed": "#c3f187"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "grid-unit": "8px",
+                      "margin-md": "24px",
+                      "margin-lg": "40px",
+                      "margin-sm": "16px",
+                      "gutter": "1px"
+              },
+              "fontFamily": {
+                      "body-lg": [
+                              "Hanken Grotesk"
+                      ],
+                      "label-caps": [
+                              "JetBrains Mono"
+                      ],
+                      "mono-data": [
+                              "JetBrains Mono"
+                      ],
+                      "display-lg": [
+                              "Chivo"
+                      ],
+                      "body-md": [
+                              "Hanken Grotesk"
+                      ],
+                      "headline-md": [
+                              "Chivo"
+                      ],
+                      "headline-lg": [
+                              "Chivo"
+                      ]
+              },
+              "fontSize": {
+                      "body-lg": [
+                              "18px",
+                              {
+                                      "lineHeight": "28px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "label-caps": [
+                              "12px",
+                              {
+                                      "lineHeight": "16px",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "mono-data": [
+                              "14px",
+                              {
+                                      "lineHeight": "20px",
+                                      "letterSpacing": "0.02em",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "display-lg": [
+                              "48px",
+                              {
+                                      "lineHeight": "56px",
+                                      "letterSpacing": "-0.02em",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "body-md": [
+                              "16px",
+                              {
+                                      "lineHeight": "24px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "headline-md": [
+                              "24px",
+                              {
+                                      "lineHeight": "32px",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "headline-lg": [
+                              "32px",
+                              {
+                                      "lineHeight": "40px",
+                                      "fontWeight": "600"
+                              }
+                      ]
+              }
+      },
+          },
+        }
+      </script>
+<style>
+          .workbench-grid {
+              background-image: radial-gradient(var(--tw-colors-outline-variant) 1px, transparent 1px);
+              background-size: 8px 8px;
+          }
+          .l-bracket-tl { border-top: 2px solid var(--tw-colors-primary-container); border-left: 2px solid var(--tw-colors-primary-container); width: 16px; height: 16px; position: absolute; top: 0; left: 0; }
+          .l-bracket-tr { border-top: 2px solid var(--tw-colors-primary-container); border-right: 2px solid var(--tw-colors-primary-container); width: 16px; height: 16px; position: absolute; top: 0; right: 0; }
+          .l-bracket-bl { border-bottom: 2px solid var(--tw-colors-primary-container); border-left: 2px solid var(--tw-colors-primary-container); width: 16px; height: 16px; position: absolute; bottom: 0; left: 0; }
+          .l-bracket-br { border-bottom: 2px solid var(--tw-colors-primary-container); border-right: 2px solid var(--tw-colors-primary-container); width: 16px; height: 16px; position: absolute; bottom: 0; right: 0; }
+          
+          .dashed-border-tech {
+              background-image: linear-gradient(to right, var(--tw-colors-outline-variant) 50%, rgba(255,255,255,0) 0%), linear-gradient(var(--tw-colors-outline-variant) 50%, rgba(255,255,255,0) 0%), linear-gradient(to right, var(--tw-colors-outline-variant) 50%, rgba(255,255,255,0) 0%), linear-gradient(var(--tw-colors-outline-variant) 50%, rgba(255,255,255,0) 0%);
+              background-position: top, right, bottom, left;
+              background-repeat: repeat-x, repeat-y;
+              background-size: 10px 1px, 1px 10px;
+          }
+      </style>
+</head>
+<body class="bg-background text-on-background min-h-screen flex flex-col font-body-md overflow-hidden relative">
+<!-- Background Shader Layer -->
+<div class="fixed inset-0 z-0 opacity-30 pointer-events-none">
+<!-- STITCH_SHADER_START:ANIMATION_2 class="absolute inset-0 w-full h-full" -->
+<div class="absolute inset-0 w-full h-full" style="display:block;">
+<canvas id="shader-canvas-ANIMATION_2" style="display:block;width:100%;height:100%"></canvas>
+<script>
+(function() {
+  const canvas = document.getElementById('shader-canvas-ANIMATION_2');
+
+  // Sync the WebGL drawing-buffer size with the CSS-driven layout size.
+  // This fires on initial layout and whenever the element is resized.
+  function syncSize() {
+    const w = canvas.clientWidth  || 1280;
+    const h = canvas.clientHeight || 720;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width  = w;
+      canvas.height = h;
+    }
+  }
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(syncSize).observe(canvas);
+  }
+  syncSize();
+
+  const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+  if (!gl) return;
+  const vs = `attribute vec2 a_position;
+varying vec2 v_texCoord;
+void main() {
+  v_texCoord = a_position * 0.5 + 0.5;
+  gl_Position = vec4(a_position, 0.0, 1.0);
+}`;
+  const fs = `precision highp float;
+varying vec2 v_texCoord;
+uniform float u_time;
+uniform vec2 u_resolution;
+
+float grid(vec2 uv, float spacing) {
+    vec2 lines = mod(uv, spacing);
+    return step(lines.x, 0.002) + step(lines.y, 0.002);
+}
+
+void main() {
+    vec2 uv = v_texCoord;
+    
+    // Background color (Redwood: #6A2B08)
+    vec3 color = vec3(0.416, 0.169, 0.031);
+    
+    // Subtle gradient shift
+    color += 0.03 * sin(u_time * 0.2 + uv.x * 5.0);
+    
+    // Grid layers
+    float g1 = grid(uv, 0.1);
+    float g2 = grid(uv, 0.02);
+    
+    color += g1 * 0.05;
+    color += g2 * 0.02;
+    
+    // Vignette
+    float dist = distance(uv, vec2(0.5));
+    color *= 1.0 - dist * 0.5;
+
+    gl_FragColor = vec4(color, 1.0);
+}`;
+  function cs(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    return s;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, cs(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, cs(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog);
+  gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const pos = gl.getAttribLocation(prog, 'a_position');
+  gl.enableVertexAttribArray(pos);
+  gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
+  const uTime = gl.getUniformLocation(prog, 'u_time');
+  const uRes = gl.getUniformLocation(prog, 'u_resolution');
+  const uMouse = gl.getUniformLocation(prog, 'u_mouse');
+
+  // u_mouse is in pixel coordinates matching u_resolution (ShaderToy convention).
+  // Shaders that need normalized coords should use: u_mouse / u_resolution.
+  let mouse = { x: canvas.width / 2, y: canvas.height / 2 };
+  window.addEventListener('mousemove', (event) => {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width && rect.height) {
+      const nx = (event.clientX - rect.left) / rect.width;
+      const ny = 1.0 - (event.clientY - rect.top) / rect.height;
+      mouse.x = nx * canvas.width;
+      mouse.y = ny * canvas.height;
+    }
+  });
+
+  function render(t) {
+    if (typeof ResizeObserver === 'undefined') syncSize();
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    if (uTime) gl.uniform1f(uTime, t * 0.001);
+    if (uRes) gl.uniform2f(uRes, canvas.width, canvas.height);
+    if (uMouse) gl.uniform2f(uMouse, mouse.x, mouse.y);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(render);
+  }
+  render(0);
+})();
+</script>
+</div>
+<!-- STITCH_SHADER_END:ANIMATION_2 -->
+<div class="absolute inset-0 workbench-grid opacity-20"></div>
+</div>
+<!-- Top Navigation Anchor (Shared Component Execution) -->
+<header class="bg-background dark:bg-background border-b border-outline-variant flex justify-between items-center w-full px-margin-md h-16 max-w-full z-20 relative">
+<div class="flex items-center gap-6">
+<span class="font-display-lg text-display-lg font-bold text-primary dark:text-primary tracking-tighter" style="font-size: 24px;">ReForge AI</span>
+<nav class="hidden md:flex gap-6">
+<!-- Autonomously highlighting "Synthesis" / "Upload Component" intent -> Synthesis is active based on context -->
+<a class="text-on-surface-variant dark:text-on-surface-variant hover:text-primary dark:hover:text-primary transition-colors duration-200 font-label-caps text-label-caps" href="#">Workbench</a>
+<a class="text-on-surface-variant dark:text-on-surface-variant hover:text-primary dark:hover:text-primary transition-colors duration-200 font-label-caps text-label-caps" href="#">Vault</a>
+<a class="text-primary dark:text-primary border-b-2 border-primary pb-1 font-label-caps text-label-caps opacity-80 scale-95 transition-all" href="#">Synthesis</a>
+<a class="text-on-surface-variant dark:text-on-surface-variant hover:text-primary dark:hover:text-primary transition-colors duration-200 font-label-caps text-label-caps" href="#">Analytics</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-2 mr-4">
+<span class="w-2 h-2 rounded-full bg-[#C9F88D] shadow-[0_0_4px_#C9F88D]"></span>
+<span class="font-mono-data text-mono-data text-secondary text-[10px]">AI ENGINE READY</span>
+</div>
+<button class="border border-outline-variant text-on-surface-variant px-4 py-1.5 rounded font-label-caps text-label-caps hover:text-primary transition-colors duration-200">Upload Component</button>
+<button class="text-on-surface-variant hover:text-primary transition-colors duration-200"><span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">settings</span></button>
+<button class="text-on-surface-variant hover:text-primary transition-colors duration-200"><span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">notifications</span></button>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="flex-grow flex items-center justify-center relative z-10 p-margin-lg">
+<div class="w-full max-w-4xl bg-surface-container-high border border-outline-variant relative flex flex-col p-8">
+<div class="l-bracket-tl"></div>
+<div class="l-bracket-tr"></div>
+<div class="l-bracket-bl"></div>
+<div class="l-bracket-br"></div>
+<!-- Coordinate Scale Decorators -->
+<div class="absolute left-[-20px] top-1/2 -translate-y-1/2 transform -rotate-90 font-mono-data text-[10px] text-outline-variant tracking-widest">Y-AXIS SCALE</div>
+<div class="absolute bottom-[-20px] left-1/2 -translate-x-1/2 font-mono-data text-[10px] text-outline-variant tracking-widest">X-AXIS SCALE</div>
+<div class="flex flex-col items-center text-center mb-8">
+<h1 class="font-headline-lg text-headline-lg text-primary mb-2">UPLOAD COMPONENT</h1>
+<p class="font-body-md text-body-md text-on-surface-variant max-w-lg">Add one or more views of the industrial component for AI-assisted reconstruction.</p>
+</div>
+<!-- Upload Zone -->
+<div class="w-full h-64 border border-outline-variant bg-surface-container border-dashed hover:border-primary transition-colors cursor-pointer flex flex-col items-center justify-center relative mb-8 group dashed-border-tech" style="border: none;">
+<span class="material-symbols-outlined text-4xl text-outline-variant group-hover:text-primary transition-colors mb-4" style="font-variation-settings: 'FILL' 0;">upload_file</span>
+<p class="font-mono-data text-mono-data text-on-background mb-2">DROP COMPONENT IMAGES <span class="text-on-surface-variant">or click to browse</span></p>
+<div class="flex gap-4 mt-2">
+<span class="font-label-caps text-label-caps text-outline-variant">FRONT</span>
+<span class="text-outline-variant">·</span>
+<span class="font-label-caps text-label-caps text-outline-variant">SIDE</span>
+<span class="text-outline-variant">·</span>
+<span class="font-label-caps text-label-caps text-outline-variant">TOP</span>
+<span class="text-outline-variant">·</span>
+<span class="font-label-caps text-label-caps text-outline-variant">OTHER</span>
+</div>
+</div>
+<!-- Mocked Thumbnails -->
+<div class="flex gap-4 mb-8">
+<div class="w-24 h-24 border border-outline-variant bg-surface-container flex items-center justify-center relative">
+<img class="absolute inset-0 w-full h-full object-cover opacity-60 mix-blend-luminosity" data-alt="A highly technical close-up photograph of a metal spur gear viewed from the side, resting on a stark dark gray workbench. The lighting is harsh and directional, emphasizing the precise cut of the teeth and the metallic sheen. The aesthetic is industrial, clinical, and focused on mechanical precision, adhering to a sophisticated warm industrial foundry style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuC1m9H_WD8eiYuiYpbFSO_u6rQbzY7KdxIcvS2pQgG9JMg1CvbvmxwZdBC5ZPUVz87YU0AlYWdNb_8fK2nO68uHaGEWx2h0maZL6D1VoTz0HdR_cl7vT-KbhJqs29P3OdF_7PGAbn2Ba1tpyyDY3apdG6heZtpnZ2U9ch-SrzuSVECitk_Z-VWYsmABGtZzXV8r6XB3IKUdhqh3Y9fWt6W9BC936sXUjmqgLs9ya4hkmBFkZyqEgeMw"/>
+<div class="absolute bottom-0 w-full bg-surface-container-lowest/80 border-t border-outline-variant px-1 py-0.5">
+<span class="font-label-caps text-[8px] text-on-surface-variant block truncate">SpurGear_Side.jpg</span>
+</div>
+</div>
+<div class="w-24 h-24 border border-outline-variant bg-surface-container flex items-center justify-center relative">
+<img class="absolute inset-0 w-full h-full object-cover opacity-60 mix-blend-luminosity" data-alt="A highly technical close-up photograph of a metal spur gear viewed directly from the front, resting on a stark dark gray workbench. The lighting is precise, highlighting the circular symmetry and the inner bore hole. The aesthetic is industrial, clinical, and focused on mechanical precision, adhering to a sophisticated warm industrial foundry style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCpd2BA4bQ7KTTFKK5MzNwrlFSrjiys4yUy-8PDZgL5kLqe6wM47MaiHnLmkfbzTiUfMHJK-dOmpqwQ1KHE7SaYoEsqxzO65x9jxD9sI64gwta9s_f4vKy5VUqfmvrjbG1YifoJHJr8YHAVb9BdXecbtET1keWNO9jSVnCXbAWuoYfSdr1pwwxjXesYL8ODfv1RUSvfj9Xd5qrfB_j927xMZA5cZSI-M_yR-0FhZQSKByGqifiHM1F9"/>
+<div class="absolute bottom-0 w-full bg-surface-container-lowest/80 border-t border-outline-variant px-1 py-0.5">
+<span class="font-label-caps text-[8px] text-on-surface-variant block truncate">SpurGear_Front.png</span>
+</div>
+</div>
+</div>
+<!-- Measurement Field -->
+<div class="flex items-center gap-4 mb-8 p-4 bg-surface-container border border-outline-variant w-full md:w-auto self-start">
+<span class="font-label-caps text-label-caps text-on-surface-variant">KNOWN DIMENSION</span>
+<div class="flex items-center">
+<input class="bg-surface-container-lowest border border-outline-variant text-on-background font-mono-data text-mono-data w-24 px-2 py-1 focus:border-primary focus:ring-0 text-right" type="text" value="80.00"/>
+<span class="bg-surface-container-highest border border-l-0 border-outline-variant text-on-surface-variant font-mono-data text-mono-data px-2 py-1">mm</span>
+</div>
+<select class="bg-surface-container-lowest border border-outline-variant text-on-background font-mono-data text-mono-data px-2 py-1 focus:border-primary focus:ring-0">
+<option>Outer Diameter</option>
+<option>Inner Diameter</option>
+<option>Thickness</option>
+</select>
+</div>
+<!-- Primary Action -->
+<div class="flex justify-center mt-auto">
+<button class="bg-primary-container text-on-primary font-mono-data text-mono-data border border-primary px-8 py-4 flex items-center gap-2 hover:bg-primary hover:text-on-primary-container transition-colors duration-200">
+                    CREATE 3D MODEL
+                    <span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 0;">arrow_forward</span>
+</button>
+</div>
+</div>
+</main>
+<!-- Footer Anchor (Shared Component Execution) -->
+<footer class="bg-surface-container-lowest dark:bg-surface-container-lowest border-t border-outline-variant flex justify-between items-center w-full px-margin-sm py-2 z-20 relative mt-auto">
+<div class="font-mono-data text-mono-data text-on-surface-variant opacity-70">
+            ©2024 REFORGE INDUSTRIAL SYNTHESIS [X: 0.00 Y: 0.00 Z: 0.00]
+        </div>
+<div class="flex gap-4">
+<a class="font-mono-data text-mono-data text-on-surface-variant opacity-70 hover:text-primary dark:hover:text-primary transition-colors" href="#">Documentation</a>
+<a class="font-mono-data text-mono-data text-on-surface-variant opacity-70 hover:text-primary dark:hover:text-primary transition-colors" href="#">API</a>
+<a class="font-mono-data text-mono-data text-on-surface-variant opacity-70 hover:text-primary dark:hover:text-primary transition-colors" href="#">Security</a>
+<a class="font-mono-data text-mono-data text-on-surface-variant opacity-70 hover:text-primary dark:hover:text-primary transition-colors" href="#">Compliance</a>
+</div>
+</footer>
+</body></html>

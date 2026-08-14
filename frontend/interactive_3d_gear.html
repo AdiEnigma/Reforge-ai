@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 3D Gear</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background-color: #E8DCD0; /* Light Sand Dollar Palette Background */
+            user-select: none;
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body class="h-screen w-screen overflow-hidden bg-[#E8DCD0]">
+
+    <!-- 3D Canvas Container -->
+    <div id="canvas-container"></div>
+
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // --- THREE.JS SCENE SETUP ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0xE8DCD0, 0.025); // Light Warm Sand Dollar Fog
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, 15); // Positioned for a clean view
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        // Gear Parameters (Smaller scale, 8 teeth, hollow center, thinner profile)
+        const gearParams = {
+            teeth: 8,
+            outerRadius: 3.2,     // Compact outer size
+            innerRadius: 2.5,     // Proportional inner body
+            holeRadius: 2.2,      // Prominent hollow center
+            toothLength: 0.8,     // Crisp tooth height
+            depth: 0.25,          // Thinner sleek thickness (reduced from 0.9)
+            baseColor: "#2A0E06",  // Rich Redwood Obsidian Body
+            glowColor: "#deb228",  // Golden Bear Hover Glow
+            edgeColor: "#deb228",  // Neon Golden Bear Wireframe
+            rotationSpeed: 0.006
+        };
+
+        // Function to create the gear 2D path with hollow center
+        function createGearShape(numTeeth, outerRadius, innerRadius, holeRadius, toothLength) {
+            const shape = new THREE.Shape();
+            shape.moveTo(outerRadius, 0);
+
+            for (let i = 0; i < numTeeth; i++) {
+                let theta = (i * Math.PI * 2) / numTeeth;
+                let nextTheta = ((i + 1) * Math.PI * 2) / numTeeth;
+                let step = (nextTheta - theta) / 4;
+
+                shape.lineTo(Math.cos(theta) * outerRadius, Math.sin(theta) * outerRadius);
+                shape.lineTo(Math.cos(theta + step) * (outerRadius + toothLength), Math.sin(theta + step) * (outerRadius + toothLength));
+                shape.lineTo(Math.cos(theta + step * 2) * (outerRadius + toothLength), Math.sin(theta + step * 2) * (outerRadius + toothLength));
+                shape.lineTo(Math.cos(theta + step * 3) * outerRadius, Math.sin(theta + step * 3) * outerRadius);
+            }
+            shape.lineTo(outerRadius, 0);
+
+            // Hollow Center Hole
+            const holePath = new THREE.Path();
+            holePath.absarc(0, 0, holeRadius, 0, Math.PI * 2, false);
+            shape.holes.push(holePath);
+
+            return shape;
+        }
+
+        // Create 3D Extruded Geometry
+        const gearShape = createGearShape(
+            gearParams.teeth,
+            gearParams.outerRadius,
+            gearParams.innerRadius,
+            gearParams.holeRadius,
+            gearParams.toothLength
+        );
+
+        const extrudeSettings = {
+            depth: gearParams.depth,
+            bevelEnabled: true,
+            bevelSegments: 12,    // High segment count for silky smooth bevel edges
+            steps: 2,             // Smooth extrusion depth
+            curveSegments: 64,    // High resolution curves for a smooth hollow center
+            bevelSize: 0.05,      // Proportionally scaled thinner bevels
+            bevelThickness: 0.05
+        };
+
+        const geometry = new THREE.ExtrudeGeometry(gearShape, extrudeSettings);
+        // Center geometry perfectly at origin (0, 0, 0)
+        geometry.center();
+
+        // Dark Satin Redwood Obsidian Material
+        const material = new THREE.MeshStandardMaterial({
+            color: new THREE.Color(gearParams.baseColor),
+            metalness: 0.80,
+            roughness: 0.45,       // Softens reflection glare on bevels and center ring
+            emissive: new THREE.Color(0x0a0301),
+            emissiveIntensity: 0.2
+        });
+
+        const gearMesh = new THREE.Mesh(geometry, material);
+        gearMesh.castShadow = true;
+        gearMesh.receiveShadow = true;
+
+        // Neon Edge Outline Border (Golden Bear)
+        const edges = new THREE.EdgesGeometry(geometry, 22);
+        const lineMat = new THREE.LineBasicMaterial({
+            color: new THREE.Color(gearParams.edgeColor),
+            linewidth: 2
+        });
+        const neonEdges = new THREE.LineSegments(edges, lineMat);
+        gearMesh.add(neonEdges);
+
+        // Neon Glowing Rim Rings around Hollow Center
+        const ringGeo = new THREE.RingGeometry(gearParams.holeRadius - 0.05, gearParams.holeRadius + 0.08, 64);
+        const ringMat = new THREE.MeshBasicMaterial({
+            color: new THREE.Color(gearParams.edgeColor),
+            side: THREE.DoubleSide
+        });
+
+        const frontRing = new THREE.Mesh(ringGeo, ringMat);
+        frontRing.position.z = (gearParams.depth / 2) + 0.01;
+
+        const backRing = new THREE.Mesh(ringGeo, ringMat);
+        backRing.position.z = -(gearParams.depth / 2) - 0.01;
+
+        gearMesh.add(frontRing);
+        gearMesh.add(backRing);
+
+        scene.add(gearMesh);
+
+        // Light Sources tuned for Light Background Contrast
+        const ambientLight = new THREE.AmbientLight(0x7A4A38, 0.9);
+        scene.add(ambientLight);
+
+        // Softened Point Light inside the hollow center
+        const hollowCoreLight = new THREE.PointLight(0xdeb228, 0.8, 10);
+        hollowCoreLight.position.set(0, 0, 0);
+        scene.add(hollowCoreLight);
+
+        // Golden Bear Accent Light
+        const goldenLight = new THREE.PointLight(0xdeb228, 2.5, 30);
+        goldenLight.position.set(8, 8, 8);
+        scene.add(goldenLight);
+
+        // Tenne Warm Shadow Light
+        const tenneLight = new THREE.PointLight(0xb76308, 2.2, 30);
+        tenneLight.position.set(-8, -8, 6);
+        scene.add(tenneLight);
+
+        // Sand Dollar Backlight
+        const backLight = new THREE.DirectionalLight(0xd6b38a, 0.8);
+        backLight.position.set(0, 4, -12);
+        scene.add(backLight);
+
+        // Floating Dust Particles with Aztec Gold tone for subtle light contrast
+        const particleGeometry = new THREE.BufferGeometry();
+        const particleCount = 180;
+        const posArray = new Float32Array(particleCount * 3);
+        for (let i = 0; i < particleCount * 3; i++) {
+            posArray[i] = (Math.random() - 0.5) * 40;
+        }
+        particleGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        const particleMaterial = new THREE.PointsMaterial({
+            size: 0.1,
+            color: 0x9F521F,
+            transparent: true,
+            opacity: 0.45
+        });
+        const particlesMesh = new THREE.Points(particleGeometry, particleMaterial);
+        scene.add(particlesMesh);
+
+        // Cursor Interaction Variables
+        const mouse = new THREE.Vector2();
+        const targetRotation = new THREE.Vector2();
+        const currentRotation = new THREE.Vector2();
+        const windowHalf = new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2);
+        let isHovered = false;
+
+        const raycaster = new THREE.Raycaster();
+
+        // Mouse Movement Handler for Parallax Tilt
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            targetRotation.x = (e.clientX - windowHalf.x) * 0.0018;
+            targetRotation.y = (e.clientY - windowHalf.y) * 0.0018;
+        });
+
+        // Touch support for touch devices
+        window.addEventListener('touchmove', (e) => {
+            if (e.touches.length > 0) {
+                const touch = e.touches[0];
+                mouse.x = (touch.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(touch.clientY / window.innerHeight) * 2 + 1;
+                targetRotation.x = (touch.clientX - windowHalf.x) * 0.0018;
+                targetRotation.y = (touch.clientY - windowHalf.y) * 0.0018;
+            }
+        });
+
+        // Viewport Resize Handler
+        window.addEventListener('resize', () => {
+            windowHalf.x = window.innerWidth / 2;
+            windowHalf.y = window.innerHeight / 2;
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Main Animation Loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Raycast check for hover glow effect
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(gearMesh);
+            if (intersects.length > 0) {
+                if (!isHovered) {
+                    document.body.style.cursor = 'pointer';
+                    isHovered = true;
+                }
+                material.emissive.lerp(new THREE.Color(gearParams.glowColor), 0.04);
+                hollowCoreLight.intensity = THREE.MathUtils.lerp(hollowCoreLight.intensity, 1.2, 0.04);
+            } else {
+                if (isHovered) {
+                    document.body.style.cursor = 'default';
+                    isHovered = false;
+                }
+                material.emissive.lerp(new THREE.Color(0x0a0301), 0.03);
+                hollowCoreLight.intensity = THREE.MathUtils.lerp(hollowCoreLight.intensity, 0.7, 0.03);
+            }
+
+            // Silky Smooth Parallax Rotation with gentler easing
+            currentRotation.x = THREE.MathUtils.lerp(currentRotation.x, targetRotation.x, 0.035);
+            currentRotation.y = THREE.MathUtils.lerp(currentRotation.y, targetRotation.y, 0.035);
+
+            gearMesh.rotation.x = currentRotation.y;
+            gearMesh.rotation.y = currentRotation.x;
+            gearMesh.rotation.z -= gearParams.rotationSpeed * (isHovered ? 1.8 : 1.0);
+
+            // Rotate ambient dust particles
+            particlesMesh.rotation.y += 0.0006;
+            particlesMesh.rotation.x += 0.0003;
+
+            renderer.render(scene, camera);
+        }
+
+        // Start animation loop on load
+        window.onload = function() {
+            animate();
+        };
+    </script>
+</body>
+</html>
