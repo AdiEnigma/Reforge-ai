@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { executeRecipe, sanitizeRecipe } from "./recipe.js";
+import { extrude, gearShape, matAccent, matBody, matDark, matRim, ringShape } from "./geo.js";
 
 export const COMPONENT_LABELS = {
   "spur gear": "SPUR GEAR",
@@ -8,11 +10,6 @@ export const COMPONENT_LABELS = {
   "simple bracket": "SIMPLE BRACKET",
   other: "GENERIC COMPONENT",
 };
-
-const matBody = new THREE.MeshStandardMaterial({ color: "#3d332c", metalness: 0.75, roughness: 0.45 });
-const matAccent = new THREE.MeshStandardMaterial({ color: "#b76308", metalness: 0.6, roughness: 0.5 });
-const matRim = new THREE.MeshStandardMaterial({ color: "#de822b", metalness: 0.8, roughness: 0.35 });
-const matDark = new THREE.MeshStandardMaterial({ color: "#271e18", metalness: 0.5, roughness: 0.6 });
 
 export function resolveComponentType(analysis) {
   const raw = String(analysis?.componentType || "other").toLowerCase();
@@ -41,55 +38,6 @@ export function computeParams(analysis) {
     length: s(dims.length),
     thickness: s(dims.thickness),
   };
-}
-
-function ringShape(outerR, innerR, boltHoles = []) {
-  const shape = new THREE.Shape();
-  shape.absarc(0, 0, outerR, 0, Math.PI * 2, false);
-  if (innerR > 0) {
-    const hole = new THREE.Path();
-    hole.absarc(0, 0, innerR, 0, Math.PI * 2, true);
-    shape.holes.push(hole);
-  }
-  for (const hole of boltHoles) {
-    shape.holes.push(hole);
-  }
-  return shape;
-}
-
-function extrude(shape, depth, bevel = true) {
-  return new THREE.ExtrudeGeometry(shape, {
-    depth,
-    bevelEnabled: bevel,
-    bevelThickness: bevel ? depth * 0.08 : 0,
-    bevelSize: bevel ? depth * 0.06 : 0,
-    bevelSegments: 4,
-    steps: 2,
-    curveSegments: 48,
-  });
-}
-
-function gearShape(teeth, outerR, toothHeight, boreR) {
-  const shape = new THREE.Shape();
-  const step = (Math.PI * 2) / teeth;
-  const s = step / 4;
-  const rootR = outerR - toothHeight;
-  shape.moveTo(outerR, 0);
-  for (let i = 0; i < teeth; i++) {
-    const a = i * step;
-    shape.lineTo(Math.cos(a) * outerR, Math.sin(a) * outerR);
-    shape.lineTo(Math.cos(a + s) * outerR, Math.sin(a + s) * outerR);
-    shape.lineTo(Math.cos(a + s * 2) * rootR, Math.sin(a + s * 2) * rootR);
-    shape.lineTo(Math.cos(a + s * 3) * rootR, Math.sin(a + s * 3) * rootR);
-    shape.lineTo(Math.cos(a + s * 4) * outerR, Math.sin(a + s * 4) * outerR);
-  }
-  shape.closePath();
-  if (boreR > 0) {
-    const hole = new THREE.Path();
-    hole.absarc(0, 0, boreR, 0, Math.PI * 2, true);
-    shape.holes.push(hole);
-  }
-  return shape;
 }
 
 function buildSpurGear(p) {
@@ -242,30 +190,47 @@ export function buildModel(analysis) {
   const p = computeParams(analysis);
   const group = new THREE.Group();
   let body;
-  switch (p.type) {
-    case "spur gear":
-      body = buildSpurGear(p);
-      break;
-    case "cylinder/shaft":
-      body = buildCylinder(p);
-      break;
-    case "flange":
-      body = buildFlange(p);
-      break;
-    case "bearing":
-      body = buildBearing(p);
-      break;
-    case "simple bracket":
-      body = buildBracket(p);
-      break;
-    default:
-      body = buildGeneric(p);
+  let label;
+  const recipe = sanitizeRecipe(analysis);
+  if (recipe) {
+    body = executeRecipe(recipe);
+    label = String(analysis?.componentType || "other").trim().toUpperCase() || COMPONENT_LABELS.other;
+  } else {
+    switch (p.type) {
+      case "spur gear":
+        body = buildSpurGear(p);
+        break;
+      case "cylinder/shaft":
+        body = buildCylinder(p);
+        break;
+      case "flange":
+        body = buildFlange(p);
+        break;
+      case "bearing":
+        body = buildBearing(p);
+        break;
+      case "simple bracket":
+        body = buildBracket(p);
+        break;
+      default:
+        body = buildGeneric(p);
+    }
+    label = COMPONENT_LABELS[p.type];
   }
   body.traverse((obj) => {
     if (obj.isMesh) obj.castShadow = true;
   });
   group.add(body);
-  return { group, params: p, label: COMPONENT_LABELS[p.type] };
+  return { group, params: p, label };
+}
+
+export function resolveLabel(analysis) {
+  const raw = String(analysis?.componentType || "").trim();
+  if (!raw) return COMPONENT_LABELS.other;
+  const key = raw.toLowerCase();
+  if (COMPONENT_LABELS[key]) return COMPONENT_LABELS[key];
+  if (sanitizeRecipe(analysis)) return raw.toUpperCase();
+  return COMPONENT_LABELS[resolveComponentType(analysis)];
 }
 
 export function dimensionList(analysis) {
@@ -279,6 +244,8 @@ export function dimensionList(analysis) {
     { label: "LENGTH", value: dims.length },
     { label: "THICKNESS", value: dims.thickness },
     { label: "TEETH", value: teeth },
+    { label: "MODULE", value: analysis?.module },
+    { label: "HELIX ANGLE", value: analysis?.helixAngle },
   ];
   return rows.filter((row) => typeof row.value === "number" && isFinite(row.value));
 }

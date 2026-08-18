@@ -53,10 +53,31 @@ function validateImages(images) {
   return clean;
 }
 
+const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle"];
+
+function sanitizeReference(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const clean = {};
+  for (const key of REFERENCE_KEYS) {
+    const value = raw[key];
+    if (typeof value !== "number" || !isFinite(value)) continue;
+    if (key === "teeth") {
+      if (value >= 4 && value <= 400) clean[key] = Math.round(value);
+    } else if (key === "helixAngle") {
+      if (value >= 0 && value <= 60) clean[key] = value;
+    } else if (key === "module") {
+      if (value > 0 && value <= 100) clean[key] = value;
+    } else if (value > 0 && value <= 100000) {
+      clean[key] = value;
+    }
+  }
+  return clean;
+}
+
 app.post("/api/analyze-component", async (req, res) => {
   try {
     const images = validateImages(req.body?.images);
-    const reference = req.body?.reference && typeof req.body.reference === "object" ? req.body.reference : {};
+    const reference = sanitizeReference(req.body?.reference);
     const analysis = await analyzeComponent({ images, reference });
     res.json({ analysis });
   } catch (error) {

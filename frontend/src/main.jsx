@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import './styles.css';
 import { analyzeComponent, sendChatMessage } from './lib/api.js';
-import { buildModel, COMPONENT_LABELS, dimensionList, resolveComponentType } from './lib/reconstruct.js';
+import { buildModel, dimensionList, resolveLabel } from './lib/reconstruct.js';
 
 const AppContext = createContext();
 const useApp = () => useContext(AppContext);
@@ -62,12 +62,12 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey }) {
     host.appendChild(renderer.domElement);
     const { group } = buildModel(analysis);
     scene.add(group);
-    scene.add(new THREE.AmbientLight('#7a4a38', 1.15));
-    const key = new THREE.DirectionalLight('#ffb77f', 1.8); key.position.set(6, 8, 10); scene.add(key);
-    const fill = new THREE.PointLight('#b76308', 2, 25); fill.position.set(-5, -4, 6); scene.add(fill);
+    scene.add(new THREE.AmbientLight('#7a4a38', 0.6));
+    const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
+    const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
     const gridHelper = new THREE.GridHelper(10, 12, '#544337', '#3d332c'); gridHelper.position.z = -1.2; gridHelper.visible = false; scene.add(gridHelper);
     const originals = new Map(); group.traverse(node => { if (node.isMesh) originals.set(node.uuid, node.material); });
-    const wireMaterial = new THREE.MeshBasicMaterial({ color: '#c9f88d', wireframe: true });
+    const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
     const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
     const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
     let pointerMode = null, lastPoint = null, appliedWire = null;
@@ -126,10 +126,31 @@ function Landing() {
   );
 }
 
+const REFERENCE_FIELDS = [
+  { key: 'outerDiameter', label: 'Outer Ø', unit: 'mm' },
+  { key: 'innerDiameter', label: 'Inner Ø (bore)', unit: 'mm' },
+  { key: 'height', label: 'Height / Length', unit: 'mm' },
+  { key: 'thickness', label: 'Thickness / Width', unit: 'mm' },
+  { key: 'teeth', label: 'Teeth', unit: 'count' },
+  { key: 'module', label: 'Module', unit: 'mm' },
+  { key: 'helixAngle', label: 'Helix angle', unit: 'deg' },
+];
+
+function buildReference(fields) {
+  const reference = {};
+  for (const { key } of REFERENCE_FIELDS) {
+    const raw = fields[key];
+    if (raw === '' || raw == null) continue;
+    const num = Number(raw);
+    if (Number.isFinite(num) && num >= 0) reference[key] = num;
+  }
+  return reference;
+}
+
 function Upload() {
   const { images, setImages, setPage, stage, setStage, setAnalysis } = useApp();
   const input = useRef(null);
-  const [refValue, setRefValue] = useState('80.00');
+  const [reference, setReference] = useState({});
   const [error, setError] = useState('');
   const busy = stage === 'analysing';
 
@@ -145,8 +166,7 @@ function Upload() {
     setError('');
     setStage('analysing');
     try {
-      const reference = { outerDiameter: parseFloat(refValue) || null };
-      const result = await analyzeComponent(images, reference);
+      const result = await analyzeComponent(images, buildReference(reference));
       setAnalysis(result);
       setStage('extracting');
       setPage('workbench');
@@ -177,10 +197,26 @@ function Upload() {
           <aside className="input-panel">
             <span className="cad">CAPTURE GUIDANCE</span>
             <p>Include front, side, and detail views where available.</p>
-            <label>Known outer diameter
-              <input type="text" value={refValue} onChange={e => setRefValue(e.target.value)} aria-label="Known outer diameter" />
-              <small>mm</small>
-            </label>
+            <div className="ref-block">
+              <span className="cad">KNOWN DIMENSIONS <small className="ref-optional">(OPTIONAL)</small></span>
+              <p className="ref-hint">Fill any you know — the AI calibrates the render to them. Leave blank to auto-estimate.</p>
+              <div className="ref-grid">
+                {REFERENCE_FIELDS.map(({ key, label, unit }) => (
+                  <label key={key} className="ref-field">
+                    <span>{label}</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="—"
+                      value={reference[key] ?? ''}
+                      onChange={e => setReference(prev => ({ ...prev, [key]: e.target.value }))}
+                      aria-label={label}
+                    />
+                    <small>{unit}</small>
+                  </label>
+                ))}
+              </div>
+            </div>
           </aside>
         </section>
         {error && <p className="error" role="alert">{error}</p>}
@@ -256,8 +292,7 @@ function Workbench() {
   };
 
   const ready = stage === 'ready' && analysis;
-  const typeKey = resolveComponentType(analysis);
-  const label = analysis ? COMPONENT_LABELS[typeKey] : null;
+  const label = analysis ? resolveLabel(analysis) : null;
   const conf = analysis && typeof analysis.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
   const stageIndex = analysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
 
