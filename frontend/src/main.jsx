@@ -246,9 +246,211 @@ function Upload() {
   );
 }
 
+const PARAM_DEFINITIONS = [
+  { key: 'outerDiameter', label: 'Outer Ø', unit: 'mm', min: 1, step: 0.5, isDim: true },
+  { key: 'innerDiameter', label: 'Inner Ø (bore)', unit: 'mm', min: 0, step: 0.5, isDim: true },
+  { key: 'height', label: 'Height / Length', unit: 'mm', min: 1, step: 0.5, isDim: true },
+  { key: 'width', label: 'Width', unit: 'mm', min: 1, step: 0.5, isDim: true },
+  { key: 'length', label: 'Length', unit: 'mm', min: 1, step: 0.5, isDim: true },
+  { key: 'thickness', label: 'Thickness / Width', unit: 'mm', min: 0.5, step: 0.5, isDim: true },
+  { key: 'teeth', label: 'Teeth', unit: 'count', min: 6, max: 120, step: 1, isDim: false, isInteger: true },
+  { key: 'module', label: 'Module', unit: 'mm', min: 0.2, max: 20, step: 0.1, isDim: false },
+  { key: 'helixAngle', label: 'Helix Angle', unit: 'deg', min: 0, max: 45, step: 1, isDim: false },
+];
+
+function WhatIfSimulator({
+  analysis,
+  scenarioParams,
+  setScenarioParams,
+  isGeometryValid,
+  geometryError,
+  warnings,
+  impactStatus,
+  materialVolumeImpact,
+  ready,
+}) {
+  if (!ready || !analysis) {
+    return (
+      <div className="whatif-container">
+        <div className="whatif-empty">
+          <Icon>tune</Icon>
+          <p>No active component analysis.<br />Run synthesis to unlock the What-If Simulator.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const availableParams = PARAM_DEFINITIONS.filter(def => {
+    const val = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+    return typeof val === 'number' && isFinite(val) && (def.key === 'innerDiameter' || def.key === 'helixAngle' ? val >= 0 : val > 0);
+  });
+
+  const hasModifications = Object.keys(scenarioParams).length > 0;
+
+  const handleParamChange = (key, rawValue, isInteger) => {
+    const num = isInteger ? parseInt(rawValue, 10) : parseFloat(rawValue);
+    if (isNaN(num)) return;
+    setScenarioParams(prev => ({ ...prev, [key]: num }));
+  };
+
+  const handleReset = () => {
+    setScenarioParams({});
+  };
+
+  return (
+    <div className="whatif-container">
+      <div className="whatif-header">
+        <h3><Icon>tune</Icon> ENGINEERING WHAT-IF</h3>
+        <p>Modify a design parameter and preview its engineering impact.</p>
+      </div>
+
+      {!isGeometryValid && (
+        <div className="whatif-alert-invalid" role="alert">
+          <div className="alert-head">
+            <Icon>error</Icon>
+            <strong>INVALID GEOMETRY</strong>
+          </div>
+          <p>{geometryError}</p>
+        </div>
+      )}
+
+      <div className="whatif-impact-card">
+        <div className="impact-top">
+          <span className="cad">SCENARIO IMPACT</span>
+          <span className={`impact-badge impact-${impactStatus.toLowerCase().replace(/\s+/g, '-')}`}>
+            {impactStatus}
+          </span>
+        </div>
+        <p className="impact-note">
+          {impactStatus === 'INVALID'
+            ? 'Scenario exceeds valid geometric constraints.'
+            : impactStatus === 'STABLE'
+            ? 'Modifications within baseline envelope (<5% deviation).'
+            : impactStatus === 'REVIEW'
+            ? 'Interface or moderate dimensional change (5–15%). Engineering check advised.'
+            : 'Significant deviation from baseline (>15%). Rigorous verification required.'}
+        </p>
+      </div>
+
+      {availableParams.length > 0 ? (
+        <div className="params-list">
+          {availableParams.map(def => {
+            const baselineVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+            const currentVal = scenarioParams[def.key] ?? baselineVal;
+            const diff = currentVal - baselineVal;
+            const pct = baselineVal !== 0 ? (diff / baselineVal) * 100 : 0;
+            const isModified = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
+
+            const sliderMin = def.min !== undefined ? Math.min(def.min, Math.floor(baselineVal * 0.2)) : Math.max(0.1, Math.floor(baselineVal * 0.2));
+            const sliderMax = Math.max(def.max || Math.ceil(baselineVal * 2.5), Math.ceil(baselineVal + 20));
+
+            const sign = diff > 0 ? '+' : '';
+            const diffFormatted = def.isInteger ? `${sign}${diff} ${def.unit}` : `${sign}${diff.toFixed(1)} ${def.unit}`;
+            const pctFormatted = `${sign}${pct.toFixed(1)}%`;
+
+            return (
+              <div key={def.key} className={`param-card ${isModified ? 'param-modified' : ''}`}>
+                <div className="param-top">
+                  <span className="param-name">{def.label}</span>
+                  {isModified ? (
+                    <span className={`param-delta ${diff > 0 ? 'delta-pos' : 'delta-neg'}`}>
+                      {diffFormatted} / {pctFormatted}
+                    </span>
+                  ) : (
+                    <span className="param-delta delta-zero">BASELINE</span>
+                  )}
+                </div>
+
+                <div className="param-readout-row">
+                  <div className="readout-col">
+                    <span className="cad-label">BASELINE</span>
+                    <span className="readout-val base-val">{baselineVal} <small>{def.unit}</small></span>
+                  </div>
+                  <Icon>arrow_forward</Icon>
+                  <div className="readout-col">
+                    <span className="cad-label">SCENARIO</span>
+                    <span className="readout-val scen-val">{currentVal} <small>{def.unit}</small></span>
+                  </div>
+                </div>
+
+                <div className="param-slider-row">
+                  <input
+                    type="range"
+                    className="param-slider"
+                    min={sliderMin}
+                    max={sliderMax}
+                    step={def.step}
+                    value={currentVal}
+                    onChange={e => handleParamChange(def.key, e.target.value, def.isInteger)}
+                    aria-label={`Adjust ${def.label} scenario value`}
+                  />
+                  <input
+                    type="number"
+                    className="param-input"
+                    min={sliderMin}
+                    max={sliderMax}
+                    step={def.step}
+                    value={currentVal}
+                    onChange={e => handleParamChange(def.key, e.target.value, def.isInteger)}
+                    aria-label={`Exact value for ${def.label}`}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="empty">No modifiable dimensions identified for this component.</p>
+      )}
+
+      {materialVolumeImpact && (
+        <div className="whatif-volume-card">
+          <div className="volume-head">
+            <span className="cad">APPROX. MATERIAL VOLUME</span>
+            <span className="volume-delta">{materialVolumeImpact.deltaCm3} cm³ ({materialVolumeImpact.pct})</span>
+          </div>
+          <div className="volume-readout">
+            <span>{materialVolumeImpact.baselineCm3} cm³</span>
+            <Icon>arrow_forward</Icon>
+            <span className="volume-scen">{materialVolumeImpact.scenarioCm3} cm³</span>
+          </div>
+          <small className="volume-disclaimer">Annular/cylindrical envelope estimate. Requires engineering verification.</small>
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div className="whatif-warnings-card">
+          <span className="cad">ENGINEERING WARNINGS</span>
+          <ul className="warnings-list">
+            {warnings.map((w, idx) => (
+              <li key={idx} className="warning-item">
+                <Icon>warning</Icon>
+                <span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="whatif-actions">
+        <button
+          className="btn-reset-scenario"
+          disabled={!hasModifications}
+          onClick={handleReset}
+          aria-label="Reset scenario to baseline"
+        >
+          <Icon>restart_alt</Icon> RESET SCENARIO
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Workbench() {
   const { setPage, images, analysis, stage, setStage } = useApp();
   const [open, setOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState('chat');
+  const [scenarioParams, setScenarioParams] = useState({});
   const [wire, setWire] = useState(false);
   const [grid, setGrid] = useState(false);
   const [dims, setDims] = useState(false);
@@ -274,6 +476,11 @@ function Workbench() {
     }
   }, [stage, analysis, setStage]);
 
+  // Reset scenario when a new analysis is loaded
+  useEffect(() => {
+    setScenarioParams({});
+  }, [analysis]);
+
   const send = async (e) => {
     e.preventDefault();
     if (!text.trim() || thinking) return;
@@ -296,6 +503,180 @@ function Workbench() {
   const conf = analysis && typeof analysis.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
   const stageIndex = analysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
 
+  // Geometry Validation
+  const { isGeometryValid, geometryError } = useMemo(() => {
+    if (!analysis) return { isGeometryValid: true, geometryError: null };
+    const currentOD = scenarioParams.outerDiameter ?? analysis.dimensions?.outerDiameter;
+    const currentID = scenarioParams.innerDiameter ?? analysis.dimensions?.innerDiameter;
+    const currentTeeth = scenarioParams.teeth ?? analysis.teeth;
+
+    for (const [k, v] of Object.entries(scenarioParams)) {
+      if (k !== 'innerDiameter' && k !== 'helixAngle' && typeof v === 'number' && v <= 0) {
+        return { isGeometryValid: false, geometryError: 'Dimensions must be strictly positive.' };
+      }
+    }
+
+    if (typeof currentOD === 'number' && typeof currentID === 'number' && currentOD > 0) {
+      if (currentID >= currentOD) {
+        return {
+          isGeometryValid: false,
+          geometryError: 'Inner diameter must be smaller than outer diameter.',
+        };
+      }
+    }
+
+    if (typeof currentTeeth === 'number') {
+      if (currentTeeth < 6 || !Number.isInteger(currentTeeth)) {
+        return {
+          isGeometryValid: false,
+          geometryError: 'Tooth count must be an integer of at least 6 teeth.',
+        };
+      }
+    }
+
+    return { isGeometryValid: true, geometryError: null };
+  }, [analysis, scenarioParams]);
+
+  // Derive immutable scenario analysis for 3D reconstruction
+  const scenarioAnalysis = useMemo(() => {
+    if (!analysis) return null;
+    if (!Object.keys(scenarioParams).length || !isGeometryValid) return analysis;
+
+    const cloned = {
+      ...analysis,
+      dimensions: { ...(analysis.dimensions || {}) },
+    };
+
+    for (const def of PARAM_DEFINITIONS) {
+      if (scenarioParams[def.key] !== undefined) {
+        if (def.isDim) {
+          cloned.dimensions[def.key] = scenarioParams[def.key];
+        } else {
+          cloned[def.key] = scenarioParams[def.key];
+        }
+      }
+    }
+
+    if (analysis.geometryRecipe) {
+      cloned.geometryRecipe = JSON.parse(JSON.stringify(analysis.geometryRecipe));
+      if (cloned.geometryRecipe.gear) {
+        if (scenarioParams.teeth !== undefined) cloned.geometryRecipe.gear.teeth = scenarioParams.teeth;
+        if (scenarioParams.module !== undefined) cloned.geometryRecipe.gear.module = scenarioParams.module;
+        if (scenarioParams.helixAngle !== undefined) cloned.geometryRecipe.gear.helixAngle = scenarioParams.helixAngle;
+        if (scenarioParams.height !== undefined) cloned.geometryRecipe.gear.faceWidth = scenarioParams.height;
+        if (scenarioParams.thickness !== undefined && scenarioParams.height === undefined) cloned.geometryRecipe.gear.faceWidth = scenarioParams.thickness;
+        if (scenarioParams.innerDiameter !== undefined) cloned.geometryRecipe.gear.boreRadius = scenarioParams.innerDiameter / 2;
+      }
+      if (cloned.geometryRecipe.depth) {
+        if (scenarioParams.height !== undefined) cloned.geometryRecipe.depth = scenarioParams.height;
+        else if (scenarioParams.thickness !== undefined) cloned.geometryRecipe.depth = scenarioParams.thickness;
+        else if (scenarioParams.length !== undefined) cloned.geometryRecipe.depth = scenarioParams.length;
+      }
+    }
+
+    return cloned;
+  }, [analysis, scenarioParams, isGeometryValid]);
+
+  // Approximate material volume impact
+  const materialVolumeImpact = useMemo(() => {
+    if (!analysis) return null;
+    const od0 = analysis.dimensions?.outerDiameter;
+    const id0 = analysis.dimensions?.innerDiameter || 0;
+    const h0 = analysis.dimensions?.height || analysis.dimensions?.thickness;
+    if (typeof od0 !== 'number' || typeof h0 !== 'number' || od0 <= 0 || h0 <= 0) {
+      return null;
+    }
+
+    const odS = scenarioParams.outerDiameter ?? od0;
+    const idS = scenarioParams.innerDiameter ?? id0;
+    const hS = scenarioParams.height ?? (scenarioParams.thickness ?? h0);
+
+    if (odS <= 0 || hS <= 0 || idS >= odS) return null;
+
+    const v0 = (Math.PI / 4) * (od0 * od0 - id0 * id0) * h0;
+    const vS = (Math.PI / 4) * (odS * odS - idS * idS) * hS;
+    const deltaV = vS - v0;
+    const pctV = v0 > 0 ? (deltaV / v0) * 100 : 0;
+
+    const v0Cm3 = (v0 / 1000).toFixed(1);
+    const vSCm3 = (vS / 1000).toFixed(1);
+    const deltaVCm3 = ((vS - v0) / 1000).toFixed(1);
+    const sign = deltaV >= 0 ? '+' : '';
+
+    return {
+      baselineCm3: v0Cm3,
+      scenarioCm3: vSCm3,
+      deltaCm3: `${sign}${deltaVCm3}`,
+      pct: `${sign}${pctV.toFixed(1)}%`,
+    };
+  }, [analysis, scenarioParams]);
+
+  // Deterministic warnings and impact status
+  const { warnings, impactStatus } = useMemo(() => {
+    if (!analysis) return { warnings: [], impactStatus: 'STABLE' };
+    if (!isGeometryValid) {
+      return {
+        warnings: [geometryError || 'Invalid geometric configuration.'],
+        impactStatus: 'INVALID',
+      };
+    }
+
+    const warnList = [];
+    let maxPct = 0;
+    let hasCriticalChange = false;
+
+    for (const def of PARAM_DEFINITIONS) {
+      const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+      if (typeof baseVal !== 'number' || !isFinite(baseVal)) continue;
+
+      const scenVal = scenarioParams[def.key] ?? baseVal;
+      const absDiff = Math.abs(scenVal - baseVal);
+      if (absDiff > 0.0001) {
+        const pct = baseVal !== 0 ? Math.abs((scenVal - baseVal) / baseVal) * 100 : 0;
+        if (pct > maxPct) maxPct = pct;
+
+        if (def.key === 'innerDiameter') {
+          hasCriticalChange = true;
+          warnList.push('Bore interface changed — mating compatibility should be checked.');
+        } else if (def.key === 'outerDiameter') {
+          hasCriticalChange = true;
+          warnList.push('Outer interface changed — mating compatibility should be checked.');
+        } else if (def.key === 'teeth') {
+          hasCriticalChange = true;
+          warnList.push('Tooth count changed — mating gear compatibility should be checked.');
+        } else if (def.key === 'height' || def.key === 'thickness' || def.key === 'length') {
+          warnList.push('Axial dimension changed — fit and clearance should be verified.');
+        } else if (def.key === 'module') {
+          hasCriticalChange = true;
+          warnList.push('Gear module changed — pitch circle and mating gear mesh will be affected.');
+        } else if (def.key === 'helixAngle') {
+          hasCriticalChange = true;
+          warnList.push('Helix angle changed — thrust load and mating gear angle must be matched.');
+        }
+
+        if (pct > 15) {
+          warnList.push(`Significant dimensional deviation in ${def.label} (${pct.toFixed(0)}%) — engineering verification recommended.`);
+        }
+      }
+    }
+
+    let status = 'STABLE';
+    if (Object.keys(scenarioParams).length > 0) {
+      if (maxPct > 15) {
+        status = 'HIGH IMPACT';
+      } else if (maxPct >= 5 || hasCriticalChange) {
+        status = 'REVIEW';
+      } else {
+        status = 'STABLE';
+      }
+    }
+
+    return { warnings: [...new Set(warnList)], impactStatus: status };
+  }, [analysis, scenarioParams, isGeometryValid, geometryError]);
+
+  const activeReconstructionAnalysis = isGeometryValid && scenarioAnalysis ? scenarioAnalysis : analysis;
+  const modifiedCount = Object.keys(scenarioParams).length;
+
   return (
     <>
       <Nav />
@@ -303,7 +684,7 @@ function Workbench() {
         <section className="viewport">
           <div className="cad viewport-status" aria-live="polite">
             {ready
-              ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>
+              ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
               : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
           </div>
           {!analysis ? (
@@ -318,16 +699,28 @@ function Workbench() {
               <ProgressStepper index={stageIndex} />
             </div>
           ) : <div className={`model ${wire ? 'wire' : ''}`}>
-            <ReconstructedViewport analysis={analysis} wire={wire} grid={grid} autoRotate={autoRotate} resetKey={resetKey} />
+            <ReconstructedViewport analysis={activeReconstructionAnalysis} wire={wire} grid={grid} autoRotate={autoRotate} resetKey={resetKey} />
           </div>}
           {ready && dims && (
             <div className="dims-overlay" aria-label="Component dimensions">
-              {dimensionList(analysis).map(d => (
+              {dimensionList(activeReconstructionAnalysis).map(d => (
                 <div className="dims-row" key={d.label}><span className="dims-label">{d.label}</span><span className="dims-value">{d.value}</span></div>
               ))}
             </div>
           )}
           <div className="view-controls">
+            <button
+              aria-label="Toggle What-If Simulator"
+              title="Engineering What-If Simulator"
+              className={activeTab === 'whatif' && open ? 'active' : ''}
+              disabled={!ready}
+              onClick={() => {
+                setOpen(true);
+                setActiveTab(t => t === 'whatif' ? 'chat' : 'whatif');
+              }}
+            >
+              <Icon>tune</Icon>
+            </button>
             <button aria-label="Toggle automatic rotation" title="Auto-rotate" className={autoRotate ? 'active' : ''} disabled={!ready} onClick={() => setAutoRotate(value => !value)}><Icon>360</Icon></button>
             <button aria-label="Toggle wireframe" title="Wireframe" className={wire ? 'active' : ''} disabled={!ready} onClick={() => setWire(value => !value)}><Icon>grid_on</Icon></button>
             <button aria-label="Toggle grid" title="Grid" className={grid ? 'active' : ''} disabled={!ready} onClick={() => setGrid(value => !value)}><Icon>grid_3x3</Icon></button>
@@ -343,25 +736,60 @@ function Workbench() {
           {open && <>
             <header className="chat-head">
               <div>
-                <h2><Icon>smart_toy</Icon> RE:FORGE ENGINEER</h2>
+                <h2><Icon>{activeTab === 'chat' ? 'smart_toy' : 'tune'}</Icon> {activeTab === 'chat' ? 'RE:FORGE ENGINEER' : 'WHAT-IF SIMULATOR'}</h2>
                 <span>{ready ? `COMPONENT CONTEXT · ${label}${conf != null ? ` · ${conf}% CONF` : ''}` : 'AWAITING COMPONENT ANALYSIS'}</span>
               </div>
             </header>
-            <div className="thread" ref={thread}>
-              {!messages.length && (
-                <div className="ai-message"><Icon>smart_toy</Icon><p>I'm ready to analyse the reconstructed component. Ask about dimensions, material, or manufacturing constraints.</p></div>
-              )}
-              {messages.map((m, i) => (
-                <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
-              ))}
-              {thinking && <div className="ai-message thinking"><Icon>smart_toy</Icon><p>Engineer is thinking…</p></div>}
+            <div className="panel-tabs" role="tablist" aria-label="Workbench tools">
+              <button
+                role="tab"
+                aria-selected={activeTab === 'chat'}
+                className={`panel-tab ${activeTab === 'chat' ? 'active' : ''}`}
+                onClick={() => setActiveTab('chat')}
+              >
+                <Icon>smart_toy</Icon> ENGINEER CHAT
+              </button>
+              <button
+                role="tab"
+                aria-selected={activeTab === 'whatif'}
+                className={`panel-tab ${activeTab === 'whatif' ? 'active' : ''}`}
+                onClick={() => setActiveTab('whatif')}
+              >
+                <Icon>tune</Icon> WHAT-IF {modifiedCount > 0 && <span className="tab-badge">{modifiedCount}</span>}
+              </button>
             </div>
-            <form className="composer" onSubmit={send}>
-              <label className="sr-only" htmlFor="question">Ask ReForge Engineer</label>
-              <span>&gt;_</span>
-              <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask ReForge Engineer…" />
-              <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
-            </form>
+
+            {activeTab === 'chat' ? (
+              <>
+                <div className="thread" ref={thread}>
+                  {!messages.length && (
+                    <div className="ai-message"><Icon>smart_toy</Icon><p>I'm ready to analyse the reconstructed component. Ask about dimensions, material, or manufacturing constraints.</p></div>
+                  )}
+                  {messages.map((m, i) => (
+                    <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
+                  ))}
+                  {thinking && <div className="ai-message thinking"><Icon>smart_toy</Icon><p>Engineer is thinking…</p></div>}
+                </div>
+                <form className="composer" onSubmit={send}>
+                  <label className="sr-only" htmlFor="question">Ask ReForge Engineer</label>
+                  <span>&gt;_</span>
+                  <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask ReForge Engineer…" />
+                  <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
+                </form>
+              </>
+            ) : (
+              <WhatIfSimulator
+                analysis={analysis}
+                scenarioParams={scenarioParams}
+                setScenarioParams={setScenarioParams}
+                isGeometryValid={isGeometryValid}
+                geometryError={geometryError}
+                warnings={warnings}
+                impactStatus={impactStatus}
+                materialVolumeImpact={materialVolumeImpact}
+                ready={ready}
+              />
+            )}
           </>}
         </aside>
         {!open && <button className="reopen" onClick={() => setOpen(true)} aria-label="Open AI Engineer"><Icon>smart_toy</Icon></button>}
