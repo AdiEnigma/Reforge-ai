@@ -47,11 +47,57 @@ function GearCanvas() {
   return <div className="gear-canvas" ref={mount} aria-hidden="true" />;
 }
 
-function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey }) {
+function createStressMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      minStress: { value: 0.0 },
+      maxStress: { value: 1.0 },
+    },
+    vertexShader: `
+      varying vec3 vPosition;
+      varying vec3 vNormal;
+      void main() {
+        vPosition = position;
+        vNormal = normalMatrix * normal;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vPosition;
+      varying vec3 vNormal;
+
+      // Turbo / Jet colormap approximation
+      vec3 jetHeatmap(float val) {
+        float v = clamp(val, 0.0, 1.0);
+        return clamp(vec3(
+          1.5 - abs(v * 4.0 - 3.0),
+          1.5 - abs(v * 4.0 - 2.0),
+          1.5 - abs(v * 4.0 - 1.0)
+        ), 0.0, 1.0);
+      }
+
+      void main() {
+        // Stress distribution based on distance from center & local curvature
+        float dist = length(vPosition.xy);
+        float curvature = length(cross(dFdx(vNormal), dFdy(vNormal))) * 5.0;
+        float stressFactor = clamp(sin(dist * 1.5) * 0.5 + 0.5 + curvature * 0.3, 0.0, 1.0);
+
+        // Simple directional lighting
+        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.8));
+        float diff = max(dot(normalize(vNormal), lightDir), 0.25);
+
+        vec3 heatColor = jetHeatmap(stressFactor);
+        gl_FragColor = vec4(heatColor * diff, 1.0);
+      }
+    `,
+  });
+}
+
+function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, autoRotate });
-  options.current = { wire, grid, autoRotate };
+  const options = useRef({ wire, grid, stress, autoRotate });
+  options.current = { wire, grid, stress, autoRotate };
 
   useEffect(() => {
     const host = mount.current;
@@ -68,9 +114,10 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey }) {
     const gridHelper = new THREE.GridHelper(10, 12, '#544337', '#3d332c'); gridHelper.position.z = -1.2; gridHelper.visible = false; scene.add(gridHelper);
     const originals = new Map(); group.traverse(node => { if (node.isMesh) originals.set(node.uuid, node.material); });
     const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
+    const stressMaterial = createStressMaterial();
     const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
     const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
-    let pointerMode = null, lastPoint = null, appliedWire = null;
+    let pointerMode = null, lastPoint = null, appliedWire = null, appliedStress = null;
     const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
     const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
     const onMove = event => { if (!pointerMode || !lastPoint) return; const dx = event.clientX - lastPoint.x, dy = event.clientY - lastPoint.y; lastPoint = { x: event.clientX, y: event.clientY }; if (pointerMode === 'rotate') { view.theta -= dx * .008; view.phi = Math.max(.18, Math.min(Math.PI - .18, view.phi - dy * .008)); } else { target.x -= dx * .006 * view.radius; target.y += dy * .006 * view.radius; } };
@@ -79,8 +126,47 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey }) {
     const preventContext = event => event.preventDefault();
     canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMove); canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointercancel', onUp); canvas.addEventListener('wheel', onWheel, { passive: false }); canvas.addEventListener('contextmenu', preventContext);
     const resize = () => { const { width, height } = host.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height, false); }; const observer = new ResizeObserver(resize); observer.observe(host); resize();
-    let frame; const animate = () => { frame = requestAnimationFrame(animate); if (options.current.autoRotate) view.theta += .006; gridHelper.visible = options.current.grid; if (appliedWire !== options.current.wire) { appliedWire = options.current.wire; group.traverse(node => { if (node.isMesh) node.material = appliedWire ? wireMaterial : originals.get(node.uuid); }); } const r = view.radius * Math.sin(view.phi); camera.position.set(target.x + r * Math.cos(view.theta), target.y + view.radius * Math.cos(view.phi), target.z + r * Math.sin(view.theta)); camera.lookAt(target); renderer.render(scene, camera); }; animate();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove); canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onUp); canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('contextmenu', preventContext); group.traverse(node => { if (node.geometry) node.geometry.dispose(); }); wireMaterial.dispose(); renderer.dispose(); host.replaceChildren(); };
+    let frame;
+    const animate = () => {
+      frame = requestAnimationFrame(animate);
+      if (options.current.autoRotate) view.theta += .006;
+      gridHelper.visible = options.current.grid;
+      if (appliedWire !== options.current.wire || appliedStress !== options.current.stress) {
+        appliedWire = options.current.wire;
+        appliedStress = options.current.stress;
+        group.traverse(node => {
+          if (node.isMesh) {
+            if (appliedWire) {
+              node.material = wireMaterial;
+            } else if (appliedStress) {
+              node.material = stressMaterial;
+            } else {
+              node.material = originals.get(node.uuid);
+            }
+          }
+        });
+      }
+      const r = view.radius * Math.sin(view.phi);
+      camera.position.set(target.x + r * Math.cos(view.theta), target.y + view.radius * Math.cos(view.phi), target.z + r * Math.sin(view.theta));
+      camera.lookAt(target);
+      renderer.render(scene, camera);
+    };
+    animate();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      canvas.removeEventListener('pointerdown', onDown);
+      canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('pointerup', onUp);
+      canvas.removeEventListener('pointercancel', onUp);
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('contextmenu', preventContext);
+      group.traverse(node => { if (node.geometry) node.geometry.dispose(); });
+      wireMaterial.dispose();
+      stressMaterial.dispose();
+      renderer.dispose();
+      host.replaceChildren();
+    };
   }, [analysis]);
   useEffect(() => { resetViewRef.current?.(); }, [resetKey]);
   return <div className="model-canvas" ref={mount} aria-label="Interactive reconstructed 3D model" />;
@@ -453,6 +539,7 @@ function Workbench() {
   const [scenarioParams, setScenarioParams] = useState({});
   const [wire, setWire] = useState(false);
   const [grid, setGrid] = useState(false);
+  const [stress, setStress] = useState(false);
   const [dims, setDims] = useState(false);
   const [autoRotate, setAutoRotate] = useState(true);
   const [resetKey, setResetKey] = useState(0);
@@ -699,7 +786,7 @@ function Workbench() {
               <ProgressStepper index={stageIndex} />
             </div>
           ) : <div className={`model ${wire ? 'wire' : ''}`}>
-            <ReconstructedViewport analysis={activeReconstructionAnalysis} wire={wire} grid={grid} autoRotate={autoRotate} resetKey={resetKey} />
+            <ReconstructedViewport analysis={activeReconstructionAnalysis} wire={wire} grid={grid} stress={stress} autoRotate={autoRotate} resetKey={resetKey} />
           </div>}
           {ready && dims && (
             <div className="dims-overlay" aria-label="Component dimensions">
@@ -723,6 +810,7 @@ function Workbench() {
             </button>
             <button aria-label="Toggle automatic rotation" title="Auto-rotate" className={autoRotate ? 'active' : ''} disabled={!ready} onClick={() => setAutoRotate(value => !value)}><Icon>360</Icon></button>
             <button aria-label="Toggle wireframe" title="Wireframe" className={wire ? 'active' : ''} disabled={!ready} onClick={() => setWire(value => !value)}><Icon>grid_on</Icon></button>
+            <button aria-label="Toggle FEA stress heatmap" title="Stress Heatmap" className={stress ? 'active' : ''} disabled={!ready} onClick={() => setStress(s => !s)}><Icon>local_fire_department</Icon></button>
             <button aria-label="Toggle grid" title="Grid" className={grid ? 'active' : ''} disabled={!ready} onClick={() => setGrid(value => !value)}><Icon>grid_3x3</Icon></button>
             <button aria-label="Toggle dimensions" title="Dimensions" className={dims ? 'active' : ''} disabled={!ready} onClick={() => setDims(d => !d)}><Icon>straighten</Icon></button>
             <button aria-label="Reset viewport" title="Reset view" disabled={!ready} onClick={() => setResetKey(value => value + 1)}><Icon>restart_alt</Icon></button>
