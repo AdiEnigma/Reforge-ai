@@ -3,6 +3,11 @@ import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import './styles.css';
 import { analyzeComponent, sendChatMessage } from './lib/api.js';
+import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
+import { fetchMaterialAlternatives } from './lib/material-comparison.js';
+import { normalizeFeatures } from './lib/features.js';
+import { buildEngineeringContext, getEngineeringSuggestions } from './lib/engineering-context.js';
+import { buildDrawingModel, renderDrawingToSvg, exportSvg, exportPng, exportPdf } from './lib/drawing/index.js';
 import { buildModel, dimensionList, resolveLabel } from './lib/reconstruct.js';
 
 const AppContext = createContext();
@@ -47,11 +52,11 @@ function GearCanvas() {
   return <div className="gear-canvas" ref={mount} aria-hidden="true" />;
 }
 
-function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey }) {
+function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey, selectedFeatureId, hoveredFeatureId }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, autoRotate });
-  options.current = { wire, grid, autoRotate };
+  const options = useRef({ wire, grid, autoRotate, selectedFeatureId, hoveredFeatureId });
+  options.current = { wire, grid, autoRotate, selectedFeatureId, hoveredFeatureId };
 
   useEffect(() => {
     const host = mount.current;
@@ -66,11 +71,29 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey }) {
     const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
     const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
     const gridHelper = new THREE.GridHelper(10, 12, '#544337', '#3d332c'); gridHelper.position.z = -1.2; gridHelper.visible = false; scene.add(gridHelper);
-    const originals = new Map(); group.traverse(node => { if (node.isMesh) originals.set(node.uuid, node.material); });
+    
+    const originals = new Map();
+    group.traverse(node => { if (node.isMesh) originals.set(node.uuid, node.material); });
+    
     const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
+    const selectHighlightMat = new THREE.MeshStandardMaterial({
+      color: '#c9f88d',
+      emissive: '#c9f88d',
+      emissiveIntensity: 0.8,
+      metalness: 0.5,
+      roughness: 0.25,
+    });
+    const hoverHighlightMat = new THREE.MeshStandardMaterial({
+      color: '#ffb77f',
+      emissive: '#ffb77f',
+      emissiveIntensity: 0.5,
+      metalness: 0.5,
+      roughness: 0.35,
+    });
+
     const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
     const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
-    let pointerMode = null, lastPoint = null, appliedWire = null;
+    let pointerMode = null, lastPoint = null, appliedWire = null, appliedActiveFeature = undefined;
     const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
     const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
     const onMove = event => { if (!pointerMode || !lastPoint) return; const dx = event.clientX - lastPoint.x, dy = event.clientY - lastPoint.y; lastPoint = { x: event.clientX, y: event.clientY }; if (pointerMode === 'rotate') { view.theta -= dx * .008; view.phi = Math.max(.18, Math.min(Math.PI - .18, view.phi - dy * .008)); } else { target.x -= dx * .006 * view.radius; target.y += dy * .006 * view.radius; } };
@@ -79,9 +102,62 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey }) {
     const preventContext = event => event.preventDefault();
     canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMove); canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointercancel', onUp); canvas.addEventListener('wheel', onWheel, { passive: false }); canvas.addEventListener('contextmenu', preventContext);
     const resize = () => { const { width, height } = host.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height, false); }; const observer = new ResizeObserver(resize); observer.observe(host); resize();
-    let frame; const animate = () => { frame = requestAnimationFrame(animate); if (options.current.autoRotate) view.theta += .006; gridHelper.visible = options.current.grid; if (appliedWire !== options.current.wire) { appliedWire = options.current.wire; group.traverse(node => { if (node.isMesh) node.material = appliedWire ? wireMaterial : originals.get(node.uuid); }); } const r = view.radius * Math.sin(view.phi); camera.position.set(target.x + r * Math.cos(view.theta), target.y + view.radius * Math.cos(view.phi), target.z + r * Math.sin(view.theta)); camera.lookAt(target); renderer.render(scene, camera); }; animate();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove); canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onUp); canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('contextmenu', preventContext); group.traverse(node => { if (node.geometry) node.geometry.dispose(); }); wireMaterial.dispose(); renderer.dispose(); host.replaceChildren(); };
+    
+    let frame;
+    const animate = () => {
+      frame = requestAnimationFrame(animate);
+      if (options.current.autoRotate) view.theta += .006;
+      gridHelper.visible = options.current.grid;
+
+      const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
+      const isSelected = Boolean(options.current.selectedFeatureId);
+
+      if (appliedWire !== options.current.wire || appliedActiveFeature !== activeFeatureId) {
+        appliedWire = options.current.wire;
+        appliedActiveFeature = activeFeatureId;
+
+        group.traverse(node => {
+          if (!node.isMesh) return;
+
+          if (node.userData?.isHighlightOnly) {
+            node.visible = Boolean(activeFeatureId && node.userData.featureId === activeFeatureId);
+          } else {
+            if (appliedWire) {
+              node.material = wireMaterial;
+            } else if (activeFeatureId && (node.userData?.featureId === activeFeatureId || node.parent?.userData?.featureId === activeFeatureId)) {
+              node.material = isSelected ? selectHighlightMat : hoverHighlightMat;
+            } else {
+              node.material = originals.get(node.uuid) || node.material;
+            }
+          }
+        });
+      }
+
+      const r = view.radius * Math.sin(view.phi);
+      camera.position.set(target.x + r * Math.cos(view.theta), target.y + view.radius * Math.cos(view.phi), target.z + r * Math.sin(view.theta));
+      camera.lookAt(target);
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      canvas.removeEventListener('pointerdown', onDown);
+      canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('pointerup', onUp);
+      canvas.removeEventListener('pointercancel', onUp);
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('contextmenu', preventContext);
+      group.traverse(node => { if (node.geometry) node.geometry.dispose(); });
+      wireMaterial.dispose();
+      selectHighlightMat.dispose();
+      hoverHighlightMat.dispose();
+      renderer.dispose();
+      host.replaceChildren();
+    };
   }, [analysis]);
+
   useEffect(() => { resetViewRef.current?.(); }, [resetKey]);
   return <div className="model-canvas" ref={mount} aria-label="Interactive reconstructed 3D model" />;
 }
@@ -147,12 +223,765 @@ function buildReference(fields) {
   return reference;
 }
 
+// ─── Manufacturing Intelligence Panel (T25) ───────────────────────────────────
+
+function MfgSkeleton() {
+  return (
+    <div className="mfg-skeleton" aria-busy="true" aria-label="Loading manufacturing estimate">
+      <div className="mfg-skel-line wide" />
+      <div className="mfg-skel-line medium" />
+      <div className="mfg-skel-line narrow" />
+      <div className="mfg-skel-line medium" />
+    </div>
+  );
+}
+
+function formatINR(n) {
+  return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(n);
+}
+
+function ManufacturingPanel({ analysis, onData, quantity: externalQuantity, setQuantity: externalSetQuantity }) {
+  const [internalQuantity, setInternalQuantity] = useState(1);
+  const quantity = externalQuantity ?? internalQuantity;
+  const setQuantity = externalSetQuantity ?? setInternalQuantity;
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [assumptionsOpen, setAssumptionsOpen] = useState(false);
+  const [altOpen, setAltOpen] = useState(false);
+
+  useEffect(() => {
+    if (!analysis) return;
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    const t = setTimeout(() => {
+      fetchManufacturingIntelligence(analysis, quantity)
+        .then((result) => {
+          if (!cancelled) {
+            setData(result);
+            onData?.(result);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setError(err.message || 'Estimate failed.');
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [analysis, quantity]);
+
+  // Insufficient-data case (backend returns { error: 'insufficient-data' } inside the 200)
+  const isInsufficient = data?.error === 'insufficient-data';
+
+  return (
+    <div className="mfg-panel" aria-label="Manufacturing Intelligence">
+      <div className="mfg-header">
+        <span className="cad mfg-title"><Icon>receipt_long</Icon> MFG INTEL</span>
+        <div className="mfg-qty-wrap">
+          <label htmlFor="mfg-qty" className="mfg-qty-label">QTY</label>
+          <input
+            id="mfg-qty"
+            className="mfg-qty-input"
+            type="number"
+            min="1"
+            max="100000"
+            step="1"
+            value={quantity}
+            onChange={e => {
+              const v = Math.max(1, Math.min(100000, Math.round(Number(e.target.value) || 1)));
+              setQuantity(v);
+            }}
+            aria-label="Production quantity"
+          />
+        </div>
+      </div>
+
+      {loading && <MfgSkeleton />}
+
+      {!loading && error && (
+        <p className="mfg-error" role="alert">
+          <Icon>error_outline</Icon> {error}
+        </p>
+      )}
+
+      {!loading && !error && isInsufficient && (
+        <p className="mfg-insufficient">
+          <Icon>info</Icon> Not enough geometry data to estimate cost. Provide clearer images or reference dimensions.
+        </p>
+      )}
+
+      {!loading && !error && data && !isInsufficient && (
+        <>
+          {/* Cost range — primary headline */}
+          <div className="mfg-section">
+            <span className="mfg-label">EST. COST / UNIT</span>
+            <div className="mfg-cost-range">
+              ₹{formatINR(data.cost.low)}
+              <span className="mfg-cost-sep">–</span>
+              ₹{formatINR(data.cost.high)}
+            </div>
+            <div className="mfg-cost-currency">INR · per unit at qty {data.quantity}</div>
+          </div>
+
+          {/* Mass & volume */}
+          <div className="mfg-section mfg-meta-row">
+            <span><span className="mfg-label">MASS</span> {data.massKg.toFixed(3)} kg</span>
+            <span><span className="mfg-label">VOL</span> {data.volumeCm3.toFixed(2)} cm³</span>
+            <span className={`mfg-source-badge ${data.material.source === 'fallback-default' ? 'warn' : ''}`}>
+              {data.material.label}
+            </span>
+          </div>
+
+          {/* Process recommendation */}
+          <div className="mfg-section">
+            <span className="mfg-label">RECOMMENDED PROCESS</span>
+            <div className="mfg-process-name">{data.process.recommended.label}</div>
+            <p className="mfg-reasoning">{data.process.reasoning}</p>
+
+            {data.process.alternatives.length > 0 && (
+              <>
+                <button
+                  className="mfg-toggle"
+                  onClick={() => setAltOpen(o => !o)}
+                  aria-expanded={altOpen}
+                >
+                  {altOpen ? '▲' : '▶'} {data.process.alternatives.length} alternative{data.process.alternatives.length > 1 ? 's' : ''}
+                </button>
+                {altOpen && (
+                  <ul className="mfg-alt-list">
+                    {data.process.alternatives.map(alt => (
+                      <li key={alt.key}>
+                        <strong>{alt.label}</strong> — {alt.tradeoff}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Lead time */}
+          <div className="mfg-section mfg-lead">
+            <span className="mfg-label">LEAD TIME</span>
+            <span className="mfg-lead-value">{data.leadTime.lowDays}–{data.leadTime.highDays} working days</span>
+          </div>
+
+          {/* Cost breakdown */}
+          <div className="mfg-section">
+            <span className="mfg-label">BREAKDOWN (per unit)</span>
+            <div className="mfg-breakdown">
+              <span>Material</span><span>₹{formatINR(data.cost.breakdown.materialCostINR)}</span>
+              <span>Machining</span><span>₹{formatINR(data.cost.breakdown.machiningCostINR)}</span>
+              {data.cost.breakdown.toolingPerUnitINR > 0 && (
+                <><span>Tooling (÷qty)</span><span>₹{formatINR(data.cost.breakdown.toolingPerUnitINR)}</span></>
+              )}
+              <span>Overhead (20%)</span><span>₹{formatINR(data.cost.breakdown.overheadINR)}</span>
+            </div>
+          </div>
+
+          {/* Assumptions — visually de-emphasised */}
+          {data.assumptions?.length > 0 && (
+            <div className="mfg-assumptions">
+              <button
+                className="mfg-toggle"
+                onClick={() => setAssumptionsOpen(o => !o)}
+                aria-expanded={assumptionsOpen}
+              >
+                {assumptionsOpen ? '▲' : '▶'} {data.assumptions.length} assumption{data.assumptions.length > 1 ? 's' : ''} applied
+              </button>
+              {assumptionsOpen && (
+                <ul className="mfg-assumption-list">
+                  {data.assumptions.map((a, i) => <li key={i}>{a}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <p className="mfg-disclaimer">
+            Illustrative estimate · India job-shop rates (v1 placeholders). Not a real quote.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Material Comparison Panel ───────────────────────────────────────────────
+
+const PROP_LABELS = {
+  corrosionResistance: 'Corrosion',
+  wearResistance: 'Wear',
+  machinability: 'Machinability',
+  strengthLevel: 'Strength',
+};
+
+function PropBadge({ label, level }) {
+  return (
+    <span className={`matcomp-prop-badge ${level}`}>
+      {label}: {level.toUpperCase()}
+    </span>
+  );
+}
+
+function DeltaChip({ value, unit }) {
+  const abs = Math.abs(value);
+  const cls = value <= -15 ? 'down' : value >= 15 ? 'up' : 'flat';
+  const arrow = value <= -15 ? '↓' : value >= 15 ? '↑' : '≈';
+  const text = value <= -15 ? `${arrow} ${abs}% ${unit === 'weight' ? 'lighter' : 'cheaper'}`
+             : value >= 15  ? `${arrow} ${abs}% ${unit === 'weight' ? 'heavier' : 'more expensive'}`
+             : `${arrow} similar ${unit}`;
+  return <span className={`matcomp-delta ${cls}`}>{text}</span>;
+}
+
+function ScoreBar({ score }) {
+  return (
+    <div className="matcomp-score-wrap" title={`Trade-off score: ${score}/100`}>
+      <div className="matcomp-score-bar" style={{ width: `${score}%` }} />
+      <span className="matcomp-score-label">{score}/100</span>
+    </div>
+  );
+}
+
+function MaterialComparisonPanel({ analysis, manufacturingIntelligence }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [tableOpen, setTableOpen] = useState(false);
+
+  useEffect(() => {
+    if (!analysis || !manufacturingIntelligence || manufacturingIntelligence.error) return;
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    fetchMaterialAlternatives(analysis, manufacturingIntelligence)
+      .then(result => { if (!cancelled) setData(result); })
+      .catch(err => { if (!cancelled) setError(err.message || 'Material comparison failed.'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [analysis, manufacturingIntelligence]);
+
+  const isInsufficient = data?.error === 'insufficient-data';
+
+  return (
+    <div className="matcomp-panel" aria-label="Material Alternatives">
+      <div className="matcomp-header">
+        <span className="cad matcomp-title"><Icon>layers</Icon> MATERIAL OPTIONS</span>
+      </div>
+
+      {loading && (
+        <div className="mfg-skeleton" style={{ padding: '12px 10px' }} aria-busy="true">
+          <div className="mfg-skel-line wide" />
+          <div className="mfg-skel-line medium" />
+          <div className="mfg-skel-line narrow" />
+        </div>
+      )}
+
+      {!loading && error && (
+        <p className="mfg-error" role="alert"><Icon>error_outline</Icon> {error}</p>
+      )}
+
+      {!loading && !error && isInsufficient && (
+        <div className="matcomp-insufficient">
+          <Icon>info</Icon>
+          <p>Material comparison unavailable — a reliable part volume could not be estimated.</p>
+        </div>
+      )}
+
+      {!loading && !error && data && !isInsufficient && (
+        <>
+          {/* Current material */}
+          <div className="matcomp-section">
+            <span className="mfg-label">
+              {data.current.materialSource === 'fallback-default' ? 'CURRENT ASSUMPTION' : 'CURRENT MATERIAL'}
+            </span>
+            {data.current.materialSource === 'fallback-default' && (
+              <p className="matcomp-fallback-warn">
+                <Icon>warning</Icon> Material was not confidently identified. Comparison uses {data.current.label} as the baseline.
+              </p>
+            )}
+            <div className="matcomp-current-card">
+              <div className="matcomp-material-name">{data.current.label}</div>
+              <div className="matcomp-current-stats">
+                <span><span className="mfg-label">MASS</span> {data.current.massKg.toFixed(3)} kg</span>
+                <span><span className="mfg-label">MAT. COST</span> ₹{formatINR(data.current.materialCostINR)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Alternative cards */}
+          {data.alternatives.length > 0 && (
+            <div className="matcomp-section">
+              <span className="mfg-label">COMPARE MATERIALS</span>
+              <div className="matcomp-alt-list">
+                {data.alternatives.map(alt => (
+                  <div key={alt.key} className="matcomp-alt-card">
+                    <div className="matcomp-alt-header">
+                      <span className="matcomp-material-name">{alt.label}</span>
+                      {alt.badge && <span className="matcomp-badge">{alt.badge}</span>}
+                    </div>
+                    <div className="matcomp-alt-stats">
+                      <span>{alt.massKg.toFixed(3)} kg</span>
+                      <span>₹{formatINR(alt.materialCostINR)}</span>
+                    </div>
+                    <div className="matcomp-deltas">
+                      <DeltaChip value={alt.weightChangePercent} unit="weight" />
+                      <DeltaChip value={alt.materialCostChangePercent} unit="cost" />
+                    </div>
+                    <div className="matcomp-props">
+                      {Object.entries(PROP_LABELS).map(([key, label]) =>
+                        alt.properties[key] ? (
+                          <PropBadge key={key} label={label} level={alt.properties[key]} />
+                        ) : null
+                      )}
+                    </div>
+                    <p className="matcomp-why"><span className="mfg-label">WHY?</span> {alt.whyConsider}</p>
+                    <p className="matcomp-tradeoff-text">{alt.tradeoff}</p>
+                    <ScoreBar score={alt.tradeoffScore} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Comparison table */}
+          <div className="matcomp-section">
+            <button className="mfg-toggle" onClick={() => setTableOpen(o => !o)} aria-expanded={tableOpen}>
+              {tableOpen ? '▲' : '▶'} Comparison table
+            </button>
+            {tableOpen && (
+              <div className="matcomp-table-wrap">
+                <table className="matcomp-table">
+                  <thead>
+                    <tr>
+                      <th>Material</th>
+                      <th>Mass</th>
+                      <th>Mat. Cost</th>
+                      <th>Mass Δ</th>
+                      <th>Cost Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="matcomp-table-current">
+                      <td>{data.current.label}</td>
+                      <td>{data.current.massKg.toFixed(2)} kg</td>
+                      <td>₹{formatINR(data.current.materialCostINR)}</td>
+                      <td>—</td>
+                      <td>—</td>
+                    </tr>
+                    {data.alternatives.map(alt => (
+                      <tr key={alt.key}>
+                        <td>{alt.label}</td>
+                        <td>{alt.massKg.toFixed(2)} kg</td>
+                        <td>₹{formatINR(alt.materialCostINR)}</td>
+                        <td className={alt.weightChangePercent <= -15 ? 'matcomp-td-down' : alt.weightChangePercent >= 15 ? 'matcomp-td-up' : ''}>
+                          {alt.weightChangePercent > 0 ? '+' : ''}{alt.weightChangePercent}%
+                        </td>
+                        <td className={alt.materialCostChangePercent <= -15 ? 'matcomp-td-down' : alt.materialCostChangePercent >= 15 ? 'matcomp-td-up' : ''}>
+                          {alt.materialCostChangePercent > 0 ? '+' : ''}{alt.materialCostChangePercent}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <p className="mfg-disclaimer">
+            Estimates for comparison only · Based on current geometry estimate · Not engineering-certified.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Feature Identification Panel ──────────────────────────────────────────
+
+function FeatureConfidenceBadge({ confidence }) {
+  if (typeof confidence !== 'number') return null;
+  const level = confidence >= 0.85 ? 'high' : confidence >= 0.65 ? 'medium' : 'low';
+  const label = level === 'high' ? 'High' : level === 'medium' ? 'Medium' : 'Low';
+  return <span className={`feature-badge ${level}`} title={`Confidence: ${Math.round(confidence * 100)}%`}>{label}</span>;
+}
+
+function FeatureDimChip({ metadata }) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const items = [];
+  if (metadata.diameter != null) items.push(`Ø${metadata.diameter} mm`);
+  if (metadata.count != null && metadata.count > 1) items.push(`${metadata.count} holes`);
+  if (metadata.teeth != null) items.push(`${metadata.teeth} teeth`);
+  if (metadata.module != null) items.push(`M${metadata.module}`);
+  if (metadata.depth != null) items.push(`L:${metadata.depth}mm`);
+  if (metadata.maxStep != null) items.push(`Step:${metadata.maxStep.toFixed(1)}mm`);
+
+  if (!items.length) return null;
+  return (
+    <div className="feature-dim-chips">
+      {items.map((it, idx) => (
+        <span key={idx} className="feature-dim-chip">{it}</span>
+      ))}
+    </div>
+  );
+}
+
+function FeatureIdentificationPanel({
+  features,
+  selectedFeatureId,
+  hoveredFeatureId,
+  onSelectFeature,
+  onHoverFeature,
+}) {
+  const hasLowConfidence = features.some(f => f.confidence < 0.65);
+
+  return (
+    <div className="features-panel" aria-label="Detected Engineering Features">
+      <div className="features-header">
+        <span className="cad features-title">
+          <Icon>center_focus_strong</Icon> DETECTED FEATURES
+        </span>
+        <span className="features-count-badge">{features.length}</span>
+      </div>
+
+      {features.length === 0 ? (
+        <div className="features-empty">
+          <Icon>info</Icon>
+          <p>No individual engineering features could be identified from the current analysis.</p>
+        </div>
+      ) : (
+        <>
+          {hasLowConfidence && (
+            <div className="features-warn">
+              <Icon>warning</Icon>
+              <span>Some features are uncertain. Review in 3D before making manufacturing decisions.</span>
+            </div>
+          )}
+
+          <div className="features-list" role="list">
+            {features.map(f => {
+              const isSelected = selectedFeatureId === f.id;
+              const isHovered = hoveredFeatureId === f.id && !isSelected;
+              const hasGeometry = Boolean(f.geometryRef);
+
+              return (
+                <div
+                  key={f.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={isSelected}
+                  aria-label={`Select ${f.label}`}
+                  className={`feature-card ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''} ${!hasGeometry ? 'no-mesh' : ''}`}
+                  onClick={() => onSelectFeature(isSelected ? null : f.id)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectFeature(isSelected ? null : f.id);
+                    }
+                  }}
+                  onMouseEnter={() => onHoverFeature(f.id)}
+                  onMouseLeave={() => onHoverFeature(null)}
+                >
+                  <div className="feature-card-header">
+                    <div className="feature-card-title-row">
+                      <span className={`feature-status-dot ${isSelected ? 'active' : ''}`} />
+                      <span className="feature-card-label">{f.label}</span>
+                    </div>
+                    {isSelected && <span className="feature-selected-tag">SELECTED</span>}
+                  </div>
+
+                  <FeatureDimChip metadata={f.metadata} />
+
+                  <p className="feature-desc">{f.description}</p>
+
+                  <div className="feature-card-footer">
+                    <FeatureConfidenceBadge confidence={f.confidence} />
+                    {!hasGeometry ? (
+                      <span className="feature-no-mesh-tag" title="Detected in analysis but not separately selectable in 3D">
+                        Analysis only
+                      </span>
+                    ) : (
+                      <span className="feature-3d-tag">
+                        <Icon>view_in_ar</Icon> 3D Highlight
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="mfg-disclaimer">
+            Click any feature to highlight in 3D · Hover for quick preview.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Automatic Engineering Drawing Viewer Modal ────────────────────────────
+
+function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose }) {
+  const [revision, setRevision] = useState('A');
+  const [viewFilter, setViewFilter] = useState('all');
+  const [showDimensions, setShowDimensions] = useState(true);
+  const [showCenterlines, setShowCenterlines] = useState(true);
+  const [showHiddenLines, setShowHiddenLines] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [exporting, setExporting] = useState(false);
+  const [activeDimTooltip, setActiveDimTooltip] = useState(null);
+
+  const drawingModel = useMemo(() => {
+    return buildDrawingModel({
+      analysis,
+      manufacturingIntelligence,
+      revision,
+    });
+  }, [analysis, manufacturingIntelligence, revision]);
+
+  const svgMarkup = useMemo(() => {
+    return renderDrawingToSvg(drawingModel, {
+      showDimensions,
+      showCenterlines,
+      showHiddenLines,
+      viewFilter,
+    });
+  }, [drawingModel, showDimensions, showCenterlines, showHiddenLines, viewFilter]);
+
+  const handleExportSvg = () => {
+    exportSvg(svgMarkup, `${drawingModel.drawingId}-${drawingModel.partName.toLowerCase().replace(/[\s/]+/g, '-')}-rev${revision}.svg`);
+  };
+
+  const handleExportPng = async () => {
+    setExporting(true);
+    try {
+      await exportPng(svgMarkup, `${drawingModel.drawingId}-${drawingModel.partName.toLowerCase().replace(/[\s/]+/g, '-')}-rev${revision}.png`, 3);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExportPdf = async () => {
+    setExporting(true);
+    try {
+      await exportPdf(svgMarkup, drawingModel, `${drawingModel.drawingId}-${drawingModel.partName.toLowerCase().replace(/[\s/]+/g, '-')}-rev${revision}.pdf`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleWheel = (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 0.88;
+    setZoom((z) => Math.max(0.4, Math.min(4.0, z * factor)));
+  };
+
+  const handleMouseDown = (e) => {
+    if (e.target.closest('.cad-dim')) {
+      const dimEl = e.target.closest('.cad-dim');
+      const source = dimEl.getAttribute('data-source');
+      const conf = dimEl.getAttribute('data-confidence');
+      const dimId = dimEl.getAttribute('data-dim-id');
+      setActiveDimTooltip({
+        x: e.clientX,
+        y: e.clientY,
+        source: source === 'geometryRecipe' ? 'Geometry Recipe (Verified)' : 'AI-Estimated Analysis',
+        confidence: conf ? `${Math.round(Number(conf) * 100)}%` : '80%',
+        isEstimated: source !== 'geometryRecipe',
+        id: dimId,
+      });
+      return;
+    }
+    setActiveDimTooltip(null);
+    setIsPanning(true);
+    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isPanning) return;
+    setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+  };
+
+  const handleMouseUp = () => {
+    setIsPanning(false);
+  };
+
+  const resetView = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setActiveDimTooltip(null);
+  };
+
+  return (
+    <div className="drawing-modal-backdrop" role="dialog" aria-modal="true" aria-label="Engineering Drawing Generator">
+      <div className="drawing-modal-content">
+        <header className="drawing-modal-header">
+          <div className="drawing-title-row">
+            <button className="back drawing-back-btn" onClick={onClose}>
+              <Icon>arrow_back</Icon> Back to 3D Workbench
+            </button>
+            <span className="drawing-dwg-badge">{drawingModel.drawingId} // REV {revision}</span>
+            <span className="drawing-part-name">{drawingModel.partName}</span>
+          </div>
+
+          <div className="drawing-export-group">
+            <button className="drawing-export-btn" disabled={exporting} onClick={handleExportSvg}>
+              <Icon>download</Icon> SVG
+            </button>
+            <button className="drawing-export-btn" disabled={exporting} onClick={handleExportPng}>
+              <Icon>image</Icon> PNG (3x)
+            </button>
+            <button className="drawing-export-btn primary" disabled={exporting} onClick={handleExportPdf}>
+              <Icon>picture_as_pdf</Icon> PDF (A4)
+            </button>
+          </div>
+        </header>
+
+        {/* Toolbar */}
+        <div className="drawing-toolbar">
+          <div className="drawing-toolbar-section">
+            <span className="drawing-toolbar-label">VIEW:</span>
+            {['all', 'front', 'top', 'side'].map((v) => (
+              <button
+                key={v}
+                className={`drawing-pill ${viewFilter === v ? 'active' : ''}`}
+                onClick={() => setViewFilter(v)}
+              >
+                {v.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          <div className="drawing-toolbar-section">
+            <span className="drawing-toolbar-label">LAYERS:</span>
+            <label className="drawing-toggle-label">
+              <input
+                type="checkbox"
+                checked={showDimensions}
+                onChange={(e) => setShowDimensions(e.target.checked)}
+              />
+              <span>Dims</span>
+            </label>
+            <label className="drawing-toggle-label">
+              <input
+                type="checkbox"
+                checked={showCenterlines}
+                onChange={(e) => setShowCenterlines(e.target.checked)}
+              />
+              <span>Centerlines</span>
+            </label>
+            <label className="drawing-toggle-label">
+              <input
+                type="checkbox"
+                checked={showHiddenLines}
+                onChange={(e) => setShowHiddenLines(e.target.checked)}
+              />
+              <span>Hidden</span>
+            </label>
+          </div>
+
+          <div className="drawing-toolbar-section">
+            <span className="drawing-toolbar-label">REV:</span>
+            <input
+              type="text"
+              maxLength={3}
+              className="drawing-rev-input"
+              value={revision}
+              onChange={(e) => setRevision(e.target.value.toUpperCase())}
+            />
+          </div>
+
+          <div className="drawing-toolbar-section drawing-zoom-section">
+            <button className="drawing-zoom-btn" title="Zoom Out" onClick={() => setZoom((z) => Math.max(0.4, z * 0.85))}>
+              <Icon>remove</Icon>
+            </button>
+            <span className="drawing-zoom-label">{Math.round(zoom * 100)}%</span>
+            <button className="drawing-zoom-btn" title="Zoom In" onClick={() => setZoom((z) => Math.min(4.0, z * 1.15))}>
+              <Icon>add</Icon>
+            </button>
+            <button className="drawing-zoom-btn" title="Fit to Page" onClick={resetView}>
+              <Icon>fit_screen</Icon> Fit
+            </button>
+          </div>
+        </div>
+
+        {/* AI Estimation Banner */}
+        {drawingModel.isEstimated && (
+          <div className="drawing-banner" role="alert">
+            <Icon>warning</Icon>
+            <span>
+              <strong>AI-Estimated Geometry:</strong> Dimensions and profile were reconstructed from imagery. Verify critical dimensions and tolerances before manufacturing.
+            </span>
+          </div>
+        )}
+
+        {/* Main Canvas Viewport */}
+        <div
+          className={`drawing-viewport-wrap ${isPanning ? 'panning' : ''}`}
+          onWheel={handleWheel}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+        >
+          <div
+            className="drawing-sheet-container"
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: 'center center',
+            }}
+            dangerouslySetInnerHTML={{ __html: svgMarkup }}
+          />
+
+          {activeDimTooltip && (
+            <div
+              className="drawing-dim-tooltip"
+              style={{ left: activeDimTooltip.x + 12, top: activeDimTooltip.y + 12 }}
+            >
+              <div className="drawing-tooltip-title">Dimension Inspection</div>
+              <div className="drawing-tooltip-row">
+                <span>Source:</span> <strong>{activeDimTooltip.source}</strong>
+              </div>
+              <div className="drawing-tooltip-row">
+                <span>Confidence:</span> <strong>{activeDimTooltip.confidence}</strong>
+              </div>
+              {activeDimTooltip.isEstimated && (
+                <div className="drawing-tooltip-warn">Verify dimension before production tooling.</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <footer className="drawing-modal-footer">
+          <span>ISO A4 Landscape · Drag to Pan · Scroll to Zoom · Click dimensions to inspect confidence</span>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function Upload() {
   const { images, setImages, setPage, stage, setStage, setAnalysis } = useApp();
   const input = useRef(null);
   const [reference, setReference] = useState({});
   const [error, setError] = useState('');
   const busy = stage === 'analysing';
+
+  // Clear images + analysis every time the Upload page is freshly opened
+  useEffect(() => {
+    setImages([]);
+    setAnalysis(null);
+    setStage('idle');
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const add = files => {
     const accepted = [...files].filter(f => f.type.startsWith('image/'));
@@ -175,6 +1004,7 @@ function Upload() {
       setStage('idle');
     }
   };
+
 
   return (
     <>
@@ -247,11 +1077,19 @@ function Upload() {
 }
 
 function Workbench() {
-  const { setPage, images, analysis, stage, setStage } = useApp();
+  const { setPage, images, analysis, stage, setStage, analysisVersion } = useApp();
   const [open, setOpen] = useState(true);
   const [wire, setWire] = useState(false);
   const [grid, setGrid] = useState(false);
   const [dims, setDims] = useState(false);
+  const [showMfg, setShowMfg] = useState(false);
+  const [showMatComp, setShowMatComp] = useState(false);
+  const [showFeatures, setShowFeatures] = useState(true);
+  const [showDrawing, setShowDrawing] = useState(false);
+  const [selectedFeatureId, setSelectedFeatureId] = useState(null);
+  const [hoveredFeatureId, setHoveredFeatureId] = useState(null);
+  const [quantity, setQuantity] = useState(1);
+  const [mfgData, setMfgData] = useState(null);
   const [autoRotate, setAutoRotate] = useState(true);
   const [resetKey, setResetKey] = useState(0);
   const [messages, setMessages] = useState([]);
@@ -260,7 +1098,11 @@ function Workbench() {
   const historyRef = useRef([]);
   const thread = useRef(null);
 
-  useEffect(() => thread.current?.scrollTo({ top: thread.current.scrollHeight, behavior: 'smooth' }), [messages, thinking]);
+  useEffect(() => {
+    if (thread.current) {
+      thread.current.scrollTo({ top: thread.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, [messages, thinking]);
 
   useEffect(() => {
     if (!analysis) return;
@@ -274,24 +1116,61 @@ function Workbench() {
     }
   }, [stage, analysis, setStage]);
 
-  const send = async (e) => {
-    e.preventDefault();
-    if (!text.trim() || thinking) return;
-    const userMsg = text.trim();
-    setMessages(m => [...m, { role: 'user', text: userMsg }]);
-    setText('');
+  const ready = stage === 'ready' && analysis;
+  const features = useMemo(() => normalizeFeatures(analysis), [analysis]);
+
+  // Build structured Engineering Context for Copilot
+  const engineeringContext = useMemo(() => {
+    if (!ready) return null;
+    return buildEngineeringContext({
+      analysis,
+      manufacturingIntelligence: mfgData,
+      quantity,
+      features,
+      materialAlternatives: null,
+    });
+  }, [ready, analysis, mfgData, quantity, features]);
+
+  // Generate context-aware suggestions
+  const suggestions = useMemo(() => {
+    return getEngineeringSuggestions(engineeringContext);
+  }, [engineeringContext]);
+
+  const send = async (e, customMsg = null) => {
+    if (e) e.preventDefault();
+    const msgToSend = typeof customMsg === 'string' ? customMsg.trim() : text.trim();
+    if (!msgToSend || thinking) return;
+    setMessages(m => [...m, { role: 'user', text: msgToSend }]);
+    if (!customMsg) setText('');
     setThinking(true);
     try {
-      const reply = await sendChatMessage(userMsg, analysis, historyRef.current);
+      const reply = await sendChatMessage(msgToSend, engineeringContext || analysis, historyRef.current);
       setMessages(m => [...m, { role: 'ai', text: reply }]);
-      historyRef.current = [...historyRef.current, { role: 'user', text: userMsg }, { role: 'model', text: reply }];
+      historyRef.current = [...historyRef.current, { role: 'user', text: msgToSend }, { role: 'model', text: reply }];
     } catch (err) {
       setMessages(m => [...m, { role: 'ai', text: `[ENGINEER OFFLINE] ${err.message}`, error: true }]);
     }
     setThinking(false);
   };
 
-  const ready = stage === 'ready' && analysis;
+  // Auto-show Manufacturing panel when model becomes ready
+  useEffect(() => {
+    if (ready) {
+      setShowMfg(true);
+      setShowFeatures(true);
+    }
+  }, [ready]);
+
+  // Reset comparison, features, and chat when a new analysis is loaded
+  useEffect(() => {
+    setMfgData(null);
+    setShowMatComp(false);
+    setSelectedFeatureId(null);
+    setHoveredFeatureId(null);
+    setMessages([]);
+    historyRef.current = [];
+  }, [analysis]);
+
   const label = analysis ? resolveLabel(analysis) : null;
   const conf = analysis && typeof analysis.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
   const stageIndex = analysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
@@ -318,7 +1197,15 @@ function Workbench() {
               <ProgressStepper index={stageIndex} />
             </div>
           ) : <div className={`model ${wire ? 'wire' : ''}`}>
-            <ReconstructedViewport analysis={analysis} wire={wire} grid={grid} autoRotate={autoRotate} resetKey={resetKey} />
+            <ReconstructedViewport
+              analysis={analysis}
+              wire={wire}
+              grid={grid}
+              autoRotate={autoRotate}
+              resetKey={resetKey}
+              selectedFeatureId={selectedFeatureId}
+              hoveredFeatureId={hoveredFeatureId}
+            />
           </div>}
           {ready && dims && (
             <div className="dims-overlay" aria-label="Component dimensions">
@@ -327,39 +1214,121 @@ function Workbench() {
               ))}
             </div>
           )}
+          <div className="viewport-overlay-panels">
+            {ready && showFeatures && (
+              <FeatureIdentificationPanel
+                features={features}
+                selectedFeatureId={selectedFeatureId}
+                hoveredFeatureId={hoveredFeatureId}
+                onSelectFeature={setSelectedFeatureId}
+                onHoverFeature={setHoveredFeatureId}
+              />
+            )}
+            {ready && showMfg && (
+              <ManufacturingPanel
+                analysis={analysis}
+                onData={setMfgData}
+                quantity={quantity}
+                setQuantity={setQuantity}
+              />
+            )}
+            {ready && showMatComp && mfgData && !mfgData.error && (
+              <MaterialComparisonPanel analysis={analysis} manufacturingIntelligence={mfgData} />
+            )}
+          </div>
           <div className="view-controls">
             <button aria-label="Toggle automatic rotation" title="Auto-rotate" className={autoRotate ? 'active' : ''} disabled={!ready} onClick={() => setAutoRotate(value => !value)}><Icon>360</Icon></button>
             <button aria-label="Toggle wireframe" title="Wireframe" className={wire ? 'active' : ''} disabled={!ready} onClick={() => setWire(value => !value)}><Icon>grid_on</Icon></button>
             <button aria-label="Toggle grid" title="Grid" className={grid ? 'active' : ''} disabled={!ready} onClick={() => setGrid(value => !value)}><Icon>grid_3x3</Icon></button>
             <button aria-label="Toggle dimensions" title="Dimensions" className={dims ? 'active' : ''} disabled={!ready} onClick={() => setDims(d => !d)}><Icon>straighten</Icon></button>
+            <button aria-label="Toggle feature identification" title="Detected Features" className={showFeatures ? 'active' : ''} disabled={!ready} onClick={() => setShowFeatures(v => !v)}><Icon>center_focus_strong</Icon></button>
+            <button aria-label="Toggle manufacturing intelligence" title="Manufacturing Intel" className={showMfg ? 'active' : ''} disabled={!ready} onClick={() => setShowMfg(v => !v)}><Icon>receipt_long</Icon></button>
+            <button aria-label="Toggle material comparison" title="Material Options" className={showMatComp ? 'active' : ''} disabled={!ready || !mfgData || !!mfgData.error} onClick={() => setShowMatComp(v => !v)}><Icon>layers</Icon></button>
+            <button aria-label="Generate Engineering Drawing" title="Engineering Drawing" className={showDrawing ? 'active' : ''} disabled={!ready} onClick={() => setShowDrawing(true)}><Icon>architecture</Icon></button>
             <button aria-label="Reset viewport" title="Reset view" disabled={!ready} onClick={() => setResetKey(value => value + 1)}><Icon>restart_alt</Icon></button>
           </div>
+          {ready && showDrawing && (
+            <EngineeringDrawingModal
+              analysis={analysis}
+              manufacturingIntelligence={mfgData}
+              onClose={() => setShowDrawing(false)}
+            />
+          )}
           <div className="viewport-empty"><Icon>view_in_ar</Icon><span>{ready ? 'DRAG TO ROTATE · SCROLL TO ZOOM · RIGHT-DRAG TO PAN' : 'RE:FORGE RENDERER'}</span></div>
         </section>
         <aside className={`chat ${open ? '' : 'closed'}`}>
           <button className="door" aria-expanded={open} onClick={() => setOpen(o => !o)}>
-            {open ? 'CLOSE ENGINEER' : 'OPEN ENGINEER'} <Icon>{open ? 'keyboard_double_arrow_right' : 'keyboard_double_arrow_left'}</Icon>
+            {open ? 'CLOSE COPILOT' : 'OPEN COPILOT'} <Icon>{open ? 'keyboard_double_arrow_right' : 'keyboard_double_arrow_left'}</Icon>
           </button>
           {open && <>
             <header className="chat-head">
               <div>
-                <h2><Icon>smart_toy</Icon> RE:FORGE ENGINEER</h2>
-                <span>{ready ? `COMPONENT CONTEXT · ${label}${conf != null ? ` · ${conf}% CONF` : ''}` : 'AWAITING COMPONENT ANALYSIS'}</span>
+                <h2><Icon>smart_toy</Icon> ENGINEERING COPILOT</h2>
+                <div className="chat-conn-status">
+                  {ready ? (
+                    <><span className="chat-status-dot active"></span> Connected to current model</>
+                  ) : (
+                    <><span className="chat-status-dot"></span> Awaiting component analysis</>
+                  )}
+                </div>
               </div>
             </header>
+
+            {/* Active Part Context Card */}
+            {ready && engineeringContext && (
+              <div className="chat-part-card">
+                <div className="chat-part-title">
+                  <strong>{engineeringContext.component.name}</strong>
+                  <span className="chat-qty-tag">QTY {quantity}</span>
+                </div>
+                <div className="chat-part-meta">
+                  <span>{engineeringContext.material.label}</span>
+                  <span>{mfgData?.process?.recommended?.label || 'CNC Machining'}</span>
+                  {mfgData?.cost && <span>₹{formatINR(mfgData.cost.low)}–₹{formatINR(mfgData.cost.high)}/u</span>}
+                </div>
+              </div>
+            )}
+
+            {/* Suggested Question Chips */}
+            {ready && suggestions.length > 0 && (
+              <div className="chat-suggestions" aria-label="Suggested questions">
+                <span className="chat-suggestions-label">SUGGESTED QUESTIONS</span>
+                <div className="chat-chips-wrap">
+                  {suggestions.map((q, idx) => (
+                    <button
+                      key={idx}
+                      className="chat-chip-btn"
+                      disabled={thinking}
+                      onClick={() => send(null, q)}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="thread" ref={thread}>
               {!messages.length && (
-                <div className="ai-message"><Icon>smart_toy</Icon><p>I'm ready to analyse the reconstructed component. Ask about dimensions, material, or manufacturing constraints.</p></div>
+                <div className="ai-message">
+                  <Icon>smart_toy</Icon>
+                  <p>I'm your engineering copilot, grounded in this component's geometry, dimensions, material, and manufacturing intelligence. Ask about process trade-offs, material alternatives, or hypothetical modifications.</p>
+                </div>
               )}
               {messages.map((m, i) => (
                 <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
               ))}
-              {thinking && <div className="ai-message thinking"><Icon>smart_toy</Icon><p>Engineer is thinking…</p></div>}
+              {thinking && (
+                <div className="ai-message thinking">
+                  <Icon>smart_toy</Icon>
+                  <p>Copilot is reasoning from component geometry & manufacturing data…</p>
+                </div>
+              )}
             </div>
             <form className="composer" onSubmit={send}>
-              <label className="sr-only" htmlFor="question">Ask ReForge Engineer</label>
+              <label className="sr-only" htmlFor="question">Ask Engineering Copilot</label>
               <span>&gt;_</span>
-              <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask ReForge Engineer…" />
+              <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask about this component…" />
               <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
             </form>
           </>}
@@ -375,6 +1344,7 @@ function App() {
   const [images, setImages] = useState([]);
   const [analysis, setAnalysis] = useState(null);
   const [stage, setStage] = useState('idle');
+  const [analysisVersion, setAnalysisVersion] = useState(0);
 
   const updateImages = useCallback((next) => {
     setImages(next);
@@ -382,12 +1352,18 @@ function App() {
     setStage('idle');
   }, []);
 
+  const updateAnalysis = useCallback((result) => {
+    setAnalysis(result);
+    if (result) setAnalysisVersion(v => v + 1);
+  }, []);
+
   const value = useMemo(() => ({
     page, setPage,
     images, setImages: updateImages,
-    analysis, setAnalysis,
+    analysis, setAnalysis: updateAnalysis,
     stage, setStage,
-  }), [page, images, analysis, stage, updateImages]);
+    analysisVersion,
+  }), [page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion]);
 
   return (
     <AppContext.Provider value={value}>

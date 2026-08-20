@@ -6,7 +6,7 @@ export class ApiError extends Error {
   }
 }
 
-async function postJson(url, body) {
+export async function postJson(url, body) {
   let response;
   try {
     response = await fetch(url, {
@@ -53,8 +53,26 @@ export async function analyzeComponent(images, reference) {
   return result.analysis;
 }
 
-export async function sendChatMessage(message, analysis, history) {
-  const result = await postJson("/api/chat", { message, analysis, history });
+export async function sendChatMessage(message, engineeringContextOrAnalysis, history) {
+  const isContext =
+    engineeringContextOrAnalysis &&
+    typeof engineeringContextOrAnalysis === "object" &&
+    "component" in engineeringContextOrAnalysis;
+
+  const payload = {
+    message,
+    history,
+    engineeringContext: isContext ? engineeringContextOrAnalysis : null,
+    analysis: isContext ? null : engineeringContextOrAnalysis,
+  };
+
+  const result = await postJson("/api/chat", payload);
   if (!result || typeof result.text !== "string") throw new ApiError("Server returned no reply.", 502);
   return result.text;
 }
+
+export async function simulateEngineeringChange(analysis, modifications, quantity = 10) {
+  const result = await postJson("/api/engineering-simulate", { analysis, modifications, quantity });
+  return result;
+}
+

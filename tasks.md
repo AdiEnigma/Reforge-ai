@@ -216,3 +216,96 @@ Problem reported: a photo-only **spur gear / cogwheel** renders with wrong teeth
 - **Optional future enhancement (not in scope):** two-pass analysis — call 1 classifies + counts teeth; call 2 estimates module/proportions given that context. More reliable than one-shot, adds latency/cost.
 - No new npm dependencies required (three.js stays at `^0.128.0`).
 - Later, if true boolean cutouts are needed (drilled radial holes in lathe parts, arbitrary pockets), consider upgrading three.js and adding a CSG library as a separate follow-up — out of scope here.
+
+---
+
+## Workstream 4 — Manufacturing Intelligence Report (Cost, Process & Lead-Time Engine)
+
+Goal: Turn the analysis ReForge already produces (dimensions, materialEstimate, manufacturingProcess, geometryRecipe) into an actionable cost, process, and lead-time estimate — the "Manufacturing Intelligence" layer. A deterministic calculation engine (no Gemini call) — fast, cheap, reproducible, and debuggable. Gemini classifies; a small curated knowledge base + closed-form formulas do the rest.
+
+**Status:** T20–T26 implemented. T27 verification complete — build passes (`✓ built in 3.08s`, exit code 0), formula chain hand-checked.
+
+### T20 · Backend: manufacturing knowledge base
+
+**File (new):** `backend/manufacturing-data.js`
+
+Exports three plain constant tables (`MATERIALS`, `DEFAULT_MATERIAL`, `PROCESS_RATES`, `OVERHEAD_MARGIN`) with v1 placeholder estimates at approximate India job-shop market levels (INR). All marked clearly as illustrative demo data. Non-subtractive processes (casting, injection molding, forging) use `removalRateCm3PerMin` as a loose "production rate" proxy for v1 time estimation only — commented clearly in the file.
+
+### T21 · Backend: volume/mass estimation
+
+**File (new):** `backend/geometry-volume.js`
+
+Exports `estimateVolumeCm3(analysis)` → `{ volumeCm3, source }` where source is `"recipe"`, `"fallback-dims"`, or `"insufficient-data"`. All internal arithmetic kept in mm³; divided by 1000 at the very end. Also exports `resolveComponentTypeServer(analysis)`.
+
+Volume by recipe style:
+- **revolved** — frustum stacking over revolvedProfile `{z, radius}` points (solid revolution)
+- **extruded** — shoelace formula for outline polygon, minus hole areas, × depth
+- **gear** — coarse cylinder approximation (cost-estimation grade only), mirrors `buildGearFromRecipe()` derivation
+- **combination** — sum of standard primitive volume formulas (box/cylinder/sphere/cone/torus)
+
+Fallback: bounding-volume × fill-factor per component type (spur gear 0.72, flange 0.55, bearing 0.45, bracket 0.35, other 0.50). Returns `{ volumeCm3: null, source: "insufficient-data" }` when dimensions are insufficient.
+
+### T22 · Backend: cost / process / lead-time calculation
+
+**File (new):** `backend/manufacturing.js`
+
+Exports `computeManufacturingIntelligence({ analysis, quantity })`.
+
+1. **Material resolution** — substring match against `MATERIALS[i].match` keywords; falls back to `DEFAULT_MATERIAL` (mild steel) with an entry in `assumptions[]`.
+2. **Volume & mass** — calls `estimateVolumeCm3`; returns `{ error: "insufficient-data", message }` (not a thrown 500) when geometry is insufficient.
+3. **Process recommendation** — deterministic rule tree (plastic vs. metal, revolved vs. non-revolved, quantity thresholds) with a plain-language `reasoning` string naming every decision driver.
+4. **Machining time** — `complexityMultiplier = 1 + 0.05 * max(0, featureCount − 3)`; machining hours from setup + volume/rate formula.
+5. **Lead time** — base days from machining hours + flat +5 working days for first-time tooling if `toolingCostINR > 0`.
+6. **Cost** — material + machining + toolingPerUnit + 20% overhead; output as a range `[×0.85, ×1.25]` to never present false precision.
+
+Output shape includes `volumeCm3`, `massKg`, `material`, `process` (recommended + alternatives + reasoning), `cost` (currency, low, high, breakdown), `leadTime`, `quantity`, `assumptions`.
+
+### T23 · Backend: new API route
+
+**File:** `backend/index.js`
+
+Added `POST /api/manufacturing-intelligence` following the existing try/catch → `res.status(error.status || 500).json({ error })` pattern. `validateAnalysisShape()` re-sanitises `geometryRecipe` via the already-exported `sanitizeRecipe` from `gemini.js` (untrusted client input). `clampQuantity()` enforces `[1, 100 000]` integer clamping. Insufficient-data case returns HTTP 200 with `{ manufacturingIntelligence: { error: "insufficient-data", ... } }` so the frontend displays a graceful state without a network error.
+
+### T24 · Frontend: API client
+
+**File (new):** `frontend/src/lib/manufacturing.js`
+
+`fetchManufacturingIntelligence(analysis, quantity)` using the already-exported `postJson` and `ApiError` from `api.js`. Throws `ApiError(502)` if the server returns no estimate.
+
+### T25 · Frontend: Manufacturing Intelligence panel
+
+**File:** `frontend/src/main.jsx`
+
+`ManufacturingPanel({ analysis })` sub-component with:
+- 300 ms debounced `useEffect` on `[analysis, quantity]` — cancellable via `cancelled` flag + `clearTimeout`
+- Quantity input (1–100,000, clamped on change)
+- Loading skeleton (`MfgSkeleton`) with shimmer animation
+- Insufficient-data graceful message (no crash)
+- Cost shown as a **range** (`₹{low} – ₹{high} per unit`) — never a bare single number
+- Process recommendation with **full reasoning string visible** (explainability is the point)
+- Expandable alternatives list and expandable assumptions list (visually de-emphasised)
+- Lead time range in working days
+- Per-unit cost breakdown grid (material / machining / tooling / overhead)
+- Disclaimer footer: "Illustrative estimate · India job-shop rates (v1 placeholders). Not a real quote."
+
+### T26 · Frontend: wire into Workbench
+
+**File:** `frontend/src/main.jsx` (Workbench component)
+
+- `showMfg` state (defaults off; auto-flips to `true` when `stage === 'ready'` via `useEffect`)
+- Toggle button in the existing view-controls row using `receipt_long` Material Icon
+- `<ManufacturingPanel analysis={analysis} />` rendered conditionally alongside `dims-overlay` — does NOT block the 3D viewport or the ProgressStepper/reconstruction flow
+
+### T27 · Verification
+
+- `npm run build` in frontend: ✅ exits 0, 21 modules, no errors
+- Formula hand-check (50mm × 100mm solid cylinder, mild steel, qty 1):
+  - Volume = π × 25² × 100 / 1000 = **196.35 cm³** ✓ (mm→cm³ conversion correct)
+  - Mass = 196.35 × 7.85 / 1000 = **1.54 kg** ✓
+  - Material cost = 1.54 × 65 × 1.4 = **₹140** ✓
+  - Machining = 0.75 + (196.35 × 1.4 / 8 / 60) = **1.32 hrs** → ₹1,190 ✓
+  - Total range: **₹1,357 – ₹1,995** per unit ✓ — no mm↔cm³ unit-conversion bug
+- Quantity threshold flip: 1 unit (revolved metal) → CNC turning; 151 units → casting ✓ (deterministic rule tree)
+- `materialEstimate: "unknown"` → mild steel default assumption surfaced in `assumptions[]` ✓
+- No valid recipe + no usable dimensions → `{ error: "insufficient-data" }` 200 response → panel shows graceful message ✓
+- CSS: all `.mfg-*` classes present in `styles.css`, shimmer animation, mobile breakpoint override
