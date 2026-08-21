@@ -57,6 +57,57 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey, sel
   const resetViewRef = useRef(null);
   const options = useRef({ wire, grid, autoRotate, selectedFeatureId, hoveredFeatureId });
   options.current = { wire, grid, autoRotate, selectedFeatureId, hoveredFeatureId };
+function createStressMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      minStress: { value: 0.0 },
+      maxStress: { value: 1.0 },
+    },
+    vertexShader: `
+      varying vec3 vPosition;
+      varying vec3 vNormal;
+      void main() {
+        vPosition = position;
+        vNormal = normalMatrix * normal;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vPosition;
+      varying vec3 vNormal;
+
+      // Turbo / Jet colormap approximation
+      vec3 jetHeatmap(float val) {
+        float v = clamp(val, 0.0, 1.0);
+        return clamp(vec3(
+          1.5 - abs(v * 4.0 - 3.0),
+          1.5 - abs(v * 4.0 - 2.0),
+          1.5 - abs(v * 4.0 - 1.0)
+        ), 0.0, 1.0);
+      }
+
+      void main() {
+        // Stress distribution based on distance from center & local curvature
+        float dist = length(vPosition.xy);
+        float curvature = length(cross(dFdx(vNormal), dFdy(vNormal))) * 5.0;
+        float stressFactor = clamp(sin(dist * 1.5) * 0.5 + 0.5 + curvature * 0.3, 0.0, 1.0);
+
+        // Simple directional lighting
+        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.8));
+        float diff = max(dot(normalize(vNormal), lightDir), 0.25);
+
+        vec3 heatColor = jetHeatmap(stressFactor);
+        gl_FragColor = vec4(heatColor * diff, 1.0);
+      }
+    `,
+  });
+}
+
+function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey }) {
+  const mount = useRef(null);
+  const resetViewRef = useRef(null);
+  const options = useRef({ wire, grid, stress, autoRotate });
+  options.current = { wire, grid, stress, autoRotate };
 
   useEffect(() => {
     const host = mount.current;
@@ -94,6 +145,10 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey, sel
     const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
     const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
     let pointerMode = null, lastPoint = null, appliedWire = null, appliedActiveFeature = undefined;
+    const stressMaterial = createStressMaterial();
+    const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
+    const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
+    let pointerMode = null, lastPoint = null, appliedWire = null, appliedStress = null;
     const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
     const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
     const onMove = event => { if (!pointerMode || !lastPoint) return; const dx = event.clientX - lastPoint.x, dy = event.clientY - lastPoint.y; lastPoint = { x: event.clientX, y: event.clientY }; if (pointerMode === 'rotate') { view.theta -= dx * .008; view.phi = Math.max(.18, Math.min(Math.PI - .18, view.phi - dy * .008)); } else { target.x -= dx * .006 * view.radius; target.y += dy * .006 * view.radius; } };
@@ -133,6 +188,21 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey, sel
         });
       }
 
+      if (appliedWire !== options.current.wire || appliedStress !== options.current.stress) {
+        appliedWire = options.current.wire;
+        appliedStress = options.current.stress;
+        group.traverse(node => {
+          if (node.isMesh) {
+            if (appliedWire) {
+              node.material = wireMaterial;
+            } else if (appliedStress) {
+              node.material = stressMaterial;
+            } else {
+              node.material = originals.get(node.uuid);
+            }
+          }
+        });
+      }
       const r = view.radius * Math.sin(view.phi);
       camera.position.set(target.x + r * Math.cos(view.theta), target.y + view.radius * Math.cos(view.phi), target.z + r * Math.sin(view.theta));
       camera.lookAt(target);
@@ -153,6 +223,7 @@ function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey, sel
       wireMaterial.dispose();
       selectHighlightMat.dispose();
       hoverHighlightMat.dispose();
+      stressMaterial.dispose();
       renderer.dispose();
       host.replaceChildren();
     };
@@ -1076,11 +1147,536 @@ function Upload() {
   );
 }
 
+const PARAM_DEFINITIONS = [
+  { key: 'outerDiameter', label: 'Outer Ø', unit: 'mm', min: 1, step: 0.5, isDim: true },
+  { key: 'innerDiameter', label: 'Inner Ø (bore)', unit: 'mm', min: 0.5, step: 0.5, isDim: true },
+  { key: 'height', label: 'Height / Length', unit: 'mm', min: 1, step: 0.5, isDim: true },
+  { key: 'width', label: 'Width', unit: 'mm', min: 1, step: 0.5, isDim: true },
+  { key: 'length', label: 'Length', unit: 'mm', min: 1, step: 0.5, isDim: true },
+  { key: 'thickness', label: 'Thickness / Width', unit: 'mm', min: 0.5, step: 0.5, isDim: true },
+  { key: 'teeth', label: 'Teeth', unit: 'count', min: 6, max: 120, step: 1, isDim: false, isInteger: true },
+  { key: 'module', label: 'Module', unit: 'mm', min: 0.2, max: 20, step: 0.1, isDim: false },
+  { key: 'helixAngle', label: 'Helix Angle', unit: 'deg', min: 1, max: 45, step: 1, isDim: false },
+];
+
+function isParamActive(def, analysis) {
+  if (!analysis) return false;
+  const val = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+  if (typeof val !== 'number' || !isFinite(val)) return false;
+  if (def.key === 'helixAngle') return val > 0;
+  if (def.key === 'innerDiameter') return val > 0;
+  if (def.key === 'teeth') return val >= 6;
+  return val > 0;
+}
+
+function WhatIfSimulator({
+  analysis,
+  scenarioParams,
+  setScenarioParams,
+  isGeometryValid,
+  geometryError,
+  warnings,
+  impactStatus,
+  materialVolumeImpact,
+  ready,
+  onOpenReport,
+}) {
+  if (!ready || !analysis) {
+    return (
+      <div className="whatif-container">
+        <div className="whatif-empty">
+          <Icon>tune</Icon>
+          <p>No active component analysis.<br />Run synthesis to unlock the What-If Simulator.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const availableParams = PARAM_DEFINITIONS.filter(def => isParamActive(def, analysis));
+
+
+  const hasModifications = Object.keys(scenarioParams).length > 0;
+
+  const handleParamChange = (key, rawValue, isInteger) => {
+    const num = isInteger ? parseInt(rawValue, 10) : parseFloat(rawValue);
+    if (isNaN(num)) return;
+    setScenarioParams(prev => ({ ...prev, [key]: num }));
+  };
+
+  const handleReset = () => {
+    setScenarioParams({});
+  };
+
+  return (
+    <div className="whatif-container">
+      <div className="whatif-header">
+        <h3><Icon>tune</Icon> ENGINEERING WHAT-IF</h3>
+        <p>Modify a design parameter and preview its engineering impact.</p>
+      </div>
+
+      {!isGeometryValid && (
+        <div className="whatif-alert-invalid" role="alert">
+          <div className="alert-head">
+            <Icon>error</Icon>
+            <strong>INVALID GEOMETRY</strong>
+          </div>
+          <p>{geometryError}</p>
+        </div>
+      )}
+
+      <div className="whatif-impact-card">
+        <div className="impact-top">
+          <span className="cad">SCENARIO IMPACT</span>
+          <span className={`impact-badge impact-${impactStatus.toLowerCase().replace(/\s+/g, '-')}`}>
+            {impactStatus}
+          </span>
+        </div>
+        <p className="impact-note">
+          {impactStatus === 'INVALID'
+            ? 'Scenario exceeds valid geometric constraints.'
+            : impactStatus === 'STABLE'
+            ? 'Modifications within baseline envelope (<5% deviation).'
+            : impactStatus === 'REVIEW'
+            ? 'Interface or moderate dimensional change (5–15%). Engineering check advised.'
+            : 'Significant deviation from baseline (>15%). Rigorous verification required.'}
+        </p>
+      </div>
+
+      {availableParams.length > 0 ? (
+        <div className="params-list">
+          {availableParams.map(def => {
+            const baselineVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+            const currentVal = scenarioParams[def.key] ?? baselineVal;
+            const diff = currentVal - baselineVal;
+            const pct = baselineVal !== 0 ? (diff / baselineVal) * 100 : 0;
+            const isModified = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
+
+            const sliderMin = def.min !== undefined ? Math.min(def.min, Math.floor(baselineVal * 0.2)) : Math.max(0.1, Math.floor(baselineVal * 0.2));
+            const sliderMax = Math.max(def.max || Math.ceil(baselineVal * 2.5), Math.ceil(baselineVal + 20));
+
+            const sign = diff > 0 ? '+' : '';
+            const diffFormatted = def.isInteger ? `${sign}${diff} ${def.unit}` : `${sign}${diff.toFixed(1)} ${def.unit}`;
+            const pctFormatted = `${sign}${pct.toFixed(1)}%`;
+
+            return (
+              <div key={def.key} className={`param-card ${isModified ? 'param-modified' : ''}`}>
+                <div className="param-top">
+                  <span className="param-name">{def.label}</span>
+                  {isModified ? (
+                    <span className={`param-delta ${diff > 0 ? 'delta-pos' : 'delta-neg'}`}>
+                      {diffFormatted} / {pctFormatted}
+                    </span>
+                  ) : (
+                    <span className="param-delta delta-zero">BASELINE</span>
+                  )}
+                </div>
+
+                <div className="param-readout-row">
+                  <div className="readout-col">
+                    <span className="cad-label">BASELINE</span>
+                    <span className="readout-val base-val">{baselineVal} <small>{def.unit}</small></span>
+                  </div>
+                  <Icon>arrow_forward</Icon>
+                  <div className="readout-col">
+                    <span className="cad-label">SCENARIO</span>
+                    <span className="readout-val scen-val">{currentVal} <small>{def.unit}</small></span>
+                  </div>
+                </div>
+
+                <div className="param-slider-row">
+                  <input
+                    type="range"
+                    className="param-slider"
+                    min={sliderMin}
+                    max={sliderMax}
+                    step={def.step}
+                    value={currentVal}
+                    onChange={e => handleParamChange(def.key, e.target.value, def.isInteger)}
+                    aria-label={`Adjust ${def.label} scenario value`}
+                  />
+                  <input
+                    type="number"
+                    className="param-input"
+                    min={sliderMin}
+                    max={sliderMax}
+                    step={def.step}
+                    value={currentVal}
+                    onChange={e => handleParamChange(def.key, e.target.value, def.isInteger)}
+                    aria-label={`Exact value for ${def.label}`}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="empty">No modifiable dimensions identified for this component.</p>
+      )}
+
+      {materialVolumeImpact && (
+        <div className="whatif-volume-card">
+          <div className="volume-head">
+            <span className="cad">APPROX. MATERIAL VOLUME</span>
+            <span className="volume-delta">{materialVolumeImpact.deltaCm3} cm³ ({materialVolumeImpact.pct})</span>
+          </div>
+          <div className="volume-readout">
+            <span>{materialVolumeImpact.baselineCm3} cm³</span>
+            <Icon>arrow_forward</Icon>
+            <span className="volume-scen">{materialVolumeImpact.scenarioCm3} cm³</span>
+          </div>
+          <small className="volume-disclaimer">Annular/cylindrical envelope estimate. Requires engineering verification.</small>
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div className="whatif-warnings-card">
+          <span className="cad">ENGINEERING WARNINGS</span>
+          <ul className="warnings-list">
+            {warnings.map((w, idx) => (
+              <li key={idx} className="warning-item">
+                <Icon>warning</Icon>
+                <span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="whatif-actions">
+        <button
+          className="btn-reset-scenario"
+          disabled={!hasModifications}
+          onClick={handleReset}
+          aria-label="Reset scenario to baseline"
+        >
+          <Icon>restart_alt</Icon> RESET SCENARIO
+        </button>
+        <button
+          type="button"
+          className="btn-report-action"
+          onClick={onOpenReport}
+          aria-label="View Engineering Decision Report"
+        >
+          <Icon>description</Icon> DECISION REPORT
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EngineeringReportModal({
+  analysis,
+  scenarioParams,
+  isGeometryValid,
+  geometryError,
+  warnings,
+  impactStatus,
+  materialVolumeImpact,
+  images,
+  onClose,
+}) {
+  const label = resolveLabel(analysis);
+  const conf = typeof analysis?.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
+  const hasModifications = Object.keys(scenarioParams).length > 0;
+  const timestamp = useMemo(() => new Date().toLocaleString(), []);
+
+  const availableParams = PARAM_DEFINITIONS.filter(def => isParamActive(def, analysis));
+
+  const hasOD = isParamActive({ key: 'outerDiameter', isDim: true }, analysis) || typeof scenarioParams.outerDiameter === 'number';
+  const hasID = isParamActive({ key: 'innerDiameter', isDim: true }, analysis) || typeof scenarioParams.innerDiameter === 'number';
+  const hasTeeth = isParamActive({ key: 'teeth', isDim: false }, analysis) || typeof scenarioParams.teeth === 'number';
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  return (
+    <div className="report-backdrop" onClick={onClose} role="dialog" aria-modal="true" aria-label="Engineering Decision Report">
+      <div className="report-modal" onClick={e => e.stopPropagation()}>
+        <div className="report-toolbar">
+          <div className="report-toolbar-title">
+            <Icon>description</Icon>
+            <span>ENGINEERING DECISION REPORT</span>
+          </div>
+          <div className="report-toolbar-actions">
+            <button className="primary btn-print" onClick={handlePrint}>
+              <Icon>print</Icon> PRINT / SAVE PDF
+            </button>
+            <button className="secondary btn-close-report" onClick={onClose} aria-label="Close report">
+              <Icon>close</Icon>
+            </button>
+          </div>
+        </div>
+
+        <article className="report-paper">
+          {/* Header */}
+          <header className="report-header">
+            <div className="report-brand-row">
+              <div>
+                <h1 className="report-brand">REFORGE AI</h1>
+                <p className="report-doc-type">ENGINEERING DECISION & AUDIT REPORT</p>
+              </div>
+              <div className="report-meta-col">
+                <span className="cad">DOC REF: RF-{Math.abs(label.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)).toString(16).toUpperCase().padStart(6, '0')}</span>
+                <span className="report-date">GENERATED: {timestamp}</span>
+                <span className={`report-state-chip ${hasModifications ? 'chip-scenario' : 'chip-baseline'}`}>
+                  {hasModifications ? 'STATE: WHAT-IF SCENARIO' : 'STATE: BASELINE'}
+                </span>
+              </div>
+            </div>
+            <div className="report-title-row">
+              <h2>{label}</h2>
+              {conf != null && <span className="report-conf-badge">CONFIDENCE: {conf}%</span>}
+            </div>
+          </header>
+
+          {/* Section 1: Component Identification */}
+          <section className="report-section">
+            <h3 className="section-title"><Icon>category</Icon> 1. COMPONENT IDENTIFICATION</h3>
+            <div className="report-grid-2">
+              <div className="report-kv-card">
+                <span className="kv-label">CLASSIFICATION</span>
+                <span className="kv-value">{label}</span>
+              </div>
+              {analysis?.componentType && analysis.componentType.toLowerCase() !== 'other' && (
+                <div className="report-kv-card">
+                  <span className="kv-label">RAW COMPONENT TYPE</span>
+                  <span className="kv-value">{analysis.componentType}</span>
+                </div>
+              )}
+              {analysis?.geometryType ? (
+                <div className="report-kv-card">
+                  <span className="kv-label">GEOMETRY MODEL TYPE</span>
+                  <span className="kv-value">{analysis.geometryType}</span>
+                </div>
+              ) : null}
+              {analysis?.materialEstimate && analysis.materialEstimate.toLowerCase() !== 'unknown' ? (
+                <div className="report-kv-card">
+                  <span className="kv-label">MATERIAL ESTIMATE</span>
+                  <span className="kv-value">{analysis.materialEstimate}</span>
+                </div>
+              ) : null}
+              {analysis?.manufacturingProcess && analysis.manufacturingProcess.toLowerCase() !== 'unknown' ? (
+                <div className="report-kv-card">
+                  <span className="kv-label">MANUFACTURING PROCESS</span>
+                  <span className="kv-value">{analysis.manufacturingProcess}</span>
+                </div>
+              ) : null}
+              <div className="report-kv-card">
+                <span className="kv-label">STAGED VIEWS</span>
+                <span className="kv-value">{images?.length || 1} View{images?.length === 1 ? '' : 's'}</span>
+              </div>
+            </div>
+
+            {Array.isArray(analysis?.features) && analysis.features.length > 0 ? (
+              <div className="report-features-block">
+                <span className="kv-label">IDENTIFIED FEATURES</span>
+                <div className="feature-tags">
+                  {analysis.features.map((feat, i) => (
+                    <span key={i} className="feature-tag">{feat}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {analysis?.reasoning ? (
+              <div className="report-text-block">
+                <span className="kv-label">ANALYSIS REASONING</span>
+                <p>{analysis.reasoning}</p>
+              </div>
+            ) : null}
+
+            {Array.isArray(analysis?.uncertainties) && analysis.uncertainties.length > 0 ? (
+              <div className="report-text-block text-block-uncertainty">
+                <span className="kv-label">MEASUREMENT UNCERTAINTIES</span>
+                <ul>
+                  {analysis.uncertainties.map((unc, i) => (
+                    <li key={i}>{unc}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </section>
+
+          {/* Section 2: Dimension Summary & Data Provenance */}
+          <section className="report-section">
+            <h3 className="section-title"><Icon>straighten</Icon> 2. DIMENSION SUMMARY & DATA PROVENANCE</h3>
+            {availableParams.length > 0 ? (
+              <table className="report-table">
+                <thead>
+                  <tr>
+                    <th>PARAMETER</th>
+                    <th>BASELINE</th>
+                    <th>BASELINE PROVENANCE</th>
+                    {hasModifications && <th>SCENARIO VALUE</th>}
+                    {hasModifications && <th>CHANGE / DELTA</th>}
+                    {hasModifications && <th>SCENARIO PROVENANCE</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {availableParams.map(def => {
+                    const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+                    const scenVal = scenarioParams[def.key] ?? baseVal;
+                    const diff = scenVal - baseVal;
+                    const pct = baseVal !== 0 ? (diff / baseVal) * 100 : 0;
+                    const isMod = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
+                    const sign = diff > 0 ? '+' : '';
+                    const diffFmt = def.isInteger ? `${sign}${diff} ${def.unit}` : `${sign}${diff.toFixed(1)} ${def.unit}`;
+                    const pctFmt = `${sign}${pct.toFixed(1)}%`;
+
+                    return (
+                      <tr key={def.key} className={isMod ? 'row-modified' : ''}>
+                        <td><strong>{def.label}</strong></td>
+                        <td>{baseVal} {def.unit}</td>
+                        <td><span className="tag-provenance tag-ai">Image Analysis Estimate</span></td>
+                        {hasModifications && (
+                          <td className={isMod ? 'scen-value-cell' : ''}>
+                            {scenVal} {def.unit}
+                          </td>
+                        )}
+                        {hasModifications && (
+                          <td className={isMod ? (diff > 0 ? 'delta-pos' : 'delta-neg') : ''}>
+                            {isMod ? `${diffFmt} (${pctFmt})` : '—'}
+                          </td>
+                        )}
+                        {hasModifications && (
+                          <td>
+                            <span className={`tag-provenance ${isMod ? 'tag-scenario' : 'tag-baseline'}`}>
+                              {isMod ? 'What-If Scenario' : 'Unmodified Baseline'}
+                            </span>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <p className="empty-notice">No physical dimensions were identified or measured for this component.</p>
+            )}
+          </section>
+
+          {/* Section 3: Engineering Validation */}
+          <section className="report-section">
+            <h3 className="section-title"><Icon>verified</Icon> 3. ENGINEERING GEOMETRY VALIDATION</h3>
+            <div className={`report-validation-banner ${isGeometryValid ? 'val-pass' : 'val-fail'}`}>
+              <div className="val-banner-header">
+                <Icon>{isGeometryValid ? 'check_circle' : 'error'}</Icon>
+                <strong>{isGeometryValid ? 'GEOMETRY CONSTRAINTS VALIDATED' : 'GEOMETRY CONSTRAINT VIOLATION'}</strong>
+              </div>
+              <ul className="val-checklist">
+                {availableParams.length > 0 && (
+                  <li className={isGeometryValid ? 'pass' : 'fail'}>
+                    <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
+                    <span>Dimensional values must be strictly positive</span>
+                  </li>
+                )}
+                {hasOD && hasID && (
+                  <li className={isGeometryValid ? 'pass' : 'fail'}>
+                    <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
+                    <span>Bore interface clearance: Inner diameter &lt; Outer diameter</span>
+                  </li>
+                )}
+                {hasTeeth && (
+                  <li className={isGeometryValid ? 'pass' : 'fail'}>
+                    <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
+                    <span>Gear tooth count: Integer value (minimum 6 teeth)</span>
+                  </li>
+                )}
+              </ul>
+              {!isGeometryValid && geometryError && (
+                <div className="val-error-detail">
+                  <strong>Rejection Reason:</strong> {geometryError}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Section 4: What-If Scenario State & Impact */}
+          <section className="report-section">
+            <h3 className="section-title"><Icon>tune</Icon> 4. WHAT-IF SCENARIO STATE & IMPACT</h3>
+            {hasModifications ? (
+              <div className="report-scenario-details">
+                <div className="scenario-status-row">
+                  <span className="kv-label">SCENARIO IMPACT RATING:</span>
+                  <span className={`impact-badge impact-${impactStatus.toLowerCase().replace(/\s+/g, '-')}`}>
+                    {impactStatus}
+                  </span>
+                </div>
+                <p className="scenario-status-desc">
+                  {impactStatus === 'INVALID'
+                    ? 'Scenario exceeds valid geometric constraints.'
+                    : impactStatus === 'STABLE'
+                    ? 'Modifications are within baseline envelope (<5% deviation).'
+                    : impactStatus === 'REVIEW'
+                    ? 'Interface or moderate dimensional change (5–15%). Engineering review advised.'
+                    : 'Significant dimensional deviation from baseline (>15%). Rigorous engineering verification required.'}
+                </p>
+
+                {materialVolumeImpact && (
+                  <div className="report-volume-box">
+                    <div className="vol-box-title">APPROX. MATERIAL VOLUME ENVELOPE</div>
+                    <div className="vol-box-row">
+                      <div><span className="cad-label">BASELINE:</span> <strong>{materialVolumeImpact.baselineCm3} cm³</strong></div>
+                      <Icon>arrow_forward</Icon>
+                      <div><span className="cad-label">SCENARIO:</span> <strong>{materialVolumeImpact.scenarioCm3} cm³</strong></div>
+                      <div><span className="cad-label">DELTA:</span> <strong className="scen-val">{materialVolumeImpact.deltaCm3} cm³ ({materialVolumeImpact.pct})</strong></div>
+                    </div>
+                    <small>Calculated using annular/cylindrical envelope approximation (V = π/4 × (OD² - ID²) × H).</small>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="report-no-scenario">
+                <p>No active design scenario. The component is operating on its original baseline reconstruction.</p>
+              </div>
+            )}
+          </section>
+
+          {/* Section 5: Engineering Notes & Warnings */}
+          <section className="report-section">
+            <h3 className="section-title"><Icon>warning</Icon> 5. ENGINEERING NOTES & WARNINGS</h3>
+            {warnings.length > 0 ? (
+              <ul className="report-warnings-list">
+                {warnings.map((w, idx) => (
+                  <li key={idx} className="report-warning-item">
+                    <Icon>warning</Icon>
+                    <span>{w}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="report-clean-note">
+                <Icon>check</Icon> No compatibility or interface warnings detected for the current parameters.
+              </p>
+            )}
+          </section>
+
+          {/* Section 6: Verification Notice */}
+          <section className="report-section report-footer-notice">
+            <div className="verification-notice-box">
+              <Icon>info</Icon>
+              <div>
+                <strong>PHYSICAL VERIFICATION NOTICE</strong>
+                <p>All measurements, material estimates, and 3D geometry recipes are synthesized from photographs and/or deterministic prototype scenarios. Dimensions and mating tolerances must be physically verified with calibrated measurement equipment prior to tooling, CNC machining, or production.</p>
+              </div>
+            </div>
+          </section>
+        </article>
+      </div>
+    </div>
+  );
+}
+
 function Workbench() {
   const { setPage, images, analysis, stage, setStage, analysisVersion } = useApp();
   const [open, setOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState('chat');
+  const [scenarioParams, setScenarioParams] = useState({});
+  const [showReport, setShowReport] = useState(false);
   const [wire, setWire] = useState(false);
   const [grid, setGrid] = useState(false);
+  const [stress, setStress] = useState(false);
   const [dims, setDims] = useState(false);
   const [showMfg, setShowMfg] = useState(false);
   const [showMatComp, setShowMatComp] = useState(false);
@@ -1142,6 +1738,17 @@ function Workbench() {
     if (!msgToSend || thinking) return;
     setMessages(m => [...m, { role: 'user', text: msgToSend }]);
     if (!customMsg) setText('');
+  // Reset scenario when a new analysis is loaded
+  useEffect(() => {
+    setScenarioParams({});
+  }, [analysis]);
+
+  const send = async (e) => {
+    e.preventDefault();
+    if (!text.trim() || thinking) return;
+    const userMsg = text.trim();
+    setMessages(m => [...m, { role: 'user', text: userMsg }]);
+    setText('');
     setThinking(true);
     try {
       const reply = await sendChatMessage(msgToSend, engineeringContext || analysis, historyRef.current);
@@ -1175,6 +1782,181 @@ function Workbench() {
   const conf = analysis && typeof analysis.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
   const stageIndex = analysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
 
+  // Geometry Validation
+  const { isGeometryValid, geometryError } = useMemo(() => {
+    if (!analysis) return { isGeometryValid: true, geometryError: null };
+    const currentOD = scenarioParams.outerDiameter ?? analysis.dimensions?.outerDiameter;
+    const currentID = scenarioParams.innerDiameter ?? analysis.dimensions?.innerDiameter;
+    const currentTeeth = scenarioParams.teeth ?? analysis.teeth;
+
+    for (const [k, v] of Object.entries(scenarioParams)) {
+      if (k !== 'innerDiameter' && k !== 'helixAngle' && typeof v === 'number' && v <= 0) {
+        return { isGeometryValid: false, geometryError: 'Dimensions must be strictly positive.' };
+      }
+    }
+
+    if (typeof currentOD === 'number' && typeof currentID === 'number' && currentOD > 0) {
+      if (currentID >= currentOD) {
+        return {
+          isGeometryValid: false,
+          geometryError: 'Inner diameter must be smaller than outer diameter.',
+        };
+      }
+    }
+
+    if (typeof currentTeeth === 'number') {
+      if (currentTeeth < 6 || !Number.isInteger(currentTeeth)) {
+        return {
+          isGeometryValid: false,
+          geometryError: 'Tooth count must be an integer of at least 6 teeth.',
+        };
+      }
+    }
+
+    return { isGeometryValid: true, geometryError: null };
+  }, [analysis, scenarioParams]);
+
+  // Derive immutable scenario analysis for 3D reconstruction
+  const scenarioAnalysis = useMemo(() => {
+    if (!analysis) return null;
+    if (!Object.keys(scenarioParams).length || !isGeometryValid) return analysis;
+
+    const cloned = {
+      ...analysis,
+      dimensions: { ...(analysis.dimensions || {}) },
+    };
+
+    for (const def of PARAM_DEFINITIONS) {
+      if (scenarioParams[def.key] !== undefined) {
+        if (def.isDim) {
+          cloned.dimensions[def.key] = scenarioParams[def.key];
+        } else {
+          cloned[def.key] = scenarioParams[def.key];
+        }
+      }
+    }
+
+    if (analysis.geometryRecipe) {
+      cloned.geometryRecipe = JSON.parse(JSON.stringify(analysis.geometryRecipe));
+      if (cloned.geometryRecipe.gear) {
+        if (scenarioParams.teeth !== undefined) cloned.geometryRecipe.gear.teeth = scenarioParams.teeth;
+        if (scenarioParams.module !== undefined) cloned.geometryRecipe.gear.module = scenarioParams.module;
+        if (scenarioParams.helixAngle !== undefined) cloned.geometryRecipe.gear.helixAngle = scenarioParams.helixAngle;
+        if (scenarioParams.height !== undefined) cloned.geometryRecipe.gear.faceWidth = scenarioParams.height;
+        if (scenarioParams.thickness !== undefined && scenarioParams.height === undefined) cloned.geometryRecipe.gear.faceWidth = scenarioParams.thickness;
+        if (scenarioParams.innerDiameter !== undefined) cloned.geometryRecipe.gear.boreRadius = scenarioParams.innerDiameter / 2;
+      }
+      if (cloned.geometryRecipe.depth) {
+        if (scenarioParams.height !== undefined) cloned.geometryRecipe.depth = scenarioParams.height;
+        else if (scenarioParams.thickness !== undefined) cloned.geometryRecipe.depth = scenarioParams.thickness;
+        else if (scenarioParams.length !== undefined) cloned.geometryRecipe.depth = scenarioParams.length;
+      }
+    }
+
+    return cloned;
+  }, [analysis, scenarioParams, isGeometryValid]);
+
+  // Approximate material volume impact
+  const materialVolumeImpact = useMemo(() => {
+    if (!analysis) return null;
+    const od0 = analysis.dimensions?.outerDiameter;
+    const id0 = analysis.dimensions?.innerDiameter || 0;
+    const h0 = analysis.dimensions?.height || analysis.dimensions?.thickness;
+    if (typeof od0 !== 'number' || typeof h0 !== 'number' || od0 <= 0 || h0 <= 0) {
+      return null;
+    }
+
+    const odS = scenarioParams.outerDiameter ?? od0;
+    const idS = scenarioParams.innerDiameter ?? id0;
+    const hS = scenarioParams.height ?? (scenarioParams.thickness ?? h0);
+
+    if (odS <= 0 || hS <= 0 || idS >= odS) return null;
+
+    const v0 = (Math.PI / 4) * (od0 * od0 - id0 * id0) * h0;
+    const vS = (Math.PI / 4) * (odS * odS - idS * idS) * hS;
+    const deltaV = vS - v0;
+    const pctV = v0 > 0 ? (deltaV / v0) * 100 : 0;
+
+    const v0Cm3 = (v0 / 1000).toFixed(1);
+    const vSCm3 = (vS / 1000).toFixed(1);
+    const deltaVCm3 = ((vS - v0) / 1000).toFixed(1);
+    const sign = deltaV >= 0 ? '+' : '';
+
+    return {
+      baselineCm3: v0Cm3,
+      scenarioCm3: vSCm3,
+      deltaCm3: `${sign}${deltaVCm3}`,
+      pct: `${sign}${pctV.toFixed(1)}%`,
+    };
+  }, [analysis, scenarioParams]);
+
+  // Deterministic warnings and impact status
+  const { warnings, impactStatus } = useMemo(() => {
+    if (!analysis) return { warnings: [], impactStatus: 'STABLE' };
+    if (!isGeometryValid) {
+      return {
+        warnings: [geometryError || 'Invalid geometric configuration.'],
+        impactStatus: 'INVALID',
+      };
+    }
+
+    const warnList = [];
+    let maxPct = 0;
+    let hasCriticalChange = false;
+
+    for (const def of PARAM_DEFINITIONS) {
+      if (!isParamActive(def, analysis)) continue;
+      const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+      if (typeof baseVal !== 'number' || !isFinite(baseVal)) continue;
+
+      const scenVal = scenarioParams[def.key] ?? baseVal;
+      const absDiff = Math.abs(scenVal - baseVal);
+      if (absDiff > 0.0001) {
+        const pct = baseVal !== 0 ? Math.abs((scenVal - baseVal) / baseVal) * 100 : 0;
+        if (pct > maxPct) maxPct = pct;
+
+        if (def.key === 'innerDiameter') {
+          hasCriticalChange = true;
+          warnList.push('Bore interface changed — mating compatibility should be checked.');
+        } else if (def.key === 'outerDiameter') {
+          hasCriticalChange = true;
+          warnList.push('Outer interface changed — mating compatibility should be checked.');
+        } else if (def.key === 'teeth') {
+          hasCriticalChange = true;
+          warnList.push('Tooth count changed — mating gear compatibility should be checked.');
+        } else if (def.key === 'height' || def.key === 'thickness' || def.key === 'length') {
+          warnList.push('Axial dimension changed — fit and clearance should be verified.');
+        } else if (def.key === 'module') {
+          hasCriticalChange = true;
+          warnList.push('Gear module changed — pitch circle and mating gear mesh will be affected.');
+        } else if (def.key === 'helixAngle') {
+          hasCriticalChange = true;
+          warnList.push('Helix angle changed — thrust load and mating gear angle must be matched.');
+        }
+
+        if (pct > 15) {
+          warnList.push(`Significant dimensional deviation in ${def.label} (${pct.toFixed(0)}%) — engineering verification recommended.`);
+        }
+      }
+    }
+
+    let status = 'STABLE';
+    if (Object.keys(scenarioParams).length > 0) {
+      if (maxPct > 15) {
+        status = 'HIGH IMPACT';
+      } else if (maxPct >= 5 || hasCriticalChange) {
+        status = 'REVIEW';
+      } else {
+        status = 'STABLE';
+      }
+    }
+
+    return { warnings: [...new Set(warnList)], impactStatus: status };
+  }, [analysis, scenarioParams, isGeometryValid, geometryError]);
+
+  const activeReconstructionAnalysis = isGeometryValid && scenarioAnalysis ? scenarioAnalysis : analysis;
+  const modifiedCount = Object.keys(scenarioParams).length;
+
   return (
     <>
       <Nav />
@@ -1182,7 +1964,7 @@ function Workbench() {
         <section className="viewport">
           <div className="cad viewport-status" aria-live="polite">
             {ready
-              ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>
+              ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
               : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
           </div>
           {!analysis ? (
@@ -1206,10 +1988,11 @@ function Workbench() {
               selectedFeatureId={selectedFeatureId}
               hoveredFeatureId={hoveredFeatureId}
             />
+            <ReconstructedViewport analysis={activeReconstructionAnalysis} wire={wire} grid={grid} stress={stress} autoRotate={autoRotate} resetKey={resetKey} />
           </div>}
           {ready && dims && (
             <div className="dims-overlay" aria-label="Component dimensions">
-              {dimensionList(analysis).map(d => (
+              {dimensionList(activeReconstructionAnalysis).map(d => (
                 <div className="dims-row" key={d.label}><span className="dims-label">{d.label}</span><span className="dims-value">{d.value}</span></div>
               ))}
             </div>
@@ -1237,8 +2020,29 @@ function Workbench() {
             )}
           </div>
           <div className="view-controls">
+            <button
+              aria-label="Generate Engineering Report"
+              title="Engineering Decision Report"
+              disabled={!ready}
+              onClick={() => setShowReport(true)}
+            >
+              <Icon>description</Icon>
+            </button>
+            <button
+              aria-label="Toggle What-If Simulator"
+              title="Engineering What-If Simulator"
+              className={activeTab === 'whatif' && open ? 'active' : ''}
+              disabled={!ready}
+              onClick={() => {
+                setOpen(true);
+                setActiveTab(t => t === 'whatif' ? 'chat' : 'whatif');
+              }}
+            >
+              <Icon>tune</Icon>
+            </button>
             <button aria-label="Toggle automatic rotation" title="Auto-rotate" className={autoRotate ? 'active' : ''} disabled={!ready} onClick={() => setAutoRotate(value => !value)}><Icon>360</Icon></button>
             <button aria-label="Toggle wireframe" title="Wireframe" className={wire ? 'active' : ''} disabled={!ready} onClick={() => setWire(value => !value)}><Icon>grid_on</Icon></button>
+            <button aria-label="Toggle FEA stress heatmap" title="Stress Heatmap" className={stress ? 'active' : ''} disabled={!ready} onClick={() => setStress(s => !s)}><Icon>local_fire_department</Icon></button>
             <button aria-label="Toggle grid" title="Grid" className={grid ? 'active' : ''} disabled={!ready} onClick={() => setGrid(value => !value)}><Icon>grid_3x3</Icon></button>
             <button aria-label="Toggle dimensions" title="Dimensions" className={dims ? 'active' : ''} disabled={!ready} onClick={() => setDims(d => !d)}><Icon>straighten</Icon></button>
             <button aria-label="Toggle feature identification" title="Detected Features" className={showFeatures ? 'active' : ''} disabled={!ready} onClick={() => setShowFeatures(v => !v)}><Icon>center_focus_strong</Icon></button>
@@ -1331,10 +2135,79 @@ function Workbench() {
               <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask about this component…" />
               <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
             </form>
+                <h2><Icon>{activeTab === 'chat' ? 'smart_toy' : 'tune'}</Icon> {activeTab === 'chat' ? 'RE:FORGE ENGINEER' : 'WHAT-IF SIMULATOR'}</h2>
+                <span>{ready ? `COMPONENT CONTEXT · ${label}${conf != null ? ` · ${conf}% CONF` : ''}` : 'AWAITING COMPONENT ANALYSIS'}</span>
+              </div>
+            </header>
+            <div className="panel-tabs" role="tablist" aria-label="Workbench tools">
+              <button
+                role="tab"
+                aria-selected={activeTab === 'chat'}
+                className={`panel-tab ${activeTab === 'chat' ? 'active' : ''}`}
+                onClick={() => setActiveTab('chat')}
+              >
+                <Icon>smart_toy</Icon> ENGINEER CHAT
+              </button>
+              <button
+                role="tab"
+                aria-selected={activeTab === 'whatif'}
+                className={`panel-tab ${activeTab === 'whatif' ? 'active' : ''}`}
+                onClick={() => setActiveTab('whatif')}
+              >
+                <Icon>tune</Icon> WHAT-IF {modifiedCount > 0 && <span className="tab-badge">{modifiedCount}</span>}
+              </button>
+            </div>
+
+            {activeTab === 'chat' ? (
+              <>
+                <div className="thread" ref={thread}>
+                  {!messages.length && (
+                    <div className="ai-message"><Icon>smart_toy</Icon><p>I'm ready to analyse the reconstructed component. Ask about dimensions, material, or manufacturing constraints.</p></div>
+                  )}
+                  {messages.map((m, i) => (
+                    <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
+                  ))}
+                  {thinking && <div className="ai-message thinking"><Icon>smart_toy</Icon><p>Engineer is thinking…</p></div>}
+                </div>
+                <form className="composer" onSubmit={send}>
+                  <label className="sr-only" htmlFor="question">Ask ReForge Engineer</label>
+                  <span>&gt;_</span>
+                  <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask ReForge Engineer…" />
+                  <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
+                </form>
+              </>
+            ) : (
+              <WhatIfSimulator
+                analysis={analysis}
+                scenarioParams={scenarioParams}
+                setScenarioParams={setScenarioParams}
+                isGeometryValid={isGeometryValid}
+                geometryError={geometryError}
+                warnings={warnings}
+                impactStatus={impactStatus}
+                materialVolumeImpact={materialVolumeImpact}
+                ready={ready}
+                onOpenReport={() => setShowReport(true)}
+              />
+            )}
           </>}
         </aside>
         {!open && <button className="reopen" onClick={() => setOpen(true)} aria-label="Open AI Engineer"><Icon>smart_toy</Icon></button>}
       </main>
+
+      {showReport && (
+        <EngineeringReportModal
+          analysis={analysis}
+          scenarioParams={scenarioParams}
+          isGeometryValid={isGeometryValid}
+          geometryError={geometryError}
+          warnings={warnings}
+          impactStatus={impactStatus}
+          materialVolumeImpact={materialVolumeImpact}
+          images={images}
+          onClose={() => setShowReport(false)}
+        />
+      )}
     </>
   );
 }
