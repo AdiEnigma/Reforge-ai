@@ -52,11 +52,6 @@ function GearCanvas() {
   return <div className="gear-canvas" ref={mount} aria-hidden="true" />;
 }
 
-function ReconstructedViewport({ analysis, wire, grid, autoRotate, resetKey, selectedFeatureId, hoveredFeatureId }) {
-  const mount = useRef(null);
-  const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, autoRotate, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, autoRotate, selectedFeatureId, hoveredFeatureId };
 function createStressMaterial() {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -103,11 +98,11 @@ function createStressMaterial() {
   });
 }
 
-function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey }) {
+function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey, selectedFeatureId, hoveredFeatureId }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, stress, autoRotate });
-  options.current = { wire, grid, stress, autoRotate };
+  const options = useRef({ wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId });
+  options.current = { wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId };
 
   useEffect(() => {
     const host = mount.current;
@@ -142,13 +137,10 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
       roughness: 0.35,
     });
 
-    const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
-    const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
-    let pointerMode = null, lastPoint = null, appliedWire = null, appliedActiveFeature = undefined;
     const stressMaterial = createStressMaterial();
     const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
     const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
-    let pointerMode = null, lastPoint = null, appliedWire = null, appliedStress = null;
+    let pointerMode = null, lastPoint = null, appliedKey = null;
     const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
     const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
     const onMove = event => { if (!pointerMode || !lastPoint) return; const dx = event.clientX - lastPoint.x, dy = event.clientY - lastPoint.y; lastPoint = { x: event.clientX, y: event.clientY }; if (pointerMode === 'rotate') { view.theta -= dx * .008; view.phi = Math.max(.18, Math.min(Math.PI - .18, view.phi - dy * .008)); } else { target.x -= dx * .006 * view.radius; target.y += dy * .006 * view.radius; } };
@@ -166,40 +158,24 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
       const isSelected = Boolean(options.current.selectedFeatureId);
+      const materialKey = `${options.current.wire ? 'w' : ''}${options.current.stress ? 's' : ''}|${activeFeatureId ?? ''}`;
 
-      if (appliedWire !== options.current.wire || appliedActiveFeature !== activeFeatureId) {
-        appliedWire = options.current.wire;
-        appliedActiveFeature = activeFeatureId;
+      if (materialKey !== appliedKey) {
+        appliedKey = materialKey;
 
         group.traverse(node => {
           if (!node.isMesh) return;
 
           if (node.userData?.isHighlightOnly) {
             node.visible = Boolean(activeFeatureId && node.userData.featureId === activeFeatureId);
+          } else if (options.current.wire) {
+            node.material = wireMaterial;
+          } else if (activeFeatureId && (node.userData?.featureId === activeFeatureId || node.parent?.userData?.featureId === activeFeatureId)) {
+            node.material = isSelected ? selectHighlightMat : hoverHighlightMat;
+          } else if (options.current.stress) {
+            node.material = stressMaterial;
           } else {
-            if (appliedWire) {
-              node.material = wireMaterial;
-            } else if (activeFeatureId && (node.userData?.featureId === activeFeatureId || node.parent?.userData?.featureId === activeFeatureId)) {
-              node.material = isSelected ? selectHighlightMat : hoverHighlightMat;
-            } else {
-              node.material = originals.get(node.uuid) || node.material;
-            }
-          }
-        });
-      }
-
-      if (appliedWire !== options.current.wire || appliedStress !== options.current.stress) {
-        appliedWire = options.current.wire;
-        appliedStress = options.current.stress;
-        group.traverse(node => {
-          if (node.isMesh) {
-            if (appliedWire) {
-              node.material = wireMaterial;
-            } else if (appliedStress) {
-              node.material = stressMaterial;
-            } else {
-              node.material = originals.get(node.uuid);
-            }
+            node.material = originals.get(node.uuid) || node.material;
           }
         });
       }
@@ -1732,23 +1708,17 @@ function Workbench() {
     return getEngineeringSuggestions(engineeringContext);
   }, [engineeringContext]);
 
+  // Reset scenario when a new analysis is loaded
+  useEffect(() => {
+    setScenarioParams({});
+  }, [analysis]);
+
   const send = async (e, customMsg = null) => {
     if (e) e.preventDefault();
     const msgToSend = typeof customMsg === 'string' ? customMsg.trim() : text.trim();
     if (!msgToSend || thinking) return;
     setMessages(m => [...m, { role: 'user', text: msgToSend }]);
     if (!customMsg) setText('');
-  // Reset scenario when a new analysis is loaded
-  useEffect(() => {
-    setScenarioParams({});
-  }, [analysis]);
-
-  const send = async (e) => {
-    e.preventDefault();
-    if (!text.trim() || thinking) return;
-    const userMsg = text.trim();
-    setMessages(m => [...m, { role: 'user', text: userMsg }]);
-    setText('');
     setThinking(true);
     try {
       const reply = await sendChatMessage(msgToSend, engineeringContext || analysis, historyRef.current);
@@ -1980,15 +1950,15 @@ function Workbench() {
             </div>
           ) : <div className={`model ${wire ? 'wire' : ''}`}>
             <ReconstructedViewport
-              analysis={analysis}
+              analysis={activeReconstructionAnalysis}
               wire={wire}
               grid={grid}
+              stress={stress}
               autoRotate={autoRotate}
               resetKey={resetKey}
               selectedFeatureId={selectedFeatureId}
               hoveredFeatureId={hoveredFeatureId}
             />
-            <ReconstructedViewport analysis={activeReconstructionAnalysis} wire={wire} grid={grid} stress={stress} autoRotate={autoRotate} resetKey={resetKey} />
           </div>}
           {ready && dims && (
             <div className="dims-overlay" aria-label="Component dimensions">
@@ -2067,7 +2037,7 @@ function Workbench() {
           {open && <>
             <header className="chat-head">
               <div>
-                <h2><Icon>smart_toy</Icon> ENGINEERING COPILOT</h2>
+                <h2><Icon>{activeTab === 'chat' ? 'smart_toy' : 'tune'}</Icon> {activeTab === 'chat' ? 'ENGINEERING COPILOT' : 'WHAT-IF SIMULATOR'}</h2>
                 <div className="chat-conn-status">
                   {ready ? (
                     <><span className="chat-status-dot active"></span> Connected to current model</>
@@ -2075,70 +2045,10 @@ function Workbench() {
                     <><span className="chat-status-dot"></span> Awaiting component analysis</>
                   )}
                 </div>
-              </div>
-            </header>
-
-            {/* Active Part Context Card */}
-            {ready && engineeringContext && (
-              <div className="chat-part-card">
-                <div className="chat-part-title">
-                  <strong>{engineeringContext.component.name}</strong>
-                  <span className="chat-qty-tag">QTY {quantity}</span>
-                </div>
-                <div className="chat-part-meta">
-                  <span>{engineeringContext.material.label}</span>
-                  <span>{mfgData?.process?.recommended?.label || 'CNC Machining'}</span>
-                  {mfgData?.cost && <span>₹{formatINR(mfgData.cost.low)}–₹{formatINR(mfgData.cost.high)}/u</span>}
-                </div>
-              </div>
-            )}
-
-            {/* Suggested Question Chips */}
-            {ready && suggestions.length > 0 && (
-              <div className="chat-suggestions" aria-label="Suggested questions">
-                <span className="chat-suggestions-label">SUGGESTED QUESTIONS</span>
-                <div className="chat-chips-wrap">
-                  {suggestions.map((q, idx) => (
-                    <button
-                      key={idx}
-                      className="chat-chip-btn"
-                      disabled={thinking}
-                      onClick={() => send(null, q)}
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="thread" ref={thread}>
-              {!messages.length && (
-                <div className="ai-message">
-                  <Icon>smart_toy</Icon>
-                  <p>I'm your engineering copilot, grounded in this component's geometry, dimensions, material, and manufacturing intelligence. Ask about process trade-offs, material alternatives, or hypothetical modifications.</p>
-                </div>
-              )}
-              {messages.map((m, i) => (
-                <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
-              ))}
-              {thinking && (
-                <div className="ai-message thinking">
-                  <Icon>smart_toy</Icon>
-                  <p>Copilot is reasoning from component geometry & manufacturing data…</p>
-                </div>
-              )}
-            </div>
-            <form className="composer" onSubmit={send}>
-              <label className="sr-only" htmlFor="question">Ask Engineering Copilot</label>
-              <span>&gt;_</span>
-              <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask about this component…" />
-              <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
-            </form>
-                <h2><Icon>{activeTab === 'chat' ? 'smart_toy' : 'tune'}</Icon> {activeTab === 'chat' ? 'RE:FORGE ENGINEER' : 'WHAT-IF SIMULATOR'}</h2>
                 <span>{ready ? `COMPONENT CONTEXT · ${label}${conf != null ? ` · ${conf}% CONF` : ''}` : 'AWAITING COMPONENT ANALYSIS'}</span>
               </div>
             </header>
+
             <div className="panel-tabs" role="tablist" aria-label="Workbench tools">
               <button
                 role="tab"
@@ -2160,19 +2070,61 @@ function Workbench() {
 
             {activeTab === 'chat' ? (
               <>
+                {/* Active Part Context Card */}
+                {ready && engineeringContext && (
+                  <div className="chat-part-card">
+                    <div className="chat-part-title">
+                      <strong>{engineeringContext.component.name}</strong>
+                      <span className="chat-qty-tag">QTY {quantity}</span>
+                    </div>
+                    <div className="chat-part-meta">
+                      <span>{engineeringContext.material.label}</span>
+                      <span>{mfgData?.process?.recommended?.label || 'CNC Machining'}</span>
+                      {mfgData?.cost && <span>₹{formatINR(mfgData.cost.low)}–₹{formatINR(mfgData.cost.high)}/u</span>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Suggested Question Chips */}
+                {ready && suggestions.length > 0 && (
+                  <div className="chat-suggestions" aria-label="Suggested questions">
+                    <span className="chat-suggestions-label">SUGGESTED QUESTIONS</span>
+                    <div className="chat-chips-wrap">
+                      {suggestions.map((q, idx) => (
+                        <button
+                          key={idx}
+                          className="chat-chip-btn"
+                          disabled={thinking}
+                          onClick={() => send(null, q)}
+                        >
+                          {q}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="thread" ref={thread}>
                   {!messages.length && (
-                    <div className="ai-message"><Icon>smart_toy</Icon><p>I'm ready to analyse the reconstructed component. Ask about dimensions, material, or manufacturing constraints.</p></div>
+                    <div className="ai-message">
+                      <Icon>smart_toy</Icon>
+                      <p>I'm your engineering copilot, grounded in this component's geometry, dimensions, material, and manufacturing intelligence. Ask about process trade-offs, material alternatives, or hypothetical modifications.</p>
+                    </div>
                   )}
                   {messages.map((m, i) => (
                     <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
                   ))}
-                  {thinking && <div className="ai-message thinking"><Icon>smart_toy</Icon><p>Engineer is thinking…</p></div>}
+                  {thinking && (
+                    <div className="ai-message thinking">
+                      <Icon>smart_toy</Icon>
+                      <p>Copilot is reasoning from component geometry & manufacturing data…</p>
+                    </div>
+                  )}
                 </div>
                 <form className="composer" onSubmit={send}>
-                  <label className="sr-only" htmlFor="question">Ask ReForge Engineer</label>
+                  <label className="sr-only" htmlFor="question">Ask Engineering Copilot</label>
                   <span>&gt;_</span>
-                  <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask ReForge Engineer…" />
+                  <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask about this component…" />
                   <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
                 </form>
               </>
