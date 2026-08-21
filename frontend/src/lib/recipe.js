@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { extrude, gearShape, matAccent, matBody } from "./geo.js";
+import { extrude, gearShape, matAccent, matBody, matHighlight } from "./geo.js";
 
 const RECIPE_LIMITS = {
   maxProfilePoints: 200,
@@ -149,9 +149,31 @@ export function sanitizeRecipe(analysis) {
 }
 
 function buildLathe(profile) {
+  const group = new THREE.Group();
   const points = profile.map((pt) => new THREE.Vector2(pt.radius, pt.z));
   const geo = new THREE.LatheGeometry(points, 48);
-  return new THREE.Mesh(geo, matBody);
+  const mesh = new THREE.Mesh(geo, matBody);
+  mesh.userData = { featureId: "feature-shaft-1", featureType: "shaft" };
+  group.add(mesh);
+
+  // Detect steps/shoulders in profile and add highlight torus rings
+  for (let i = 0; i < profile.length - 1; i++) {
+    const r1 = profile[i].radius;
+    const r2 = profile[i + 1].radius;
+    const diff = Math.abs(r2 - r1);
+    const maxR = Math.max(r1, r2, 0.1);
+    if (diff >= 1.0 || diff >= 0.06 * maxR) {
+      const stepR = Math.max(r1, r2);
+      const stepGeo = new THREE.TorusGeometry(stepR * 0.99, Math.max(0.1, diff * 0.12), 12, 48);
+      const stepMesh = new THREE.Mesh(stepGeo, matHighlight);
+      stepMesh.rotation.x = Math.PI / 2;
+      stepMesh.position.y = profile[i].z;
+      stepMesh.userData = { featureId: "feature-shoulder-1", featureType: "shoulder", isHighlightOnly: true };
+      stepMesh.visible = false;
+      group.add(stepMesh);
+    }
+  }
+  return group;
 }
 
 function shapeFromOutline(outline) {
@@ -163,6 +185,7 @@ function shapeFromOutline(outline) {
 }
 
 function buildExtruded(outline, holes, depth) {
+  const group = new THREE.Group();
   const shape = shapeFromOutline(outline);
   for (const h of holes || []) {
     const hole = new THREE.Path();
@@ -172,7 +195,27 @@ function buildExtruded(outline, holes, depth) {
   const d = depth > 0 ? depth : Math.max(1, (Math.max(...outline.map((p) => Math.abs(p.x)), ...outline.map((p) => Math.abs(p.y)))) * 0.2);
   const geo = extrude(shape, d);
   geo.center();
-  return new THREE.Mesh(geo, matBody);
+  const mesh = new THREE.Mesh(geo, matBody);
+  mesh.userData = { featureId: "feature-flange-1", featureType: "flange" };
+  group.add(mesh);
+
+  // Add highlight cylinders for holes
+  if (Array.isArray(holes) && holes.length > 0) {
+    const isMulti = holes.length > 1;
+    for (const h of holes) {
+      const isCenter = Math.abs(h.cx || 0) < 0.01 && Math.abs(h.cy || 0) < 0.01;
+      const featureId = (!isMulti || isCenter) ? "feature-bore-1" : "feature-mounting-holes-1";
+      const featureType = (!isMulti || isCenter) ? "bore" : "mounting_hole";
+      const holeGeo = new THREE.CylinderGeometry((h.radius || 0.5) * 0.98, (h.radius || 0.5) * 0.98, d * 1.05, 24);
+      const holeMesh = new THREE.Mesh(holeGeo, matHighlight);
+      holeMesh.rotation.x = Math.PI / 2;
+      holeMesh.position.set(h.cx || 0, h.cy || 0, 0);
+      holeMesh.userData = { featureId, featureType, isHighlightOnly: true };
+      holeMesh.visible = false;
+      group.add(holeMesh);
+    }
+  }
+  return group;
 }
 
 function buildGearFromRecipe(gear) {
@@ -200,7 +243,9 @@ function buildGearFromRecipe(gear) {
   if (!helixAngle) {
     const geo = extrude(shape, height);
     geo.center();
-    group.add(new THREE.Mesh(geo, matBody));
+    const mesh = new THREE.Mesh(geo, matBody);
+    mesh.userData = { featureId: "feature-gear-teeth-1", featureType: "gear_teeth" };
+    group.add(mesh);
   } else {
     const slices = 24;
     const sliceH = height / slices;
@@ -212,6 +257,7 @@ function buildGearFromRecipe(gear) {
       const mesh = new THREE.Mesh(sliceGeo, matBody);
       mesh.position.z = i * sliceH - height / 2;
       mesh.rotation.z = (i / (slices - 1)) * totalTwist;
+      mesh.userData = { featureId: "feature-gear-teeth-1", featureType: "gear_teeth" };
       group.add(mesh);
     }
   }
@@ -222,34 +268,54 @@ function buildGearFromRecipe(gear) {
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(hubR, hubR, hubH, 32), matAccent);
     hub.rotation.x = Math.PI / 2;
     hub.position.z = z * (height / 2 - hubH / 2);
+    hub.userData = { featureId: "feature-boss-1", featureType: "boss" };
     group.add(hub);
   }
+
+  if (bore > 0) {
+    const boreHighlight = new THREE.Mesh(new THREE.CylinderGeometry(bore * 0.99, bore * 0.99, height * 1.05, 32), matHighlight);
+    boreHighlight.rotation.x = Math.PI / 2;
+    boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
+    boreHighlight.visible = false;
+    group.add(boreHighlight);
+  }
+
   return group;
 }
 
-function buildPrimitive(p) {
+function buildPrimitive(p, index = 0) {
   const segments = p.radialSegments || 24;
   let geo;
+  let defaultFeatureType = "other";
   switch (p.kind) {
     case "box":
       geo = new THREE.BoxGeometry(p.width || 1, p.height || 1, p.depth || 1);
+      defaultFeatureType = "flange";
       break;
     case "cylinder":
       geo = new THREE.CylinderGeometry(p.radius || 0.5, p.radius || 0.5, p.height || 1, Math.max(8, Math.min(48, segments)));
+      defaultFeatureType = "shaft";
       break;
     case "sphere":
       geo = new THREE.SphereGeometry(p.radius || 0.5, Math.max(8, Math.min(32, segments)), Math.max(6, Math.min(24, Math.floor(segments / 2))));
+      defaultFeatureType = "other";
       break;
     case "cone":
       geo = new THREE.ConeGeometry(p.radius || 0.5, p.height || 1, Math.max(8, Math.min(48, segments)));
+      defaultFeatureType = "chamfer";
       break;
     case "torus":
       geo = new THREE.TorusGeometry(p.radius || 0.5, p.tube || 0.15, 12, Math.max(12, Math.min(48, segments)));
+      defaultFeatureType = "groove";
       break;
     default:
       return null;
   }
   const mesh = new THREE.Mesh(geo, matAccent);
+  mesh.userData = {
+    featureId: `feature-${defaultFeatureType}-${index + 1}`,
+    featureType: defaultFeatureType,
+  };
   if (p.position) mesh.position.set(p.position.x || 0, p.position.y || 0, p.position.z || 0);
   if (p.rotation) mesh.rotation.set(p.rotation.x || 0, p.rotation.y || 0, p.rotation.z || 0);
   return mesh;
@@ -257,8 +323,8 @@ function buildPrimitive(p) {
 
 function buildPrimitives(primitives) {
   const group = new THREE.Group();
-  for (const p of primitives) {
-    const mesh = buildPrimitive(p);
+  for (let i = 0; i < primitives.length; i++) {
+    const mesh = buildPrimitive(primitives[i], i);
     if (mesh) group.add(mesh);
   }
   return group;

@@ -4,6 +4,16 @@ export const matBody = new THREE.MeshStandardMaterial({ color: "#3d332c", metaln
 export const matAccent = new THREE.MeshStandardMaterial({ color: "#b76308", metalness: 0.6, roughness: 0.5 });
 export const matRim = new THREE.MeshStandardMaterial({ color: "#de822b", metalness: 0.8, roughness: 0.35 });
 export const matDark = new THREE.MeshStandardMaterial({ color: "#271e18", metalness: 0.5, roughness: 0.6 });
+export const matHighlight = new THREE.MeshStandardMaterial({
+  color: "#c9f88d",
+  emissive: "#c9f88d",
+  emissiveIntensity: 0.8,
+  transparent: true,
+  opacity: 0.6,
+  roughness: 0.2,
+  metalness: 0.1,
+  depthWrite: false,
+});
 
 export function extrude(shape, depth, bevel = true) {
   return new THREE.ExtrudeGeometry(shape, {
