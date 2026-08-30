@@ -774,7 +774,7 @@ function FeatureIdentificationPanel({
 
 // ─── Automatic Engineering Drawing Viewer Modal ────────────────────────────
 
-function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose }) {
+function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose, isWorkWindow = false }) {
   const [revision, setRevision] = useState('A');
   const [viewFilter, setViewFilter] = useState('all');
   const [showDimensions, setShowDimensions] = useState(true);
@@ -868,17 +868,16 @@ function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose 
     setActiveDimTooltip(null);
   };
 
-  return (
-    <div className="drawing-modal-backdrop" role="dialog" aria-modal="true" aria-label="Engineering Drawing Generator">
-      <div className="drawing-modal-content">
-        <header className="drawing-modal-header">
-          <div className="drawing-title-row">
-            <button className="back drawing-back-btn" onClick={onClose}>
-              <Icon>arrow_back</Icon> Back to 3D Workbench
-            </button>
-            <span className="drawing-dwg-badge">{drawingModel.drawingId} // REV {revision}</span>
-            <span className="drawing-part-name">{drawingModel.partName}</span>
-          </div>
+  const content = (
+    <div className={`drawing-modal-content ${isWorkWindow ? 'work-window-content' : ''}`}>
+      <header className="drawing-modal-header">
+        <div className="drawing-title-row">
+          <button className="back drawing-back-btn" onClick={onClose} title="Dock to 3D Viewport">
+            <Icon>view_in_ar</Icon> Dock to 3D Workbench
+          </button>
+          <span className="drawing-dwg-badge">{drawingModel.drawingId} // REV {revision}</span>
+          <span className="drawing-part-name">{drawingModel.partName}</span>
+        </div>
 
           <div className="drawing-export-group">
             <button className="drawing-export-btn" disabled={exporting} onClick={handleExportSvg}>
@@ -1011,7 +1010,16 @@ function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose 
         <footer className="drawing-modal-footer">
           <span>ISO A4 Landscape · Drag to Pan · Scroll to Zoom · Click dimensions to inspect confidence</span>
         </footer>
-      </div>
+    </div>
+  );
+
+  if (isWorkWindow) {
+    return <div className="work-window drawing-work-window">{content}</div>;
+  }
+
+  return (
+    <div className="drawing-modal-backdrop" role="dialog" aria-modal="true" aria-label="Engineering Drawing Generator">
+      {content}
     </div>
   );
 }
@@ -1350,6 +1358,7 @@ function EngineeringReportModal({
   materialVolumeImpact,
   images,
   onClose,
+  isWorkWindow = false,
 }) {
   const label = resolveLabel(analysis);
   const conf = typeof analysis?.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
@@ -1366,66 +1375,71 @@ function EngineeringReportModal({
     window.print();
   };
 
-  return (
-    <div className="report-backdrop" onClick={onClose} role="dialog" aria-modal="true" aria-label="Engineering Decision Report">
-      <div className="report-modal" onClick={e => e.stopPropagation()}>
-        <div className="report-toolbar">
-          <div className="report-toolbar-title">
-            <Icon>description</Icon>
-            <span>ENGINEERING DECISION REPORT</span>
-          </div>
-          <div className="report-toolbar-actions">
-            <button className="primary btn-print" onClick={handlePrint}>
-              <Icon>print</Icon> PRINT / SAVE PDF
+  const content = (
+    <div className={`report-modal ${isWorkWindow ? 'work-window-report-modal' : ''}`} onClick={e => e.stopPropagation()}>
+      <div className="report-toolbar">
+        <div className="report-toolbar-title">
+          <Icon>description</Icon>
+          <span>ENGINEERING DECISION REPORT</span>
+        </div>
+        <div className="report-toolbar-actions">
+          <button className="primary btn-print" onClick={handlePrint}>
+            <Icon>print</Icon> PRINT / SAVE PDF
+          </button>
+          {isWorkWindow ? (
+            <button className="secondary btn-close-report" onClick={onClose} title="Dock to 3D Viewport">
+              <Icon>view_in_ar</Icon> Dock to 3D Workbench
             </button>
+          ) : (
             <button className="secondary btn-close-report" onClick={onClose} aria-label="Close report">
               <Icon>close</Icon>
             </button>
-          </div>
+          )}
         </div>
+      </div>
 
-        <article className="report-paper">
-          {/* Header */}
-          <header className="report-header">
-            <div className="report-brand-row">
-              <div>
-                <h1 className="report-brand">REFORGE AI</h1>
-                <p className="report-doc-type">ENGINEERING DECISION & AUDIT REPORT</p>
-              </div>
-              <div className="report-meta-col">
-                <span className="cad">DOC REF: RF-{Math.abs(label.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)).toString(16).toUpperCase().padStart(6, '0')}</span>
-                <span className="report-date">GENERATED: {timestamp}</span>
-                <span className={`report-state-chip ${hasModifications ? 'chip-scenario' : 'chip-baseline'}`}>
-                  {hasModifications ? 'STATE: WHAT-IF SCENARIO' : 'STATE: BASELINE'}
-                </span>
-              </div>
+      <article className="report-paper">
+        {/* Header */}
+        <header className="report-header">
+          <div className="report-brand-row">
+            <div>
+              <h1 className="report-brand">REFORGE AI</h1>
+              <p className="report-doc-type">ENGINEERING DECISION & AUDIT REPORT</p>
             </div>
-            <div className="report-title-row">
-              <h2>{label}</h2>
-              {conf != null && <span className="report-conf-badge">CONFIDENCE: {conf}%</span>}
+            <div className="report-meta-col">
+              <span className="cad">DOC REF: RF-{Math.abs(label.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)).toString(16).toUpperCase().padStart(6, '0')}</span>
+              <span className="report-date">GENERATED: {timestamp}</span>
+              <span className={`report-state-chip ${hasModifications ? 'chip-scenario' : 'chip-baseline'}`}>
+                {hasModifications ? 'STATE: WHAT-IF SCENARIO' : 'STATE: BASELINE'}
+              </span>
             </div>
-          </header>
+          </div>
+          <div className="report-title-row">
+            <h2>{label}</h2>
+            {conf != null && <span className="report-conf-badge">CONFIDENCE: {conf}%</span>}
+          </div>
+        </header>
 
-          {/* Section 1: Component Identification */}
-          <section className="report-section">
-            <h3 className="section-title"><Icon>category</Icon> 1. COMPONENT IDENTIFICATION</h3>
-            <div className="report-grid-2">
+        {/* Section 1: Component Identification */}
+        <section className="report-section">
+          <h3 className="section-title"><Icon>category</Icon> 1. COMPONENT IDENTIFICATION</h3>
+          <div className="report-grid-2">
+            <div className="report-kv-card">
+              <span className="kv-label">CLASSIFICATION</span>
+              <span className="kv-value">{label}</span>
+            </div>
+            {analysis?.componentType && analysis.componentType.toLowerCase() !== 'other' && (
               <div className="report-kv-card">
-                <span className="kv-label">CLASSIFICATION</span>
-                <span className="kv-value">{label}</span>
+                <span className="kv-label">RAW COMPONENT TYPE</span>
+                <span className="kv-value">{analysis.componentType}</span>
               </div>
-              {analysis?.componentType && analysis.componentType.toLowerCase() !== 'other' && (
-                <div className="report-kv-card">
-                  <span className="kv-label">RAW COMPONENT TYPE</span>
-                  <span className="kv-value">{analysis.componentType}</span>
-                </div>
-              )}
-              {analysis?.geometryType ? (
-                <div className="report-kv-card">
-                  <span className="kv-label">GEOMETRY MODEL TYPE</span>
-                  <span className="kv-value">{analysis.geometryType}</span>
-                </div>
-              ) : null}
+            )}
+            {analysis?.geometryType ? (
+              <div className="report-kv-card">
+                <span className="kv-label">GEOMETRY MODEL TYPE</span>
+                <span className="kv-value">{analysis.geometryType}</span>
+              </div>
+            ) : null}
               {analysis?.materialEstimate && analysis.materialEstimate.toLowerCase() !== 'unknown' ? (
                 <div className="report-kv-card">
                   <span className="kv-label">MATERIAL ESTIMATE</span>
@@ -1640,23 +1654,71 @@ function EngineeringReportModal({
           </section>
         </article>
       </div>
+  );
+
+  if (isWorkWindow) {
+    return <div className="work-window report-work-window">{content}</div>;
+  }
+
+  return (
+    <div className="report-backdrop" onClick={onClose} role="dialog" aria-modal="true" aria-label="Engineering Decision Report">
+      {content}
     </div>
   );
 }
 
-const LEFT_SECTIONS = [
-  { id: 'mfg', icon: 'receipt_long', label: 'Manufacturing Intel', short: 'Mfg Intel' },
-  { id: 'materials', icon: 'layers', label: 'Material Options', short: 'Materials' },
-  { id: 'report', icon: 'description', label: 'Engineering Decision Report', short: 'Decision Report' },
-  { id: 'drawing', icon: 'architecture', label: 'Engineering Drawing', short: '2D Drawing' },
-  { id: 'whatif', icon: 'tune', label: 'Engineering What-If Simulator', short: 'What-If Sim' },
+import PipWorkbench from './components/PipWorkbench.jsx';
+import ExportWorkWindow from './components/ExportWorkWindow.jsx';
+
+const DEFAULT_ANALYSIS = {
+  componentType: 'spur_gear',
+  componentName: '24T Industrial Spur Gear',
+  label: 'Spur Gear (24T)',
+  material: 'AISI 4140 Alloy Steel',
+  confidence: 0.94,
+  dimensions: {
+    outerDiameter: 120,
+    innerDiameter: 30,
+    height: 28,
+    thickness: 28,
+    teeth: 24,
+    module: 4.615,
+  },
+  features: [
+    'Central Bore Ø30mm',
+    '24 Involute Gear Teeth',
+    'Keyway 8x4mm',
+    'Shoulder Transition'
+  ],
+  geometryRecipe: {
+    type: 'gear',
+    gear: {
+      type: 'spur',
+      teeth: 24,
+      module: 4.615,
+      boreRadius: 15,
+      faceWidth: 28,
+      outerRadius: 60,
+    }
+  }
+};
+
+const LEFT_TABS = [
+  { id: 'workbench', icon: 'view_in_ar', label: 'Workbench' },
+  { id: 'mfg', icon: 'receipt_long', label: 'Manufacturing Intel' },
+  { id: 'materials', icon: 'layers', label: 'Material Options' },
+  { id: 'report', icon: 'description', label: 'Engineering Decision Report' },
+  { id: 'drawing', icon: 'architecture', label: 'Engineering Drawing' },
+  { id: 'whatif', icon: 'tune', label: 'Engineering What-If Simulator' },
+  { id: 'export', icon: 'download', label: 'Export' },
 ];
 
 function Workbench() {
-  const { setPage, images, analysis, stage, setStage, analysisVersion } = useApp();
-  const [open, setOpen] = useState(false);
-  const [leftOpen, setLeftOpen] = useState(false);
-  const [leftSection, setLeftSection] = useState('mfg');
+  const { setPage, images, analysis, setAnalysis, stage, setStage, analysisVersion } = useApp();
+  const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
+  const [activeTab, setActiveTab] = useState('workbench'); // Workbench tab open by default
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [pipVisible, setPipVisible] = useState(true);
   const [scenarioParams, setScenarioParams] = useState({});
   const [showReport, setShowReport] = useState(false);
   const [wire, setWire] = useState(false);
@@ -1695,7 +1757,7 @@ function Workbench() {
     }
   }, [stage, analysis, setStage]);
 
-  const ready = stage === 'ready' && analysis;
+  const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(analysis);
   const features = useMemo(() => normalizeFeatures(analysis), [analysis]);
 
   // Ensure manufacturing data is loaded for copilot, drawings, and reports
@@ -1932,323 +1994,332 @@ function Workbench() {
 
   const activeReconstructionAnalysis = isGeometryValid && scenarioAnalysis ? scenarioAnalysis : analysis;
   const modifiedCount = Object.keys(scenarioParams).length;
-  const activeSectionObj = LEFT_SECTIONS.find(s => s.id === leftSection) || LEFT_SECTIONS[0];
 
   return (
     <>
       <Nav />
-      <main className={`workbench ${leftOpen ? 'left-open' : ''} ${open ? 'chat-open' : ''}`}>
-        {/* Left Vertical Collapsible Panel */}
-        <aside className="left-panel" aria-label="Engineering Sections">
-          <div className="left-rail">
+      <main className={`workbench ${sidebarCollapsed ? 'sidebar-collapsed' : 'sidebar-expanded'} ${open ? 'chat-open' : ''}`}>
+        {/* Left Vertical Navigation Sidebar */}
+        <aside className={`left-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`} aria-label="Engineering Navigation">
+          <div className="sidebar-top-bar">
+            {!sidebarCollapsed && <span className="sidebar-brand-title">ENGINEERING TOOLS</span>}
             <button
-              className="rail-toggle-btn"
-              title={leftOpen ? "Collapse Panel" : "Expand Panel"}
-              aria-label={leftOpen ? "Collapse Left Panel" : "Expand Left Panel"}
-              onClick={() => setLeftOpen(o => !o)}
+              className="sidebar-collapse-btn"
+              title={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+              aria-label={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+              onClick={() => setSidebarCollapsed(c => !c)}
             >
-              <Icon>{leftOpen ? 'chevron_left' : 'chevron_right'}</Icon>
+              <Icon>{sidebarCollapsed ? 'chevron_right' : 'chevron_left'}</Icon>
             </button>
-            {LEFT_SECTIONS.map(sec => (
-              <button
-                key={sec.id}
-                className={`rail-btn ${leftSection === sec.id && leftOpen ? 'active' : ''}`}
-                title={sec.label}
-                aria-label={sec.label}
-                disabled={!ready}
-                onClick={() => {
-                  if (leftSection === sec.id && leftOpen) {
-                    setLeftOpen(false);
-                  } else {
-                    setLeftSection(sec.id);
-                    setLeftOpen(true);
-                  }
-                }}
-              >
-                <Icon>{sec.icon}</Icon>
-                {sec.id === 'whatif' && modifiedCount > 0 && <span className="rail-badge">{modifiedCount}</span>}
-              </button>
-            ))}
           </div>
 
-          {leftOpen && (
-            <div className="left-panel-body">
-              <header className="left-panel-header">
-                <div>
-                  <h3>
-                    <Icon>{activeSectionObj.icon}</Icon>
-                    {activeSectionObj.label}
-                  </h3>
-                  <span className="left-panel-subtitle">{ready ? `COMPONENT: ${label}` : 'AWAITING SYNTHESIS'}</span>
-                </div>
-                <button
-                  className="left-panel-close-btn"
-                  onClick={() => setLeftOpen(false)}
-                  title="Collapse Section Panel"
-                  aria-label="Collapse Section Panel"
-                >
-                  <Icon>close</Icon>
-                </button>
-              </header>
-
-              <nav className="left-section-nav" role="tablist" aria-label="Engineering Section Switcher">
-                {LEFT_SECTIONS.map(sec => (
-                  <button
-                    key={sec.id}
-                    role="tab"
-                    aria-selected={leftSection === sec.id}
-                    className={`left-section-tab ${leftSection === sec.id ? 'active' : ''}`}
-                    onClick={() => setLeftSection(sec.id)}
-                  >
-                    <Icon>{sec.icon}</Icon> {sec.short}
-                    {sec.id === 'whatif' && modifiedCount > 0 && <span className="tab-badge">{modifiedCount}</span>}
-                  </button>
-                ))}
-              </nav>
-
-              <div className="left-panel-content">
-                {leftSection === 'mfg' && (
-                  <ManufacturingPanel
-                    analysis={analysis}
-                    onData={setMfgData}
-                    quantity={quantity}
-                    setQuantity={setQuantity}
-                  />
+          <nav className="sidebar-nav" role="tablist">
+            {LEFT_TABS.map(tab => (
+              <button
+                key={tab.id}
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                className={`sidebar-tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+                title={tab.label}
+                disabled={!ready && tab.id !== 'workbench'}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setPipVisible(true);
+                }}
+              >
+                <Icon className="sidebar-tab-icon">{tab.icon}</Icon>
+                {!sidebarCollapsed && <span className="sidebar-tab-label">{tab.label}</span>}
+                {tab.id === 'whatif' && modifiedCount > 0 && (
+                  <span className="sidebar-tab-badge">{modifiedCount}</span>
                 )}
+              </button>
+            ))}
+          </nav>
 
-                {leftSection === 'materials' && (
-                  <MaterialComparisonPanel
-                    analysis={analysis}
-                    manufacturingIntelligence={mfgData}
-                  />
-                )}
-
-                {leftSection === 'report' && (
-                  <div className="left-hub-card">
-                    <div className="left-hub-meta-box">
-                      <div className="left-hub-row">
-                        <span>DOCUMENT STATUS</span>
-                        <span className={`report-state-chip ${modifiedCount > 0 ? 'chip-scenario' : 'chip-baseline'}`}>
-                          {modifiedCount > 0 ? 'WHAT-IF SCENARIO' : 'BASELINE AUDIT'}
-                        </span>
-                      </div>
-                      <div className="left-hub-row">
-                        <span>CONFIDENCE</span>
-                        <strong style={{ color: 'var(--lime)' }}>{conf != null ? `${conf}%` : '—'}</strong>
-                      </div>
-                      <div className="left-hub-row">
-                        <span>MODIFIED PARAMS</span>
-                        <strong>{modifiedCount} parameter{modifiedCount === 1 ? '' : 's'}</strong>
-                      </div>
-                      <div className="left-hub-row">
-                        <span>IMPACT RATING</span>
-                        <span className={`impact-badge impact-${impactStatus.toLowerCase().replace(/\s+/g, '-')}`}>{impactStatus}</span>
-                      </div>
-                      {materialVolumeImpact && (
-                        <div className="left-hub-row">
-                          <span>APPROX VOLUME Δ</span>
-                          <strong style={{ color: 'var(--primary)' }}>{materialVolumeImpact.deltaCm3} cm³ ({materialVolumeImpact.pct})</strong>
-                        </div>
-                      )}
-                    </div>
-
-                    <p className="left-hub-desc">
-                      Generate full ISO/engineering compliant audit trail with geometry verification, tolerance checks, material traceability, and manufacturing process sign-off.
-                    </p>
-
-                    <button
-                      className="primary left-panel-action-btn"
-                      disabled={!ready}
-                      onClick={() => setShowReport(true)}
-                    >
-                      <Icon>description</Icon> OPEN FULL DECISION REPORT
-                    </button>
-                  </div>
-                )}
-
-                {leftSection === 'drawing' && (
-                  <div className="left-hub-card">
-                    <div className="left-hub-meta-box">
-                      <div className="left-hub-row">
-                        <span>SHEET FORMAT</span>
-                        <strong>ISO 5457 · A4 LANDSCAPE</strong>
-                      </div>
-                      <div className="left-hub-row">
-                        <span>PROJECTION</span>
-                        <strong>THIRD ANGLE (ISO-E)</strong>
-                      </div>
-                      <div className="left-hub-row">
-                        <span>VIEWS AVAILABLE</span>
-                        <strong>ORTHOGRAPHIC (FRONT, TOP, SIDE)</strong>
-                      </div>
-                      <div className="left-hub-row">
-                        <span>DIMENSIONS & LAYERS</span>
-                        <strong style={{ color: 'var(--lime)' }}>DYNAMIC CAD VECTOR</strong>
-                      </div>
-                      <div className="left-hub-row">
-                        <span>EXPORTS SUPPORTED</span>
-                        <strong>SVG · PNG (3X) · PDF (A4)</strong>
-                      </div>
-                    </div>
-
-                    <p className="left-hub-desc">
-                      Synthesizes multi-view engineering technical drawings from AI geometric reconstruction with dimension callouts, centerline alignment, and customizable title block.
-                    </p>
-
-                    <button
-                      className="primary left-panel-action-btn"
-                      disabled={!ready}
-                      onClick={() => setShowDrawing(true)}
-                    >
-                      <Icon>architecture</Icon> OPEN 2D CAD DRAWING VIEWER
-                    </button>
-                  </div>
-                )}
-
-                {leftSection === 'whatif' && (
-                  <WhatIfSimulator
-                    analysis={analysis}
-                    scenarioParams={scenarioParams}
-                    setScenarioParams={setScenarioParams}
-                    isGeometryValid={isGeometryValid}
-                    geometryError={geometryError}
-                    warnings={warnings}
-                    impactStatus={impactStatus}
-                    materialVolumeImpact={materialVolumeImpact}
-                    ready={ready}
-                    onOpenReport={() => setShowReport(true)}
-                  />
-                )}
+          {!sidebarCollapsed && ready && (
+            <div className="sidebar-footer-card">
+              <div className="sidebar-footer-row">
+                <span className="sidebar-footer-dot"></span>
+                <strong className="sidebar-footer-name">{label}</strong>
               </div>
+              <span className="sidebar-footer-meta">{conf != null ? `${conf}% CONFIDENCE` : 'AI RECONSTRUCTED'}</span>
             </div>
           )}
         </aside>
 
-        {/* Center Viewport */}
-        <section className="viewport">
-          <div className="cad viewport-status" aria-live="polite">
-            {ready
-              ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
-              : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
-          </div>
+        {/* Center Main Workspace Area */}
+        <section className="workspace-main-area">
+          {activeTab === 'workbench' && (
+            <section className="viewport">
+              <div className="cad viewport-status" aria-live="polite">
+                {ready
+                  ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                  : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
+              </div>
 
-          {!analysis ? (
-            <div className="viewport-hint">
-              <Icon>view_in_ar</Icon>
-              <p>No component analysis yet.<br />Run synthesis from the upload page to generate a 3D model.</p>
+              {!analysis ? (
+                <div className="viewport-hint">
+                  <Icon>view_in_ar</Icon>
+                  <p>No component analysis yet.<br />Run synthesis from the upload page or load a sample part.</p>
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                    <button className="secondary" onClick={() => setPage('upload')}>
+                      <Icon>upload</Icon> Upload Component
+                    </button>
+                    <button className="primary" onClick={() => { setAnalysis(DEFAULT_ANALYSIS); setStage('ready'); }}>
+                      <Icon>model_training</Icon> Load Sample Gear
+                    </button>
+                  </div>
+                </div>
+              ) : !ready ? (
+                <div className="viewport-hint">
+                  <Icon>precision_manufacturing</Icon>
+                  <p>Generating reconstruction…</p>
+                  <ProgressStepper index={stageIndex} />
+                </div>
+              ) : (
+                <div className={`model ${wire ? 'wire' : ''}`}>
+                  <ReconstructedViewport
+                    analysis={activeReconstructionAnalysis}
+                    wire={wire}
+                    grid={grid}
+                    stress={stress}
+                    autoRotate={autoRotate}
+                    resetKey={resetKey}
+                    selectedFeatureId={selectedFeatureId}
+                    hoveredFeatureId={hoveredFeatureId}
+                  />
+                </div>
+              )}
+
+              {ready && dims && (
+                <div className="dims-overlay" aria-label="Component dimensions">
+                  {dimensionList(activeReconstructionAnalysis).map(d => (
+                    <div className="dims-row" key={d.label}><span className="dims-label">{d.label}</span><span className="dims-value">{d.value}</span></div>
+                  ))}
+                </div>
+              )}
+
+              {/* Detected Features Overlay */}
+              {ready && showFeatures && (
+                <div className="viewport-overlay-panels">
+                  <FeatureIdentificationPanel
+                    features={features}
+                    selectedFeatureId={selectedFeatureId}
+                    hoveredFeatureId={hoveredFeatureId}
+                    onSelectFeature={setSelectedFeatureId}
+                    onHoverFeature={setHoveredFeatureId}
+                  />
+                </div>
+              )}
+
+              {/* Right Vertical Viewport Controls Panel */}
+              <div className="viewport-controls-vertical" aria-label="Viewport Controls">
+                <button
+                  aria-label="Toggle automatic rotation"
+                  title="Auto-rotate"
+                  className={autoRotate ? 'active' : ''}
+                  disabled={!ready}
+                  onClick={() => setAutoRotate(value => !value)}
+                >
+                  <Icon>360</Icon>
+                </button>
+                <button
+                  aria-label="Toggle wireframe"
+                  title="Wireframe"
+                  className={wire ? 'active' : ''}
+                  disabled={!ready}
+                  onClick={() => setWire(value => !value)}
+                >
+                  <Icon>grid_on</Icon>
+                </button>
+                <button
+                  aria-label="Toggle FEA stress heatmap"
+                  title="Stress Heatmap"
+                  className={stress ? 'active' : ''}
+                  disabled={!ready}
+                  onClick={() => setStress(s => !s)}
+                >
+                  <Icon>local_fire_department</Icon>
+                </button>
+                <button
+                  aria-label="Toggle grid"
+                  title="Grid"
+                  className={grid ? 'active' : ''}
+                  disabled={!ready}
+                  onClick={() => setGrid(value => !value)}
+                >
+                  <Icon>grid_3x3</Icon>
+                </button>
+                <button
+                  aria-label="Toggle dimensions"
+                  title="Dimensions"
+                  className={dims ? 'active' : ''}
+                  disabled={!ready}
+                  onClick={() => setDims(d => !d)}
+                >
+                  <Icon>straighten</Icon>
+                </button>
+                <button
+                  aria-label="Toggle detected features"
+                  title="Detected Features"
+                  className={showFeatures ? 'active' : ''}
+                  disabled={!ready}
+                  onClick={() => setShowFeatures(v => !v)}
+                >
+                  <Icon>center_focus_strong</Icon>
+                </button>
+                <button
+                  aria-label="Reset viewport"
+                  title="Reset View"
+                  disabled={!ready}
+                  onClick={() => setResetKey(value => value + 1)}
+                >
+                  <Icon>restart_alt</Icon>
+                </button>
+              </div>
+
+              <div className="viewport-empty">
+                <Icon>view_in_ar</Icon>
+                <span>{ready ? 'DRAG TO ROTATE · SCROLL TO ZOOM · RIGHT-DRAG TO PAN' : 'RE:FORGE RENDERER'}</span>
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'mfg' && (
+            <div className="work-window mfg-work-window">
+              <div className="work-window-topbar">
+                <div className="work-window-title-group">
+                  <Icon>receipt_long</Icon>
+                  <h2>MANUFACTURING INTELLIGENCE WORK WINDOW</h2>
+                  <span className="work-window-badge">Cost &amp; Process Synthesis</span>
+                </div>
+              </div>
+              <div className="work-window-body">
+                <ManufacturingPanel
+                  analysis={analysis}
+                  onData={setMfgData}
+                  quantity={quantity}
+                  setQuantity={setQuantity}
+                />
+              </div>
             </div>
-          ) : !ready ? (
-            <div className="viewport-hint">
-              <Icon>precision_manufacturing</Icon>
-              <p>Generating reconstruction…</p>
-              <ProgressStepper index={stageIndex} />
+          )}
+
+          {activeTab === 'materials' && (
+            <div className="work-window materials-work-window">
+              <div className="work-window-topbar">
+                <div className="work-window-title-group">
+                  <Icon>layers</Icon>
+                  <h2>MATERIAL OPTIONS WORK WINDOW</h2>
+                  <span className="work-window-badge">Alloy Trade-off Matrix</span>
+                </div>
+              </div>
+              <div className="work-window-body">
+                <MaterialComparisonPanel
+                  analysis={analysis}
+                  manufacturingIntelligence={mfgData}
+                />
+              </div>
             </div>
-          ) : (
-            <div className={`model ${wire ? 'wire' : ''}`}>
-              <ReconstructedViewport
-                analysis={activeReconstructionAnalysis}
-                wire={wire}
-                grid={grid}
-                stress={stress}
-                autoRotate={autoRotate}
-                resetKey={resetKey}
-                selectedFeatureId={selectedFeatureId}
-                hoveredFeatureId={hoveredFeatureId}
+          )}
+
+          {activeTab === 'report' && (
+            <div className="work-window report-work-window">
+              <EngineeringReportModal
+                analysis={analysis}
+                scenarioParams={scenarioParams}
+                isGeometryValid={isGeometryValid}
+                geometryError={geometryError}
+                warnings={warnings}
+                impactStatus={impactStatus}
+                materialVolumeImpact={materialVolumeImpact}
+                images={images}
+                isWorkWindow={true}
+                onClose={() => setActiveTab('workbench')}
               />
             </div>
           )}
 
-          {ready && dims && (
-            <div className="dims-overlay" aria-label="Component dimensions">
-              {dimensionList(activeReconstructionAnalysis).map(d => (
-                <div className="dims-row" key={d.label}><span className="dims-label">{d.label}</span><span className="dims-value">{d.value}</span></div>
-              ))}
-            </div>
-          )}
-
-          {/* Detected Features Overlay */}
-          {ready && showFeatures && (
-            <div className="viewport-overlay-panels">
-              <FeatureIdentificationPanel
-                features={features}
-                selectedFeatureId={selectedFeatureId}
-                hoveredFeatureId={hoveredFeatureId}
-                onSelectFeature={setSelectedFeatureId}
-                onHoverFeature={setHoveredFeatureId}
+          {activeTab === 'drawing' && (
+            <div className="work-window drawing-work-window">
+              <EngineeringDrawingModal
+                analysis={analysis}
+                manufacturingIntelligence={mfgData}
+                isWorkWindow={true}
+                onClose={() => setActiveTab('workbench')}
               />
             </div>
           )}
 
-          {/* Right Vertical Viewport Controls Panel */}
-          <div className="viewport-controls-vertical" aria-label="Viewport Controls">
-            <button
-              aria-label="Toggle automatic rotation"
-              title="Auto-rotate"
-              className={autoRotate ? 'active' : ''}
-              disabled={!ready}
-              onClick={() => setAutoRotate(value => !value)}
-            >
-              <Icon>360</Icon>
-            </button>
-            <button
-              aria-label="Toggle wireframe"
-              title="Wireframe"
-              className={wire ? 'active' : ''}
-              disabled={!ready}
-              onClick={() => setWire(value => !value)}
-            >
-              <Icon>grid_on</Icon>
-            </button>
-            <button
-              aria-label="Toggle FEA stress heatmap"
-              title="Stress Heatmap"
-              className={stress ? 'active' : ''}
-              disabled={!ready}
-              onClick={() => setStress(s => !s)}
-            >
-              <Icon>local_fire_department</Icon>
-            </button>
-            <button
-              aria-label="Toggle grid"
-              title="Grid"
-              className={grid ? 'active' : ''}
-              disabled={!ready}
-              onClick={() => setGrid(value => !value)}
-            >
-              <Icon>grid_3x3</Icon>
-            </button>
-            <button
-              aria-label="Toggle dimensions"
-              title="Dimensions"
-              className={dims ? 'active' : ''}
-              disabled={!ready}
-              onClick={() => setDims(d => !d)}
-            >
-              <Icon>straighten</Icon>
-            </button>
-            <button
-              aria-label="Toggle detected features"
-              title="Detected Features"
-              className={showFeatures ? 'active' : ''}
-              disabled={!ready}
-              onClick={() => setShowFeatures(v => !v)}
-            >
-              <Icon>center_focus_strong</Icon>
-            </button>
-            <button
-              aria-label="Reset viewport"
-              title="Reset View"
-              disabled={!ready}
-              onClick={() => setResetKey(value => value + 1)}
-            >
-              <Icon>restart_alt</Icon>
-            </button>
-          </div>
+          {activeTab === 'whatif' && (
+            <div className="work-window whatif-work-window">
+              <div className="work-window-topbar">
+                <div className="work-window-title-group">
+                  <Icon>tune</Icon>
+                  <h2>ENGINEERING WHAT-IF SIMULATOR WORK WINDOW</h2>
+                  <span className="work-window-badge">Parametric Stress &amp; Volume Estimation</span>
+                </div>
+              </div>
+              <div className="work-window-body">
+                <WhatIfSimulator
+                  analysis={analysis}
+                  scenarioParams={scenarioParams}
+                  setScenarioParams={setScenarioParams}
+                  isGeometryValid={isGeometryValid}
+                  geometryError={geometryError}
+                  warnings={warnings}
+                  impactStatus={impactStatus}
+                  materialVolumeImpact={materialVolumeImpact}
+                  ready={ready}
+                  onOpenReport={() => setActiveTab('report')}
+                />
+              </div>
+            </div>
+          )}
 
-          <div className="viewport-empty">
-            <Icon>view_in_ar</Icon>
-            <span>{ready ? 'DRAG TO ROTATE · SCROLL TO ZOOM · RIGHT-DRAG TO PAN' : 'RE:FORGE RENDERER'}</span>
-          </div>
+          {activeTab === 'export' && (
+            <ExportWorkWindow analysis={activeReconstructionAnalysis} mfgData={mfgData} />
+          )}
+
+          {/* Picture-in-Picture Floating 3D Workbench when in other work windows */}
+          {activeTab !== 'workbench' && pipVisible && (
+            <PipWorkbench
+              analysis={activeReconstructionAnalysis}
+              ready={ready}
+              wire={wire}
+              setWire={setWire}
+              grid={grid}
+              setGrid={setGrid}
+              stress={stress}
+              setStress={setStress}
+              dims={dims}
+              setDims={setDims}
+              autoRotate={autoRotate}
+              setAutoRotate={setAutoRotate}
+              resetKey={resetKey}
+              setResetKey={setResetKey}
+              selectedFeatureId={selectedFeatureId}
+              hoveredFeatureId={hoveredFeatureId}
+              label={label}
+              conf={conf}
+              onDockToMain={() => setActiveTab('workbench')}
+              onClose={() => setPipVisible(false)}
+              dimensionList={dimensionList}
+              ReconstructedViewport={ReconstructedViewport}
+            />
+          )}
+
+          {/* Floating reopen button if PiP was closed */}
+          {activeTab !== 'workbench' && !pipVisible && (
+            <button
+              className="reopen-pip-btn"
+              onClick={() => setPipVisible(true)}
+              title="Open Floating 3D Viewport"
+              aria-label="Open Floating 3D Viewport"
+            >
+              <Icon>view_in_ar</Icon> 3D VIEW
+            </button>
+          )}
         </section>
 
         {/* Right Collapsible Copilot Engineering Chat */}
