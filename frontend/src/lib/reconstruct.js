@@ -300,6 +300,187 @@ export function buildModel(analysis) {
 }
 
 
+export function buildAssemblyScene(machineryState, options = {}) {
+  const group = new THREE.Group();
+  if (!machineryState) return { group, label: 'ASSEMBLY' };
+
+  const selectedIds = options.selectedIds || null; // array of IDs or null for all
+  const isSelected = (id) => !selectedIds || selectedIds.includes(id);
+
+  const primary = machineryState.primaryGear;
+  const companion = machineryState.companionGear;
+  const additionals = machineryState.additionalComponents || [];
+
+  const primaryAnalysis = primary?.analysis || {
+    componentType: 'spur gear',
+    teeth: 20,
+    module: 2.5,
+    dimensions: { outerDiameter: 55, innerDiameter: 16, height: 22 },
+  };
+
+  // 1. Build Primary Gear
+  const primaryModel = buildModel(primaryAnalysis);
+  const pGroup = primaryModel.group;
+  pGroup.userData = { componentId: primary?.id || 'primary-gear', isPrimary: true };
+
+  // Calculate scaling and center distance
+  const pTeeth = primaryAnalysis?.teeth || 20;
+  const pMod = primaryAnalysis?.module || 2.5;
+  const pPitchR = (pTeeth * pMod) / 2;
+  const pScale = 6 / Math.max(1, pPitchR * 2);
+  const visualPRadius = pPitchR * pScale;
+  const visualFaceWidth = (primaryAnalysis?.dimensions?.height || 22) * pScale;
+  const pBoreR = ((primaryAnalysis?.dimensions?.innerDiameter || 16) / 2) * pScale;
+
+  let centerDist = visualPRadius * 2.2;
+  let visualCRadius = visualPRadius * 1.2;
+
+  // 2. Build Companion Gear
+  let cGroup = null;
+  if (companion && isSelected(companion.id)) {
+    const companionAnalysis = companion.analysis || {
+      componentType: 'spur gear',
+      teeth: Math.round(pTeeth * 1.5),
+      module: pMod,
+      dimensions: {
+        outerDiameter: (Math.round(pTeeth * 1.5) + 2) * pMod,
+        innerDiameter: (primaryAnalysis?.dimensions?.innerDiameter || 16) * 1.2,
+        height: primaryAnalysis?.dimensions?.height || 22,
+      },
+    };
+
+    const companionModel = buildModel(companionAnalysis);
+    cGroup = companionModel.group;
+    cGroup.userData = { componentId: companion.id, isCompanion: true };
+
+    const cTeeth = companionAnalysis.teeth || Math.round(pTeeth * 1.5);
+    const cPitchR = (cTeeth * pMod) / 2;
+    visualCRadius = cPitchR * pScale;
+    centerDist = visualPRadius + visualCRadius;
+
+    // Position companion gear along X-axis
+    cGroup.position.x = centerDist;
+    // Rotate slightly so teeth mesh cleanly
+    cGroup.rotation.z = Math.PI / cTeeth;
+  }
+
+  // Offset entire assembly to center at origin
+  const assemblyOffsetX = -(centerDist / 2);
+
+  const assemblySubGroup = new THREE.Group();
+
+  if (isSelected(primary?.id || 'comp-primary-gear')) {
+    assemblySubGroup.add(pGroup);
+  }
+
+  if (cGroup) {
+    assemblySubGroup.add(cGroup);
+  }
+
+  // 3. Primary Shaft and Bearings
+  const pShaftLength = visualFaceWidth * 3.5;
+  const pShaftGeo = new THREE.CylinderGeometry(pBoreR * 0.96, pBoreR * 0.96, pShaftLength, 32);
+  const shaftMat = new THREE.MeshStandardMaterial({
+    color: '#3d332c',
+    metalness: 0.85,
+    roughness: 0.35,
+  });
+  const pShaftMesh = new THREE.Mesh(pShaftGeo, shaftMat);
+  pShaftMesh.rotation.x = Math.PI / 2;
+  pShaftMesh.userData = { featureType: 'shaft', role: 'drive_shaft' };
+  assemblySubGroup.add(pShaftMesh);
+
+  // Flanking Bearings for Primary Shaft
+  const pBearingR = pBoreR * 2.0;
+  const pBearingW = visualFaceWidth * 0.35;
+  for (const zDir of [1, -1]) {
+    const bearingGeo = ringShape(pBearingR, pBoreR * 0.97);
+    const bearingMesh = new THREE.Mesh(extrude(bearingGeo, pBearingW), matDark);
+    bearingMesh.position.z = zDir * (visualFaceWidth / 2 + pBearingW * 1.2);
+    assemblySubGroup.add(bearingMesh);
+  }
+
+  // 4. Companion Shaft and Bearings (if companion exists)
+  if (cGroup) {
+    const cBoreR = pBoreR * 1.1;
+    const cShaftGeo = new THREE.CylinderGeometry(cBoreR * 0.96, cBoreR * 0.96, pShaftLength, 32);
+    const cShaftMesh = new THREE.Mesh(cShaftGeo, shaftMat);
+    cShaftMesh.rotation.x = Math.PI / 2;
+    cShaftMesh.position.x = centerDist;
+    cShaftMesh.userData = { featureType: 'shaft', role: 'driven_shaft' };
+    assemblySubGroup.add(cShaftMesh);
+
+    const cBearingR = cBoreR * 2.0;
+    for (const zDir of [1, -1]) {
+      const bearingGeo = ringShape(cBearingR, cBoreR * 0.97);
+      const bearingMesh = new THREE.Mesh(extrude(bearingGeo, pBearingW), matDark);
+      bearingMesh.position.set(centerDist, 0, zDir * (visualFaceWidth / 2 + pBearingW * 1.2));
+      assemblySubGroup.add(bearingMesh);
+    }
+  }
+
+  // 5. Additional Components (Shafts, Bearings, Housings, Custom)
+  additionals.forEach((comp, idx) => {
+    if (!isSelected(comp.id)) return;
+    const compAnalysis = comp.analysis || {
+      componentType: comp.type || 'other',
+      dimensions: {
+        outerDiameter: comp.type === 'bearing' ? 45 : 30,
+        innerDiameter: 15,
+        height: 20,
+      },
+    };
+    const compModel = buildModel(compAnalysis);
+    const mGroup = compModel.group;
+    mGroup.userData = { componentId: comp.id, name: comp.name };
+
+    // Layout additional components neatly
+    const angle = ((idx + 1) / (additionals.length + 1)) * Math.PI - Math.PI / 2;
+    const dist = visualPRadius * 2.4;
+    mGroup.position.set(centerDist / 2 + Math.cos(angle) * dist, Math.sin(angle) * dist, 0);
+    mGroup.scale.setScalar(0.75);
+    assemblySubGroup.add(mGroup);
+  });
+
+  // 6. Enclosing Frame / Housing Structure
+  const frameW = centerDist + visualCRadius * 2.2 + 2;
+  const frameH = Math.max(visualPRadius, visualCRadius) * 2.6 + 2;
+  const frameD = visualFaceWidth * 4;
+
+  const housingGeo = new THREE.BoxGeometry(frameW, frameH, frameD);
+  const housingMat = new THREE.MeshBasicMaterial({
+    color: '#de822b',
+    wireframe: true,
+    transparent: true,
+    opacity: 0.22,
+  });
+  const housingBox = new THREE.Mesh(housingGeo, housingMat);
+  housingBox.position.set(centerDist / 2, 0, 0);
+  assemblySubGroup.add(housingBox);
+
+  // Mount Plate at bottom
+  const plateGeo = new THREE.BoxGeometry(frameW * 1.1, 0.4, frameD * 1.1);
+  const plateMat = new THREE.MeshStandardMaterial({
+    color: '#271e18',
+    metalness: 0.8,
+    roughness: 0.5,
+  });
+  const plateMesh = new THREE.Mesh(plateGeo, plateMat);
+  plateMesh.position.set(centerDist / 2, -frameH / 2 - 0.2, 0);
+  assemblySubGroup.add(plateMesh);
+
+  assemblySubGroup.position.x = assemblyOffsetX;
+  group.add(assemblySubGroup);
+
+  return {
+    group,
+    label: companion ? 'COMPLETE GEARBOX ASSEMBLY' : 'PRIMARY MACHINERY ASSEMBLY',
+    centerDist,
+    primaryGroup: pGroup,
+    companionGroup: cGroup,
+  };
+}
+
 export function resolveLabel(analysis) {
   const raw = String(analysis?.componentType || "").trim();
   const type = resolveComponentType(analysis);
@@ -324,3 +505,4 @@ export function dimensionList(analysis) {
   ];
   return rows.filter((row) => typeof row.value === "number" && isFinite(row.value));
 }
+

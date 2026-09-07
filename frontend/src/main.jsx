@@ -8,11 +8,27 @@ import { fetchMaterialAlternatives } from './lib/material-comparison.js';
 import { normalizeFeatures } from './lib/features.js';
 import { buildEngineeringContext, getEngineeringSuggestions } from './lib/engineering-context.js';
 import { buildDrawingModel, renderDrawingToSvg, exportSvg, exportPng, exportPdf } from './lib/drawing/index.js';
-import { buildModel, dimensionList, resolveLabel } from './lib/reconstruct.js';
+import { buildModel, buildAssemblyScene, dimensionList, resolveLabel } from './lib/reconstruct.js';
+import {
+  createInitialMachineryState,
+  getAllComponents,
+  hasDirtyContext,
+  createMachinerySnapshot,
+  addImagesToComponent,
+  removeImageFromComponent,
+  assignComponentRole,
+  addAdditionalComponent,
+  removeComponent,
+  ROLE_TYPES,
+} from './lib/machinery-context.js';
+import { ManageComponentsTab } from './components/ManageComponentsTab.jsx';
+import { MultiViewportGrid } from './components/MultiViewportGrid.jsx';
+import { PipWorkbench } from './components/PipWorkbench.jsx';
+import { ExportWorkWindow } from './components/ExportWorkWindow.jsx';
 
 const AppContext = createContext();
 const useApp = () => useContext(AppContext);
-const Icon = ({ children }) => <span className="icon" aria-hidden="true">{children}</span>;
+const Icon = ({ children, className = '' }) => <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>;
 
 const STEPS = ['UPLOAD', 'ANALYZING COMPONENT', 'EXTRACTING GEOMETRY', 'RECONSTRUCTING MODEL', 'MODEL READY'];
 
@@ -1025,33 +1041,98 @@ function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose,
 }
 
 function Upload() {
-  const { images, setImages, setPage, stage, setStage, setAnalysis } = useApp();
-  const input = useRef(null);
+  const {
+    machineryState,
+    setMachineryState,
+    setImages,
+    setPage,
+    stage,
+    setStage,
+    setAnalysis,
+    setLastAnalyzedSnapshot,
+    setActiveComponentId,
+  } = useApp();
+
+  const [activeUploadSlot, setActiveUploadSlot] = useState('primary'); // 'primary' | 'companion' | 'surroundings'
   const [reference, setReference] = useState({});
   const [error, setError] = useState('');
   const busy = stage === 'analysing';
 
-  // Clear images + analysis every time the Upload page is freshly opened
-  useEffect(() => {
-    setImages([]);
-    setAnalysis(null);
-    setStage('idle');
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const inputPrimary = useRef(null);
+  const inputCompanion = useRef(null);
+  const inputSurroundings = useRef(null);
 
-  const add = files => {
-    const accepted = [...files].filter(f => f.type.startsWith('image/'));
-    if (accepted.length !== files.length) setError('Use image files (PNG, JPG, WEBP, or GIF).');
-    else setError('');
-    setImages(old => [...old, ...accepted.map(file => ({ file, url: URL.createObjectURL(file), id: crypto.randomUUID() }))]);
+  const primary = machineryState?.primaryGear;
+  const companion = machineryState?.companionGear;
+  const surroundings = machineryState?.machineryContext;
+
+  const addFilesToSlot = (slot, files) => {
+    if (!files || !files.length) return;
+    const accepted = [...files].filter((f) => (f.type ? f.type.startsWith('image/') : true) || /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(f.name || ''));
+    if (!accepted.length) {
+      setError('Use image files (PNG, JPG, WEBP, or GIF).');
+      return;
+    }
+    setError('');
+
+    if (slot === 'primary') {
+      setMachineryState((prevState) => {
+        const targetId = prevState?.primaryGear?.id || 'comp-primary-gear';
+        const next = addImagesToComponent(prevState, targetId, accepted);
+        setImages(next.primaryGear?.images || []);
+        return next;
+      });
+    } else if (slot === 'companion') {
+      setMachineryState((prevState) => {
+        if (!prevState.companionGear) {
+          return addCompanionFromImages(prevState, accepted, 'Companion Gear');
+        }
+        return addImagesToComponent(prevState, prevState.companionGear.id, accepted);
+      });
+    } else if (slot === 'surroundings') {
+      setMachineryState((prevState) => {
+        return addImagesToComponent(prevState, 'environment-context', accepted);
+      });
+    }
   };
 
   const reconstruct = async () => {
-    if (!images.length) { setError('Add at least one component image to continue.'); return; }
+    const pImages = primary?.images || [];
+    if (!pImages.length) {
+      setError('Add at least one Primary Gear image to start reconstruction.');
+      return;
+    }
     setError('');
     setStage('analysing');
     try {
-      const result = await analyzeComponent(images, buildReference(reference));
-      setAnalysis(result);
+      const primaryRef = buildReference(reference);
+      const pAnalysis = await analyzeComponent(pImages, primaryRef);
+
+      let cAnalysis = null;
+      if (companion?.images?.length) {
+        cAnalysis = await analyzeComponent(companion.images, {});
+      }
+
+      const updatedMachinery = {
+        ...machineryState,
+        primaryGear: {
+          ...machineryState.primaryGear,
+          analysis: pAnalysis,
+          reference: primaryRef,
+        },
+        companionGear: machineryState.companionGear
+          ? {
+              ...machineryState.companionGear,
+              analysis: cAnalysis,
+            }
+          : null,
+      };
+
+      const initialSnapshot = createMachinerySnapshot(updatedMachinery);
+      setMachineryState(updatedMachinery);
+      setLastAnalyzedSnapshot(initialSnapshot);
+      setAnalysis(pAnalysis);
+      setActiveComponentId(primary.id);
       setStage('extracting');
       setPage('workbench');
     } catch (err) {
@@ -1060,69 +1141,250 @@ function Upload() {
     }
   };
 
+  const primaryCount = primary?.images?.length || 0;
+  const companionCount = companion?.images?.length || 0;
+  const surroundingsCount = surroundings?.images?.length || 0;
 
   return (
     <>
       <Nav />
       <main className="upload-page">
-        <button className="back" onClick={() => setPage('home')}><Icon>arrow_back</Icon> Back to brief</button>
+        <button className="back" onClick={() => setPage('home')}>
+          <Icon>arrow_back</Icon> Back to brief
+        </button>
         <header>
-          <p className="eyebrow">SYNTHESIS / INPUT</p>
-          <h1>Upload component views</h1>
-          <p>Provide clear angles for the upcoming reconstruction pipeline.</p>
+          <p className="eyebrow">MACHINERY CONTEXT / SYNTHESIS</p>
+          <h1>Upload Machinery &amp; Gear Views</h1>
+          <p>
+            ReForge reconstructs the Primary Gear in full context with its Companion Gear and surrounding machinery.
+          </p>
         </header>
-        <section className="upload-grid">
-          <div className="dropzone" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); add(e.dataTransfer.files); }}>
-            <Icon>add_photo_alternate</Icon>
-            <h2>Drop component images here</h2>
-            <p>PNG, JPG, WEBP or GIF · multiple views supported</p>
-            <button className="secondary" onClick={() => input.current.click()}>SELECT IMAGES</button>
-            <input ref={input} type="file" accept="image/*" multiple hidden onChange={e => { add(e.target.files); e.target.value = ''; }} />
-          </div>
-          <aside className="input-panel">
-            <span className="cad">CAPTURE GUIDANCE</span>
-            <p>Include front, side, and detail views where available.</p>
-            <div className="ref-block">
-              <span className="cad">KNOWN DIMENSIONS <small className="ref-optional">(OPTIONAL)</small></span>
-              <p className="ref-hint">Fill any you know — the AI calibrates the render to them. Leave blank to auto-estimate.</p>
-              <div className="ref-grid">
-                {REFERENCE_FIELDS.map(({ key, label, unit }) => (
-                  <label key={key} className="ref-field">
-                    <span>{label}</span>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="—"
-                      value={reference[key] ?? ''}
-                      onChange={e => setReference(prev => ({ ...prev, [key]: e.target.value }))}
-                      aria-label={label}
-                    />
-                    <small>{unit}</small>
-                  </label>
-                ))}
-              </div>
+
+        {/* Upload Slots Tab Switcher */}
+        <div className="copilot-tab-bar" style={{ marginBottom: '16px', borderRadius: '3px 3px 0 0' }}>
+          <button
+            className={`copilot-tab-btn ${activeUploadSlot === 'primary' ? 'active' : ''}`}
+            onClick={() => setActiveUploadSlot('primary')}
+          >
+            <span className="role-tag primary" style={{ fontSize: '7px' }}>PRIMARY</span>
+            Primary Gear ({primaryCount})
+          </button>
+          <button
+            className={`copilot-tab-btn ${activeUploadSlot === 'companion' ? 'active' : ''}`}
+            onClick={() => setActiveUploadSlot('companion')}
+          >
+            <span className="role-tag companion" style={{ fontSize: '7px' }}>COMPANION</span>
+            Companion Gear ({companionCount})
+          </button>
+          <button
+            className={`copilot-tab-btn ${activeUploadSlot === 'surroundings' ? 'active' : ''}`}
+            onClick={() => setActiveUploadSlot('surroundings')}
+          >
+            <span className="role-tag context" style={{ fontSize: '7px' }}>SURROUNDINGS</span>
+            Machinery ({surroundingsCount})
+          </button>
+        </div>
+
+        {activeUploadSlot === 'primary' && (
+          <section className="upload-grid">
+            <div
+              className="dropzone"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                addFilesToSlot('primary', e.dataTransfer.files);
+              }}
+            >
+              <Icon>add_photo_alternate</Icon>
+              <h2>Drop Primary Gear images here</h2>
+              <p>Main component being reconstructed · PNG, JPG, WEBP or GIF</p>
+              <button className="secondary" onClick={() => inputPrimary.current.click()}>
+                SELECT PRIMARY IMAGES
+              </button>
+              <input
+                ref={inputPrimary}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  addFilesToSlot('primary', e.target.files);
+                  e.target.value = '';
+                }}
+              />
             </div>
-          </aside>
-        </section>
+            <aside className="input-panel">
+              <span className="cad">PRIMARY GEAR SPECS</span>
+              <p>Include top, side, and tooth engagement angles.</p>
+              <div className="ref-block">
+                <span className="cad">
+                  KNOWN DIMENSIONS <small className="ref-optional">(OPTIONAL)</small>
+                </span>
+                <p className="ref-hint">Fill any you know to calibrate the 3D model.</p>
+                <div className="ref-grid">
+                  {REFERENCE_FIELDS.map(({ key, label, unit }) => (
+                    <label key={key} className="ref-field">
+                      <span>{label}</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="—"
+                        value={reference[key] ?? ''}
+                        onChange={(e) => setReference((prev) => ({ ...prev, [key]: e.target.value }))}
+                        aria-label={label}
+                      />
+                      <small>{unit}</small>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </aside>
+          </section>
+        )}
+
+        {activeUploadSlot === 'companion' && (
+          <section className="upload-grid">
+            <div
+              className="dropzone"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                addFilesToSlot('companion', e.dataTransfer.files);
+              }}
+            >
+              <Icon>sync</Icon>
+              <h2>Drop Companion Gear images here</h2>
+              <p>Mating gear directly interacting with the Primary Gear (Optional)</p>
+              <button className="secondary" onClick={() => inputCompanion.current.click()}>
+                SELECT COMPANION IMAGES
+              </button>
+              <input
+                ref={inputCompanion}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  addFilesToSlot('companion', e.target.files);
+                  e.target.value = '';
+                }}
+              />
+            </div>
+            <aside className="input-panel">
+              <span className="cad">COMPANION GEAR INSIGHTS</span>
+              <p>
+                Providing mating gear images unlocks center distance calibration, gear ratio kinematics, and tooth contact stress analysis.
+              </p>
+            </aside>
+          </section>
+        )}
+
+        {activeUploadSlot === 'surroundings' && (
+          <section className="upload-grid">
+            <div
+              className="dropzone"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                addFilesToSlot('surroundings', e.dataTransfer.files);
+              }}
+            >
+              <Icon>precision_manufacturing</Icon>
+              <h2>Drop Machinery / Assembly Context images here</h2>
+              <p>Machine view, shaft alignments, bearings, or gearbox housing (Optional)</p>
+              <button className="secondary" onClick={() => inputSurroundings.current.click()}>
+                SELECT MACHINERY IMAGES
+              </button>
+              <input
+                ref={inputSurroundings}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  addFilesToSlot('surroundings', e.target.files);
+                  e.target.value = '';
+                }}
+              />
+            </div>
+            <aside className="input-panel">
+              <span className="cad">ENVIRONMENTAL CONTEXT</span>
+              <p>
+                Gives the AI Copilot full situational awareness for housing constraints, shaft fits, lubrication, and vibration origins.
+              </p>
+            </aside>
+          </section>
+        )}
+
         {error && <p className="error" role="alert">{error}</p>}
         {busy && <ProgressStepper index={1} />}
+
+        {/* Previews Area */}
         <section className="preview-area">
           <div>
-            <p className="eyebrow">SELECTED VIEWS / {images.length}</p>
-            {images.length
-              ? <div className="previews">{images.map(image => (
+            <p className="eyebrow">
+              PRIMARY ({primaryCount}) · COMPANION ({companionCount}) · SURROUNDINGS ({surroundingsCount})
+            </p>
+            <div className="previews">
+              {primary?.images?.map((image) => (
                 <figure key={image.id}>
-                  <img src={image.url} alt={image.file.name} />
-                  <button aria-label={`Remove ${image.file.name}`} onClick={() => setImages(items => items.filter(item => item.id !== image.id))}><Icon>close</Icon></button>
-                  <figcaption>{image.file.name}</figcaption>
+                  {image.url ? <img src={image.url} alt={image.name} /> : null}
+                  <button
+                    aria-label={`Remove ${image.name}`}
+                    onClick={() => {
+                      const next = removeImageFromComponent(machineryState, primary.id, image.id);
+                      setMachineryState(next);
+                      setImages(next.primaryGear?.images || []);
+                    }}
+                  >
+                    <Icon>close</Icon>
+                  </button>
+                  <figcaption>Primary: {image.name}</figcaption>
                 </figure>
-              ))}</div>
-              : <p className="empty">No component images selected yet.</p>}
+              ))}
+              {companion?.images?.map((image) => (
+                <figure key={image.id}>
+                  {image.url ? <img src={image.url} alt={image.name} /> : null}
+                  <button
+                    aria-label={`Remove ${image.name}`}
+                    onClick={() => {
+                      const next = removeImageFromComponent(machineryState, companion.id, image.id);
+                      setMachineryState(next);
+                    }}
+                  >
+                    <Icon>close</Icon>
+                  </button>
+                  <figcaption>Companion: {image.name}</figcaption>
+                </figure>
+              ))}
+              {surroundings?.images?.map((image) => (
+                <figure key={image.id}>
+                  {image.url ? <img src={image.url} alt={image.name} /> : null}
+                  <button
+                    aria-label={`Remove ${image.name}`}
+                    onClick={() => {
+                      const next = removeImageFromComponent(machineryState, 'comp-machinery-surroundings', image.id);
+                      setMachineryState(next);
+                    }}
+                  >
+                    <Icon>close</Icon>
+                  </button>
+                  <figcaption>Machinery: {image.name}</figcaption>
+                </figure>
+              ))}
+              {!primaryCount && !companionCount && !surroundingsCount && (
+                <p className="empty">No component images selected yet.</p>
+              )}
+            </div>
           </div>
+
           <div className="upload-actions">
-            <button className="secondary" onClick={() => input.current.click()}>ADD IMAGES</button>
-            <button className="primary" disabled={busy} onClick={reconstruct}>
-              {busy ? 'ANALYZING COMPONENT…' : 'CREATE 3D MODEL'} <Icon>precision_manufacturing</Icon>
+            <button
+              className="primary"
+              disabled={busy || !primaryCount}
+              onClick={reconstruct}
+            >
+              {busy ? 'SYNTHESIZING MACHINERY…' : 'CREATE 3D MODEL'} <Icon>precision_manufacturing</Icon>
             </button>
           </div>
         </section>
@@ -1667,9 +1929,6 @@ function EngineeringReportModal({
   );
 }
 
-import PipWorkbench from './components/PipWorkbench.jsx';
-import ExportWorkWindow from './components/ExportWorkWindow.jsx';
-
 const DEFAULT_ANALYSIS = {
   componentType: 'spur_gear',
   componentName: '24T Industrial Spur Gear',
@@ -1714,8 +1973,30 @@ const LEFT_TABS = [
 ];
 
 function Workbench() {
-  const { setPage, images, analysis, setAnalysis, stage, setStage, analysisVersion } = useApp();
+  const {
+    setPage,
+    images,
+    analysis,
+    setAnalysis,
+    stage,
+    setStage,
+    analysisVersion,
+    machineryState,
+    setMachineryState,
+    viewMode,
+    setViewMode,
+    activeComponentId,
+    setActiveComponentId,
+    selectedComponentIds,
+    setSelectedComponentIds,
+    handleRegenerate,
+    isRegenerating,
+    isDirty,
+    setLastAnalyzedSnapshot,
+  } = useApp();
+
   const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
+  const [copilotTab, setCopilotTab] = useState('chat'); // 'chat' | 'components'
   const [activeTab, setActiveTab] = useState('workbench'); // Workbench tab open by default
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [pipVisible, setPipVisible] = useState(true);
@@ -1768,6 +2049,24 @@ function Workbench() {
       .catch(() => {});
   }, [analysis, quantity]);
 
+  // Load sample gear helper
+  const loadSampleGear = useCallback(() => {
+    const initial = createInitialMachineryState();
+    initial.primaryGear.analysis = DEFAULT_ANALYSIS;
+    setMachineryState(initial);
+    setLastAnalyzedSnapshot(createMachinerySnapshot(initial));
+    setAnalysis(DEFAULT_ANALYSIS);
+    setStage('ready');
+  }, [setMachineryState, setLastAnalyzedSnapshot, setAnalysis, setStage]);
+
+  // Determine active component and scope
+  const allComponents = useMemo(() => getAllComponents(machineryState), [machineryState]);
+  const activeComp = useMemo(() => {
+    return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear;
+  }, [allComponents, activeComponentId, machineryState]);
+
+  const activeScope = viewMode === 'assembly' ? 'assembly' : machineryState?.companionGear ? 'pair' : 'single';
+
   // Build structured Engineering Context for Copilot
   const engineeringContext = useMemo(() => {
     if (!ready) return null;
@@ -1777,8 +2076,10 @@ function Workbench() {
       quantity,
       features,
       materialAlternatives: null,
+      machineryState,
+      activeScope,
     });
-  }, [ready, analysis, mfgData, quantity, features]);
+  }, [ready, analysis, mfgData, quantity, features, machineryState, activeScope]);
 
   // Generate context-aware suggestions
   const suggestions = useMemo(() => {
@@ -1807,14 +2108,12 @@ function Workbench() {
     setThinking(false);
   };
 
-  // Reset comparison, features, and chat when a new analysis is loaded
+  // Reset comparison & features when a new component analysis is loaded (preserve chat history on regeneration)
   useEffect(() => {
     setMfgData(null);
     setSelectedFeatureId(null);
     setHoveredFeatureId(null);
-    setMessages([]);
-    historyRef.current = [];
-  }, [analysis]);
+  }, [analysisVersion]);
 
   const label = analysis ? resolveLabel(analysis) : null;
   const conf = analysis && typeof analysis.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
@@ -2065,7 +2364,7 @@ function Workbench() {
                     <button className="secondary" onClick={() => setPage('upload')}>
                       <Icon>upload</Icon> Upload Component
                     </button>
-                    <button className="primary" onClick={() => { setAnalysis(DEFAULT_ANALYSIS); setStage('ready'); }}>
+                    <button className="primary" onClick={loadSampleGear}>
                       <Icon>model_training</Icon> Load Sample Gear
                     </button>
                   </div>
@@ -2077,18 +2376,24 @@ function Workbench() {
                   <ProgressStepper index={stageIndex} />
                 </div>
               ) : (
-                <div className={`model ${wire ? 'wire' : ''}`}>
-                  <ReconstructedViewport
-                    analysis={activeReconstructionAnalysis}
-                    wire={wire}
-                    grid={grid}
-                    stress={stress}
-                    autoRotate={autoRotate}
-                    resetKey={resetKey}
-                    selectedFeatureId={selectedFeatureId}
-                    hoveredFeatureId={hoveredFeatureId}
-                  />
-                </div>
+                <MultiViewportGrid
+                  viewMode={viewMode}
+                  setViewMode={setViewMode}
+                  machineryState={machineryState}
+                  activeComponentId={activeComponentId}
+                  setActiveComponentId={setActiveComponentId}
+                  selectedComponentIds={selectedComponentIds}
+                  setSelectedComponentIds={setSelectedComponentIds}
+                  wire={wire}
+                  grid={grid}
+                  stress={stress}
+                  autoRotate={autoRotate}
+                  resetKey={resetKey}
+                  selectedFeatureId={selectedFeatureId}
+                  hoveredFeatureId={hoveredFeatureId}
+                  ready={ready}
+                  onOpenImageManager={() => setCopilotTab('components')}
+                />
               )}
 
               {ready && dims && (
@@ -2285,6 +2590,7 @@ function Workbench() {
           {activeTab !== 'workbench' && pipVisible && (
             <PipWorkbench
               analysis={activeReconstructionAnalysis}
+              machineryState={machineryState}
               ready={ready}
               wire={wire}
               setWire={setWire}
@@ -2339,67 +2645,135 @@ function Workbench() {
                       <><span className="chat-status-dot"></span> Awaiting component analysis</>
                     )}
                   </div>
-                  <span>{ready ? `COMPONENT CONTEXT · ${label}${conf != null ? ` · ${conf}% CONF` : ''}` : 'AWAITING COMPONENT ANALYSIS'}</span>
+                  <span>
+                    {ready
+                      ? `CONTEXT: ${activeScope.toUpperCase()} · ${label}${conf != null ? ` · ${conf}% CONF` : ''}`
+                      : 'AWAITING COMPONENT ANALYSIS'}
+                  </span>
                 </div>
               </header>
 
-              {/* Active Part Context Card */}
-              {ready && engineeringContext && (
-                <div className="chat-part-card">
-                  <div className="chat-part-title">
-                    <strong>{engineeringContext.component.name}</strong>
-                    <span className="chat-qty-tag">QTY {quantity}</span>
-                  </div>
-                  <div className="chat-part-meta">
-                    <span>{engineeringContext.material.label}</span>
-                    <span>{mfgData?.process?.recommended?.label || 'CNC Machining'}</span>
-                    {mfgData?.cost && <span>₹{formatINR(mfgData.cost.low)}–₹{formatINR(mfgData.cost.high)}/u</span>}
-                  </div>
-                </div>
-              )}
-
-              {/* Suggested Question Chips */}
-              {ready && suggestions.length > 0 && (
-                <div className="chat-suggestions" aria-label="Suggested questions">
-                  <span className="chat-suggestions-label">SUGGESTED QUESTIONS</span>
-                  <div className="chat-chips-wrap">
-                    {suggestions.map((q, idx) => (
-                      <button
-                        key={idx}
-                        className="chat-chip-btn"
-                        disabled={thinking}
-                        onClick={() => send(null, q)}
-                      >
-                        {q}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="thread" ref={thread}>
-                {!messages.length && (
-                  <div className="ai-message">
-                    <Icon>smart_toy</Icon>
-                    <p>I'm your engineering copilot, grounded in this component's geometry, dimensions, material, and manufacturing intelligence. Ask about process trade-offs, material alternatives, or hypothetical modifications.</p>
-                  </div>
-                )}
-                {messages.map((m, i) => (
-                  <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
-                ))}
-                {thinking && (
-                  <div className="ai-message thinking">
-                    <Icon>smart_toy</Icon>
-                    <p>Copilot is reasoning from component geometry & manufacturing data…</p>
-                  </div>
-                )}
+              {/* Copilot Navigation Tab Switcher: Chat vs Manage Components */}
+              <div className="copilot-tab-bar">
+                <button
+                  className={`copilot-tab-btn ${copilotTab === 'chat' ? 'active' : ''}`}
+                  onClick={() => setCopilotTab('chat')}
+                >
+                  <Icon>chat</Icon> Chat
+                </button>
+                <button
+                  className={`copilot-tab-btn ${copilotTab === 'components' ? 'active' : ''}`}
+                  onClick={() => setCopilotTab('components')}
+                >
+                  <Icon>category</Icon> Manage Components
+                  {isDirty && <span className="dirty-indicator" title="New visual context staged" />}
+                </button>
               </div>
-              <form className="composer" onSubmit={send}>
-                <label className="sr-only" htmlFor="question">Ask Engineering Copilot</label>
-                <span>&gt;_</span>
-                <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask about this component…" />
-                <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
-              </form>
+
+              {/* TAB 1: Manage Components */}
+              {copilotTab === 'components' && (
+                <ManageComponentsTab
+                  machineryState={machineryState}
+                  setMachineryState={setMachineryState}
+                  onUpdateMachineryState={setMachineryState}
+                  onRegenerate={handleRegenerate}
+                  isRegenerating={isRegenerating}
+                  isDirty={isDirty}
+                  activeComponentId={activeComponentId}
+                  onSelectComponent={setActiveComponentId}
+                />
+              )}
+
+              {/* TAB 2: Chat */}
+              {copilotTab === 'chat' && (
+                <>
+                  {/* Regenerate Alert Notice Banner when new visual context is staged */}
+                  {isDirty && (
+                    <div className="regenerate-banner" style={{ margin: '8px 12px 4px 12px' }}>
+                      <div className="regenerate-banner-text">
+                        <Icon>auto_mode</Icon>
+                        <span>New visual context staged.</span>
+                      </div>
+                      <button
+                        className="regenerate-btn"
+                        onClick={handleRegenerate}
+                        disabled={isRegenerating}
+                      >
+                        {isRegenerating ? 'REGENERATING…' : 'REGENERATE'}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Active Part Context Card */}
+                  {ready && engineeringContext && (
+                    <div className="chat-part-card">
+                      <div className="chat-part-title">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <strong>{engineeringContext.component.name}</strong>
+                          <span className={`role-tag ${activeScope === 'assembly' ? 'context' : activeScope === 'pair' ? 'companion' : 'primary'}`} style={{ fontSize: '8px', padding: '1px 5px' }}>
+                            {activeScope.toUpperCase()}
+                          </span>
+                        </div>
+                        <span className="chat-qty-tag">QTY {quantity}</span>
+                      </div>
+                      <div className="chat-part-meta">
+                        <span>{engineeringContext.material.label}</span>
+                        <span>{mfgData?.process?.recommended?.label || 'CNC Machining'}</span>
+                        {mfgData?.cost && <span>₹{formatINR(mfgData.cost.low)}–₹{formatINR(mfgData.cost.high)}/u</span>}
+                      </div>
+                      {activeScope === 'pair' && engineeringContext.machineryContext?.relations?.gearRatio && (
+                        <div className="chat-part-meta" style={{ marginTop: '4px', color: 'var(--primary)' }}>
+                          <span>Gear Ratio: {engineeringContext.machineryContext.relations.gearRatio}:1</span>
+                          <span>Center Dist: {engineeringContext.machineryContext.relations.centerDistanceMm} mm</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Suggested Question Chips */}
+                  {ready && suggestions.length > 0 && (
+                    <div className="chat-suggestions" aria-label="Suggested questions">
+                      <span className="chat-suggestions-label">SUGGESTED QUESTIONS</span>
+                      <div className="chat-chips-wrap">
+                        {suggestions.map((q, idx) => (
+                          <button
+                            key={idx}
+                            className="chat-chip-btn"
+                            disabled={thinking}
+                            onClick={() => send(null, q)}
+                          >
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="thread" ref={thread}>
+                    {!messages.length && (
+                      <div className="ai-message">
+                        <Icon>smart_toy</Icon>
+                        <p>I'm your engineering copilot, grounded in this component's geometry, dimensions, material, and manufacturing intelligence. Ask about process trade-offs, material alternatives, or hypothetical modifications.</p>
+                      </div>
+                    )}
+                    {messages.map((m, i) => (
+                      <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
+                    ))}
+                    {thinking && (
+                      <div className="ai-message thinking">
+                        <Icon>smart_toy</Icon>
+                        <p>Copilot is reasoning from component geometry & manufacturing data…</p>
+                      </div>
+                    )}
+                  </div>
+                  <form className="composer" onSubmit={send}>
+                    <label className="sr-only" htmlFor="question">Ask Engineering Copilot</label>
+                    <span>&gt;_</span>
+                    <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask about this component or assembly…" />
+                    <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
+                  </form>
+                </>
+              )}
             </>
           )}
         </aside>
@@ -2439,6 +2813,73 @@ function App() {
   const [stage, setStage] = useState('idle');
   const [analysisVersion, setAnalysisVersion] = useState(0);
 
+  // Machinery Context State
+  const [machineryState, setMachineryState] = useState(() => createInitialMachineryState());
+  const [lastAnalyzedSnapshot, setLastAnalyzedSnapshot] = useState(null);
+  const [viewMode, setViewMode] = useState('single'); // 'single' | 'dual' | 'quad' | 'assembly'
+  const [activeComponentId, setActiveComponentId] = useState('comp-primary-gear');
+  const [selectedComponentIds, setSelectedComponentIds] = useState(['comp-primary-gear']);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+
+  const isDirty = useMemo(() => {
+    return hasDirtyContext(machineryState, lastAnalyzedSnapshot);
+  }, [machineryState, lastAnalyzedSnapshot]);
+
+  const handleRegenerate = useCallback(async () => {
+    if (isRegenerating) return;
+    setIsRegenerating(true);
+    try {
+      const primary = machineryState?.primaryGear;
+      const companion = machineryState?.companionGear;
+      const additions = machineryState?.additionalComponents || [];
+
+      // Re-run analysis for primary if it has images
+      let pAnalysis = primary?.analysis;
+      if (primary?.images?.length) {
+        pAnalysis = await analyzeComponent(primary.images, primary.reference || {});
+      }
+
+      // Re-run analysis for companion if it has images
+      let cAnalysis = companion?.analysis;
+      if (companion?.images?.length) {
+        cAnalysis = await analyzeComponent(companion.images, companion.reference || {});
+      }
+
+      // Re-run analysis for additions that have images
+      const updatedAdditions = await Promise.all(
+        additions.map(async (comp) => {
+          if (comp.images?.length) {
+            try {
+              const compAnalysis = await analyzeComponent(comp.images, comp.reference || {});
+              return { ...comp, analysis: compAnalysis };
+            } catch {
+              return comp;
+            }
+          }
+          return comp;
+        })
+      );
+
+      const nextState = {
+        ...machineryState,
+        primaryGear: primary ? { ...primary, analysis: pAnalysis } : null,
+        companionGear: companion ? { ...companion, analysis: cAnalysis } : null,
+        additionalComponents: updatedAdditions,
+      };
+
+      const newSnapshot = createMachinerySnapshot(nextState);
+      setMachineryState(nextState);
+      setLastAnalyzedSnapshot(newSnapshot);
+      if (pAnalysis) {
+        setAnalysis(pAnalysis);
+      }
+    } catch (err) {
+      console.error('Regeneration failed:', err);
+    } finally {
+      setIsRegenerating(false);
+    }
+  }, [machineryState, isRegenerating]);
+
   const updateImages = useCallback((next) => {
     setImages(next);
     setAnalysis(null);
@@ -2456,7 +2897,19 @@ function App() {
     analysis, setAnalysis: updateAnalysis,
     stage, setStage,
     analysisVersion,
-  }), [page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion]);
+    machineryState, setMachineryState,
+    lastAnalyzedSnapshot, setLastAnalyzedSnapshot,
+    viewMode, setViewMode,
+    activeComponentId, setActiveComponentId,
+    selectedComponentIds, setSelectedComponentIds,
+    handleRegenerate,
+    isRegenerating,
+    isDirty,
+  }), [
+    page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
+    machineryState, lastAnalyzedSnapshot, viewMode, activeComponentId,
+    selectedComponentIds, handleRegenerate, isRegenerating, isDirty
+  ]);
 
   return (
     <AppContext.Provider value={value}>
