@@ -190,6 +190,7 @@ function validateEngineeringContext(raw) {
       overall: typeof conf.overall === "number" ? Math.max(0, Math.min(1, conf.overall)) : 0.8,
       uncertainties: Array.isArray(conf.uncertainties) ? conf.uncertainties.slice(0, 5) : [],
     },
+    machineryContext: raw.machineryContext && typeof raw.machineryContext === "object" ? raw.machineryContext : null,
   };
 }
 

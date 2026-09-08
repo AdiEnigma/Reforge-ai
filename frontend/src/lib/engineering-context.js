@@ -1,8 +1,11 @@
 /**
  * engineering-context.js
  * Builds a compact, normalized engineering context object for the AI Engineer Copilot.
- * Generates context-aware suggested questions for the active mechanical component.
+ * Supports single components, gear pairs (Primary + Companion), and complete machinery assemblies.
+ * Generates context-aware suggested questions based on the active viewport scope.
  */
+
+import { computeAssemblyRelations } from './machinery-context.js';
 
 /**
  * Builds a structured, compact engineering context object.
@@ -13,14 +16,21 @@ export function buildEngineeringContext({
   quantity = 1,
   features = [],
   materialAlternatives = null,
+  machineryState = null,
+  activeScope = 'single', // 'single' | 'pair' | 'assembly' | 'component'
+  activeComponentId = null,
 }) {
-  if (!analysis || typeof analysis !== "object") {
+  if (!analysis && !machineryState) {
     return null;
   }
 
-  const compType = String(analysis.componentType || "mechanical component").trim();
-  const dims = analysis.dimensions || {};
-  const recipe = analysis.geometryRecipe || {};
+  // If a specific component is selected or standard single analysis is provided
+  const targetAnalysis = analysis || machineryState?.primaryGear?.analysis;
+  if (!targetAnalysis && !machineryState) return null;
+
+  const compType = String(targetAnalysis?.componentType || "mechanical component").trim();
+  const dims = targetAnalysis?.dimensions || {};
+  const recipe = targetAnalysis?.geometryRecipe || {};
 
   // Clean numeric dimensions
   const cleanDims = {
@@ -30,17 +40,17 @@ export function buildEngineeringContext({
     width: typeof dims.width === "number" ? dims.width : null,
     length: typeof dims.length === "number" ? dims.length : null,
     thickness: typeof dims.thickness === "number" ? dims.thickness : null,
-    teeth: typeof analysis.teeth === "number" ? Math.round(analysis.teeth) : (recipe.gear?.teeth || null),
-    module: typeof analysis.module === "number" ? analysis.module : (recipe.gear?.module || null),
-    helixAngle: typeof analysis.helixAngle === "number" ? analysis.helixAngle : null,
+    teeth: typeof targetAnalysis?.teeth === "number" ? Math.round(targetAnalysis.teeth) : (recipe.gear?.teeth || null),
+    module: typeof targetAnalysis?.module === "number" ? targetAnalysis.module : (recipe.gear?.module || null),
+    helixAngle: typeof targetAnalysis?.helixAngle === "number" ? targetAnalysis.helixAngle : null,
   };
 
   // Material info
   const mfgMat = manufacturingIntelligence?.material;
   const material = {
     key: mfgMat?.key || "mild_steel",
-    label: mfgMat?.label || analysis.materialEstimate || "Mild Steel",
-    source: mfgMat?.materialSource || (analysis.materialEstimate ? "ai-estimated" : "fallback-default"),
+    label: mfgMat?.label || targetAnalysis?.materialEstimate || "Mild Steel",
+    source: mfgMat?.materialSource || (targetAnalysis?.materialEstimate ? "ai-estimated" : "fallback-default"),
     densityGCm3: mfgMat?.densityGCm3 || 7.85,
     costPerKgINR: mfgMat?.costPerKgINR || 65,
     isAssumed: mfgMat?.materialSource === "fallback-default" || !mfgMat,
@@ -128,10 +138,89 @@ export function buildEngineeringContext({
     }));
   }
 
+  // Machinery Context & Assembly Relations
+  let machineryContextSummary = null;
+  if (machineryState) {
+    const relations = computeAssemblyRelations(
+      machineryState.primaryGear,
+      machineryState.companionGear,
+      machineryState.additionalComponents || []
+    );
+
+    const formatCompImages = (images = []) =>
+      images.map((img, idx) => ({
+        id: img.id || `img-${idx}`,
+        name: img.name || `Photo ${idx + 1}`,
+        purpose: img.purpose || 'general',
+        priority: img.priority || 'medium',
+        note: img.note || '',
+      }));
+
+    const compList = [
+      {
+        id: machineryState.primaryGear?.id || 'comp-primary',
+        name: machineryState.primaryGear?.name || 'Primary Gear',
+        role: 'PRIMARY',
+        type: machineryState.primaryGear?.type || 'spur gear',
+        notes: machineryState.primaryGear?.notes || '',
+        photoCount: machineryState.primaryGear?.images?.length || 0,
+        images: formatCompImages(machineryState.primaryGear?.images),
+      },
+      ...(machineryState.companionGear
+        ? [
+            {
+              id: machineryState.companionGear.id,
+              name: machineryState.companionGear.name,
+              role: 'COMPANION',
+              type: machineryState.companionGear.type || 'spur gear',
+              notes: machineryState.companionGear.notes || '',
+              photoCount: machineryState.companionGear.images?.length || 0,
+              images: formatCompImages(machineryState.companionGear.images),
+            },
+          ]
+        : []),
+      ...(machineryState.additionalComponents || []).map((c) => ({
+        id: c.id,
+        name: c.name,
+        role: c.role,
+        type: c.type,
+        notes: c.notes || '',
+        photoCount: c.images?.length || 0,
+        images: formatCompImages(c.images),
+      })),
+    ];
+
+    const totalGears =
+      (machineryState.primaryGear ? 1 : 0) +
+      (machineryState.companionGear ? 1 : 0) +
+      (machineryState.additionalComponents || []).filter(
+        (c) => c.role === 'ADDITIONAL_GEAR' || c.type?.toLowerCase().includes('gear') || c.name?.toLowerCase().includes('gear')
+      ).length;
+
+    machineryContextSummary = {
+      activeScope,
+      activeComponentId: activeComponentId || machineryState.primaryGear?.id,
+      totalGears,
+      components: compList,
+      assemblyRelations: relations,
+      hasCompanionGear: Boolean(machineryState.companionGear),
+      assemblyContextNotes: machineryState.assemblyContext?.notes || '',
+      surroundingsNotes: machineryState.environmentContext?.notes || machineryState.machineryContext?.notes || '',
+      assemblyContextPhotos: formatCompImages(machineryState.assemblyContext?.images),
+      environmentContextPhotos: formatCompImages(machineryState.environmentContext?.images),
+      totalPhotos:
+        (machineryState.primaryGear?.images?.length || 0) +
+        (machineryState.companionGear?.images?.length || 0) +
+        (machineryState.additionalComponents || []).reduce((acc, c) => acc + (c.images?.length || 0), 0) +
+        (machineryState.assemblyContext?.images?.length || 0) +
+        (machineryState.environmentContext?.images?.length || 0),
+    };
+  }
+
   return {
     component: {
       type: compType,
-      name: analysis.componentType ? String(analysis.componentType).toUpperCase() : "COMPONENT",
+      name: targetAnalysis?.componentType ? String(targetAnalysis.componentType).toUpperCase() : "COMPONENT",
     },
     dimensions: cleanDims,
     material,
@@ -145,14 +234,15 @@ export function buildEngineeringContext({
     manufacturing: mfgSummary,
     materialAlternatives: matAltsSummary,
     confidence: {
-      overall: typeof analysis.confidence === "number" ? Math.round(analysis.confidence * 100) / 100 : 0.8,
-      uncertainties: Array.isArray(analysis.uncertainties) ? analysis.uncertainties : [],
+      overall: typeof targetAnalysis?.confidence === "number" ? Math.round(targetAnalysis.confidence * 100) / 100 : 0.8,
+      uncertainties: Array.isArray(targetAnalysis?.uncertainties) ? targetAnalysis.uncertainties : [],
     },
+    machineryContext: machineryContextSummary,
   };
 }
 
 /**
- * Generates component-specific suggested questions.
+ * Generates component-specific and assembly-aware suggested questions.
  */
 export function getEngineeringSuggestions(context) {
   if (!context || !context.component) {
@@ -171,6 +261,31 @@ export function getEngineeringSuggestions(context) {
   const isShaft = compType.includes("shaft") || compType.includes("cylinder") || context.geometry?.style === "revolved";
   const isFlange = compType.includes("flange");
   const qty = context.manufacturing?.quantity || 1;
+
+  const mach = context.machineryContext;
+  const scope = mach?.activeScope || 'single';
+
+  // Assembly or Pair-Specific Questions
+  if (scope === 'pair' && mach?.assemblyRelations?.companion) {
+    const rel = mach.assemblyRelations.companion;
+    suggestions.push(`What is the center distance (${rel.centerDistance} mm) and gear ratio (${rel.gearRatio}:1)?`);
+    suggestions.push("How should backlash and contact stress be inspected between these two gears?");
+    suggestions.push("Are both gears matched in module and pressure angle?");
+    if (context.material?.label) {
+      suggestions.push(`Should the companion gear use the same material (${context.material.label}) or a different hardness?`);
+    }
+    return suggestions.slice(0, 5);
+  }
+
+  if (scope === 'assembly' && mach) {
+    suggestions.push("How do the shafts and bearings support load distribution in this gearbox?");
+    suggestions.push("What lubrication and housing enclosure tolerances are recommended?");
+    if (mach.assemblyRelations?.companion) {
+      suggestions.push(`Analyze the complete power transmission chain (ratio ${mach.assemblyRelations.companion.gearRatio}:1).`);
+    }
+    suggestions.push("What are the primary sources of mechanical wear and vibration in this machinery?");
+    return suggestions.slice(0, 5);
+  }
 
   // 1. Process reasoning
   suggestions.push(`Why is ${proc} recommended?`);

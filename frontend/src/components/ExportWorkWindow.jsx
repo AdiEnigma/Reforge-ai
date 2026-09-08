@@ -8,7 +8,7 @@ import React, { useState } from 'react';
 import * as exporters from '../lib/exporters.js';
 
 const Icon = ({ children, className = '' }) => (
-  <span className={`icon ${className}`}>{children}</span>
+  <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
 );
 
 const EXPORT_CATEGORIES = [
