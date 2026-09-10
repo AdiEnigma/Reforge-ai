@@ -21,7 +21,7 @@ test('End-to-End Machinery Context Lifecycle', async (t) => {
     const state = createInitialMachineryState();
     assert.ok(state.primaryGear);
     assert.equal(state.primaryGear.role, ROLE_TYPES.PRIMARY);
-    assert.equal(state.primaryGear.name, 'Primary Gear');
+    assert.equal(state.primaryGear.name, 'Gear 1');
     assert.equal(state.companionGear, null);
     assert.equal(state.additionalComponents.length, 0);
     assert.ok(state.machineryContext);
@@ -86,13 +86,13 @@ test('End-to-End Machinery Context Lifecycle', async (t) => {
     // Second assign Gear C as Companion - CONFLICT with Gear B!
     const conflict2 = checkRoleConflict(state, gearCId, ROLE_TYPES.COMPANION);
     assert.equal(conflict2.hasConflict, true);
-    assert.equal(conflict2.currentCompanion.name, 'Gear B');
+    assert.equal(conflict2.currentHolder.name, 'Gear B');
 
-    // Perform replacement with force = true
+    // Perform swap with force = true
     state = assignComponentRole(state, gearCId, ROLE_TYPES.COMPANION, true);
     assert.equal(state.companionGear.name, 'Gear C');
-    assert.equal(state.additionalComponents[0].name, 'Gear B'); // Gear B demoted back to additional
-    assert.equal(state.additionalComponents[0].role, ROLE_TYPES.ADDITIONAL_GEAR);
+    assert.equal(state.additionalComponents[0].name, 'Gear B'); // Gear B swapped back to additional
+    assert.equal(state.additionalComponents[0].role, ROLE_TYPES.SECONDARY); // Gear B inherits Gear C's old role
   });
 
   await t.test('4. Image Management and Dirty State Tracking', () => {

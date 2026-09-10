@@ -273,6 +273,78 @@ export function computeManufacturingIntelligence({ analysis, quantity }) {
     tradeoff: alt.tradeoff,
   }));
 
+  // 7. Lifecycle Cost & Maintenance Dynamics
+  const midUnitCost = Math.round((costLowINR + costHighINR) / 2);
+  const totalBatchCost = midUnitCost * quantity;
+
+  const maintenanceImplications = {
+    lubricationIntervalHours: 2000,
+    lubricantType: material.category === 'plastic' ? 'Synthetic Polyalphaolefin (PAO) Grease' : 'ISO VG 220 / VG 320 EP Mineral Gear Oil',
+    inspectionIntervalHours: 500,
+    keyMonitoringPoints: [
+      'Tooth flank contact pattern & backlash growth check',
+      'Oil bath iron/copper particle spectrometry (ferrography)',
+      'Shaft runout & bearing radial clearance inspection',
+      'Operating housing temperature & vibration FFT spectrum',
+    ],
+    backlashSensitivity: 'Moderate (0.05–0.12 mm allowable operational backlash)',
+    downtimeRiskFactor: 'High (Critical driveline component — failure causes unplanned stoppage)',
+  };
+
+  const replacementFrequencyAssumptions = {
+    contactFatigueL10LifeHours: material.category === 'plastic' ? 12000 : 40000,
+    expectedServiceYears: material.category === 'plastic' ? 1.8 : 5.0,
+    annualOperatingHours: 8000,
+    dutyCycleFactor: 'Continuous 2-shift industrial duty cycle with moderate shock factor (Ka = 1.25)',
+    environmentCondition: 'Industrial clean/semi-dusty environment with forced splash lubrication',
+  };
+
+  const expectedReplacements5Yr = Math.max(0, Math.floor((5 * 8000) / replacementFrequencyAssumptions.contactFatigueL10LifeHours));
+  const replacementsCost5Yr = expectedReplacements5Yr * midUnitCost;
+  const routineMaintenanceCost5Yr = Math.round(5 * 2400); // 5 years of filter & oil top-ups
+  const downtimeRiskMitigationCost = Math.round(midUnitCost * 0.45);
+  const fiveYearTCOINR = midUnitCost + replacementsCost5Yr + routineMaintenanceCost5Yr + downtimeRiskMitigationCost;
+  const tenYearTCOINR = Math.round(fiveYearTCOINR * 2.15);
+
+  const estimatedLongTermCost = {
+    fiveYearTCOINR,
+    tenYearTCOINR,
+    expectedReplacements5Yr,
+    breakdown: {
+      initialProcurementINR: midUnitCost,
+      replacementsCostINR: replacementsCost5Yr,
+      routineMaintenanceINR: routineMaintenanceCost5Yr,
+      downtimeRiskMitigationINR: downtimeRiskMitigationCost,
+    },
+  };
+
+  const costDrivers = [
+    {
+      factor: 'Material Grade & Stock Volume',
+      impact: 'HIGH',
+      description: `${material.label} (${material.densityGCm3} g/cm³ @ ₹${material.costPerKgINR}/kg) raw billet stock with ${Math.round((primaryProcess.wasteFactor - 1) * 100)}% machining chip waste allowance.`,
+    },
+    {
+      factor: 'Machine Run Time & Complexity',
+      impact: 'HIGH',
+      description: `${machiningHours.toFixed(2)} hrs/unit machining time using ${primaryProcess.label} (₹${primaryProcess.hourlyRateINR}/hr) based on ${featureCount} geometric features.`,
+    },
+    {
+      factor: 'Tooling & Batch Amortization',
+      impact: quantity < 10 ? 'HIGH' : 'LOW',
+      description: primaryProcess.toolingCostINR > 0
+        ? `One-time tooling ₹${primaryProcess.toolingCostINR.toLocaleString('en-IN')} amortized over ${quantity} unit${quantity > 1 ? 's' : ''} (₹${Math.round(primaryProcess.toolingCostINR / quantity)}/unit).`
+        : `Zero dedicated tooling required — setup hours (${primaryProcess.setupHours} hr) amortized across batch.`,
+    },
+    {
+      factor: 'Heat Treatment & Case Hardening',
+      impact: 'MEDIUM',
+      description: 'Case carburizing / induction hardening to 58–62 HRC for surface wear resistance and contact fatigue endurance.',
+    },
+  ];
+
+  const basisOfEstimate = `This estimate is derived from 3D parametric geometric volume (${volumeCm3.toFixed(2)} cm³), surface area contact calculations, material density (${material.densityGCm3} g/cm³), and standard Indian MSME industrial job-shop machining rates (CNC turning/milling/hobbing @ ₹${primaryProcess.hourlyRateINR}/hr). Overhead is calculated at 20% covering workshop tooling wear, coolant, inspection, and power.`;
+
   return {
     volumeCm3: Math.round(volumeCm3 * 1000) / 1000,   // 3 decimal places
     massKg: Math.round(massKg * 1000) / 1000,
@@ -292,8 +364,22 @@ export function computeManufacturingIntelligence({ analysis, quantity }) {
       currency: "INR",
       low: costLowINR,
       high: costHighINR,
+      mid: midUnitCost,
+      batchTotal: totalBatchCost,
       breakdown,
     },
+    initialCostEstimate: {
+      perUnitLow: costLowINR,
+      perUnitHigh: costHighINR,
+      perUnitMid: midUnitCost,
+      batchTotal: totalBatchCost,
+      breakdown,
+    },
+    maintenanceImplications,
+    replacementFrequencyAssumptions,
+    estimatedLongTermCost,
+    costDrivers,
+    basisOfEstimate,
     leadTime: { lowDays, highDays },
     quantity,
     assumptions,

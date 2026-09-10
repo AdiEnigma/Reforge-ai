@@ -25,6 +25,9 @@ import { ManageComponentsTab } from './components/ManageComponentsTab.jsx';
 import { MultiViewportGrid } from './components/MultiViewportGrid.jsx';
 import { PipWorkbench } from './components/PipWorkbench.jsx';
 import { ExportWorkWindow } from './components/ExportWorkWindow.jsx';
+import { ComponentDropdown } from './components/ComponentDropdown.jsx';
+import { GearHealthPanel } from './components/GearHealthPanel.jsx';
+import { evaluateGearHealth } from './lib/gear-health.js';
 
 const AppContext = createContext();
 const useApp = () => useContext(AppContext);
@@ -114,7 +117,7 @@ function createStressMaterial() {
   });
 }
 
-function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey, selectedFeatureId, hoveredFeatureId }) {
+function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey, selectedFeatureId, hoveredFeatureId, cameraStateRef }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
   const options = useRef({ wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId });
@@ -154,14 +157,29 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
     });
 
     const stressMaterial = createStressMaterial();
-    const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
-    const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
+    const initialCam = cameraStateRef?.current || { radius: 8, theta: 0.55, phi: 1.35, target: { x: 0, y: 0, z: 0 } };
+    const view = { radius: initialCam.radius, theta: initialCam.theta, phi: initialCam.phi };
+    const target = new THREE.Vector3(initialCam.target?.x || 0, initialCam.target?.y || 0, initialCam.target?.z || 0);
+
+    const syncCamera = () => {
+      if (cameraStateRef) {
+        cameraStateRef.current = {
+          radius: view.radius,
+          theta: view.theta,
+          phi: view.phi,
+          target: { x: target.x, y: target.y, z: target.z },
+        };
+      }
+    };
+
+    const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); syncCamera(); };
+    resetViewRef.current = reset;
     let pointerMode = null, lastPoint = null, appliedKey = null;
     const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
     const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
-    const onMove = event => { if (!pointerMode || !lastPoint) return; const dx = event.clientX - lastPoint.x, dy = event.clientY - lastPoint.y; lastPoint = { x: event.clientX, y: event.clientY }; if (pointerMode === 'rotate') { view.theta -= dx * .008; view.phi = Math.max(.18, Math.min(Math.PI - .18, view.phi - dy * .008)); } else { target.x -= dx * .006 * view.radius; target.y += dy * .006 * view.radius; } };
+    const onMove = event => { if (!pointerMode || !lastPoint) return; const dx = event.clientX - lastPoint.x, dy = event.clientY - lastPoint.y; lastPoint = { x: event.clientX, y: event.clientY }; if (pointerMode === 'rotate') { view.theta -= dx * .008; view.phi = Math.max(.18, Math.min(Math.PI - .18, view.phi - dy * .008)); } else { target.x -= dx * .006 * view.radius; target.y += dy * .006 * view.radius; } syncCamera(); };
     const onUp = () => { pointerMode = null; lastPoint = null; canvas.style.cursor = 'grab'; };
-    const onWheel = event => { event.preventDefault(); view.radius = Math.max(2.5, Math.min(20, view.radius * (1 + event.deltaY * .001))); };
+    const onWheel = event => { event.preventDefault(); view.radius = Math.max(2.5, Math.min(20, view.radius * (1 + event.deltaY * .001))); syncCamera(); };
     const preventContext = event => event.preventDefault();
     canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMove); canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointercancel', onUp); canvas.addEventListener('wheel', onWheel, { passive: false }); canvas.addEventListener('contextmenu', preventContext);
     const resize = () => { const { width, height } = host.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height, false); }; const observer = new ResizeObserver(resize); observer.observe(host); resize();
@@ -169,7 +187,10 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
     let frame;
     const animate = () => {
       frame = requestAnimationFrame(animate);
-      if (options.current.autoRotate) view.theta += .006;
+      if (options.current.autoRotate) {
+        view.theta += .006;
+        syncCamera();
+      }
       gridHelper.visible = options.current.grid;
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
@@ -303,7 +324,15 @@ function formatINR(n) {
   return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(n);
 }
 
-function ManufacturingPanel({ analysis, onData, quantity: externalQuantity, setQuantity: externalSetQuantity }) {
+function ManufacturingPanel({
+  analysis,
+  onData,
+  quantity: externalQuantity,
+  setQuantity: externalSetQuantity,
+  machineryState,
+  activeComponentId,
+  setActiveComponentId,
+}) {
   const [internalQuantity, setInternalQuantity] = useState(1);
   const quantity = externalQuantity ?? internalQuantity;
   const setQuantity = externalSetQuantity ?? setInternalQuantity;
@@ -312,6 +341,7 @@ function ManufacturingPanel({ analysis, onData, quantity: externalQuantity, setQ
   const [error, setError] = useState('');
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
   const [altOpen, setAltOpen] = useState(false);
+  const [activeMfgSubTab, setActiveMfgSubTab] = useState('cost'); // 'cost' | 'lifecycle' | 'materials'
 
   useEffect(() => {
     if (!analysis) return;
@@ -344,10 +374,42 @@ function ManufacturingPanel({ analysis, onData, quantity: externalQuantity, setQ
 
   return (
     <div className="mfg-panel" aria-label="Manufacturing Intelligence">
+      {/* Universal Component Selector Dropdown */}
+      {machineryState && (
+        <ComponentDropdown
+          machineryState={machineryState}
+          activeComponentId={activeComponentId}
+          setActiveComponentId={setActiveComponentId}
+          title="MFG INTEL TARGET COMPONENT"
+        />
+      )}
+
+      {/* Sub-navigation tabs within Manufacturing Intel */}
+      <div className="mfg-subnav-bar">
+        <button
+          className={`mfg-subnav-btn ${activeMfgSubTab === 'cost' ? 'active' : ''}`}
+          onClick={() => setActiveMfgSubTab('cost')}
+        >
+          <Icon>receipt_long</Icon> COST &amp; PROCESS
+        </button>
+        <button
+          className={`mfg-subnav-btn ${activeMfgSubTab === 'lifecycle' ? 'active' : ''}`}
+          onClick={() => setActiveMfgSubTab('lifecycle')}
+        >
+          <Icon>history_toggle_off</Icon> LIFECYCLE &amp; MAINTENANCE
+        </button>
+        <button
+          className={`mfg-subnav-btn ${activeMfgSubTab === 'materials' ? 'active' : ''}`}
+          onClick={() => setActiveMfgSubTab('materials')}
+        >
+          <Icon>layers</Icon> MATERIAL OPTIONS &amp; TRADE-OFFS
+        </button>
+      </div>
+
       <div className="mfg-header">
-        <span className="cad mfg-title"><Icon>receipt_long</Icon> MFG INTEL</span>
+        <span className="cad mfg-title"><Icon>precision_manufacturing</Icon> PRODUCTION SYNTHESIS</span>
         <div className="mfg-qty-wrap">
-          <label htmlFor="mfg-qty" className="mfg-qty-label">QTY</label>
+          <label htmlFor="mfg-qty" className="mfg-qty-label">BATCH QTY</label>
           <input
             id="mfg-qty"
             className="mfg-qty-input"
@@ -381,74 +443,237 @@ function ManufacturingPanel({ analysis, onData, quantity: externalQuantity, setQ
 
       {!loading && !error && data && !isInsufficient && (
         <>
-          {/* Cost range — primary headline */}
-          <div className="mfg-section">
-            <span className="mfg-label">EST. COST / UNIT</span>
-            <div className="mfg-cost-range">
-              ₹{formatINR(data.cost.low)}
-              <span className="mfg-cost-sep">–</span>
-              ₹{formatINR(data.cost.high)}
-            </div>
-            <div className="mfg-cost-currency">INR · per unit at qty {data.quantity}</div>
-          </div>
+          {activeMfgSubTab === 'cost' && (
+            <>
+              {/* 1. Initial Manufacturing Cost Estimate */}
+              <div className="mfg-section mfg-cost-hero-card">
+                <div className="mfg-cost-hero-head">
+                  <div>
+                    <span className="mfg-label">INITIAL MANUFACTURING COST ESTIMATE</span>
+                    <div className="mfg-cost-range">
+                      ₹{formatINR(data.cost.low)}
+                      <span className="mfg-cost-sep">–</span>
+                      ₹{formatINR(data.cost.high)}
+                    </div>
+                    <div className="mfg-cost-currency">INR · per unit (Midpoint: ₹{formatINR(data.cost.mid || Math.round((data.cost.low + data.cost.high) / 2))})</div>
+                  </div>
+                  <div className="mfg-batch-total-box">
+                    <span className="batch-total-label">TOTAL BATCH COST</span>
+                    <span className="batch-total-val">₹{formatINR((data.cost.mid || Math.round((data.cost.low + data.cost.high) / 2)) * data.quantity)}</span>
+                    <span className="batch-total-sub">for batch of {data.quantity} units</span>
+                  </div>
+                </div>
+              </div>
 
-          {/* Mass & volume */}
-          <div className="mfg-section mfg-meta-row">
-            <span><span className="mfg-label">MASS</span> {data.massKg.toFixed(3)} kg</span>
-            <span><span className="mfg-label">VOL</span> {data.volumeCm3.toFixed(2)} cm³</span>
-            <span className={`mfg-source-badge ${data.material.source === 'fallback-default' ? 'warn' : ''}`}>
-              {data.material.label}
-            </span>
-          </div>
+              {/* Mass & volume meta */}
+              <div className="mfg-section mfg-meta-row">
+                <span><span className="mfg-label">MASS:</span> {data.massKg.toFixed(3)} kg</span>
+                <span><span className="mfg-label">VOLUME:</span> {data.volumeCm3.toFixed(2)} cm³</span>
+                <span className={`mfg-source-badge ${data.material.source === 'fallback-default' ? 'warn' : ''}`}>
+                  {data.material.label}
+                </span>
+                <span><span className="mfg-label">LEAD TIME:</span> {data.leadTime.lowDays}–{data.leadTime.highDays} working days</span>
+              </div>
 
-          {/* Process recommendation */}
-          <div className="mfg-section">
-            <span className="mfg-label">RECOMMENDED PROCESS</span>
-            <div className="mfg-process-name">{data.process.recommended.label}</div>
-            <p className="mfg-reasoning">{data.process.reasoning}</p>
+              {/* Cost breakdown itemized */}
+              <div className="mfg-section">
+                <span className="mfg-label">ITEMIZED COST BREAKDOWN (per unit)</span>
+                <div className="mfg-breakdown">
+                  <span>Raw Stock Material</span><span>₹{formatINR(data.cost.breakdown.materialCostINR)}</span>
+                  <span>CNC Machining &amp; Hobbing</span><span>₹{formatINR(data.cost.breakdown.machiningCostINR)}</span>
+                  {data.cost.breakdown.toolingPerUnitINR > 0 && (
+                    <><span>Tooling Setup (amortized ÷qty)</span><span>₹{formatINR(data.cost.breakdown.toolingPerUnitINR)}</span></>
+                  )}
+                  <span>Factory Overhead (20%)</span><span>₹{formatINR(data.cost.breakdown.overheadINR)}</span>
+                </div>
+              </div>
 
-            {data.process.alternatives.length > 0 && (
-              <>
-                <button
-                  className="mfg-toggle"
-                  onClick={() => setAltOpen(o => !o)}
-                  aria-expanded={altOpen}
-                >
-                  {altOpen ? '▲' : '▶'} {data.process.alternatives.length} alternative{data.process.alternatives.length > 1 ? 's' : ''}
-                </button>
-                {altOpen && (
-                  <ul className="mfg-alt-list">
-                    {data.process.alternatives.map(alt => (
-                      <li key={alt.key}>
-                        <strong>{alt.label}</strong> — {alt.tradeoff}
-                      </li>
-                    ))}
-                  </ul>
+              {/* Recommended Process */}
+              <div className="mfg-section">
+                <span className="mfg-label">RECOMMENDED PROCESS</span>
+                <div className="mfg-process-name">{data.process.recommended.label}</div>
+                <p className="mfg-reasoning">{data.process.reasoning}</p>
+
+                {data.process.alternatives.length > 0 && (
+                  <>
+                    <button
+                      className="mfg-toggle"
+                      onClick={() => setAltOpen(o => !o)}
+                      aria-expanded={altOpen}
+                    >
+                      {altOpen ? '▲' : '▶'} {data.process.alternatives.length} alternative process{data.process.alternatives.length > 1 ? 'es' : ''}
+                    </button>
+                    {altOpen && (
+                      <ul className="mfg-alt-list">
+                        {data.process.alternatives.map(alt => (
+                          <li key={alt.key}>
+                            <strong>{alt.label}</strong> — {alt.tradeoff}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
                 )}
-              </>
-            )}
-          </div>
+              </div>
 
-          {/* Lead time */}
-          <div className="mfg-section mfg-lead">
-            <span className="mfg-label">LEAD TIME</span>
-            <span className="mfg-lead-value">{data.leadTime.lowDays}–{data.leadTime.highDays} working days</span>
-          </div>
-
-          {/* Cost breakdown */}
-          <div className="mfg-section">
-            <span className="mfg-label">BREAKDOWN (per unit)</span>
-            <div className="mfg-breakdown">
-              <span>Material</span><span>₹{formatINR(data.cost.breakdown.materialCostINR)}</span>
-              <span>Machining</span><span>₹{formatINR(data.cost.breakdown.machiningCostINR)}</span>
-              {data.cost.breakdown.toolingPerUnitINR > 0 && (
-                <><span>Tooling (÷qty)</span><span>₹{formatINR(data.cost.breakdown.toolingPerUnitINR)}</span></>
+              {/* Cost Drivers */}
+              {data.costDrivers && data.costDrivers.length > 0 && (
+                <div className="mfg-section">
+                  <span className="mfg-label">KEY COST DRIVERS</span>
+                  <div className="mfg-drivers-grid">
+                    {data.costDrivers.map((driver, i) => (
+                      <div key={i} className="mfg-driver-card">
+                        <div className="driver-top">
+                          <strong className="driver-factor">{driver.factor}</strong>
+                          <span className={`driver-impact-tag impact-${driver.impact.toLowerCase()}`}>
+                            {driver.impact} IMPACT
+                          </span>
+                        </div>
+                        <p className="driver-desc">{driver.description}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
-              <span>Overhead (20%)</span><span>₹{formatINR(data.cost.breakdown.overheadINR)}</span>
-            </div>
-          </div>
 
-          {/* Assumptions — visually de-emphasised */}
+              {/* Basis of Estimate */}
+              <div className="mfg-section mfg-basis-card">
+                <span className="mfg-label"><Icon>info</Icon> BASIS OF ESTIMATE</span>
+                <p className="mfg-basis-text">
+                  {data.basisOfEstimate ||
+                    `This estimate is based on reconstructed 3D geometric volume (${data.volumeCm3.toFixed(2)} cm³), standard material density (${data.material.densityGCm3} g/cm³), and contemporary Indian MSME industrial job-shop machining rates for CNC turning/milling/hobbing. Overhead accounts for factory utilities, tooling wear, quality inspection, and shop margins.`}
+                </p>
+              </div>
+            </>
+          )}
+
+          {activeMfgSubTab === 'lifecycle' && (
+            <>
+              {/* Maintenance Implications */}
+              {data.maintenanceImplications && (
+                <div className="mfg-section mfg-maintenance-card">
+                  <span className="mfg-label"><Icon>build</Icon> MAINTENANCE IMPLICATIONS</span>
+                  <div className="mfg-maint-grid">
+                    <div className="maint-kv-box">
+                      <span className="maint-label">LUBRICATION INTERVAL:</span>
+                      <strong className="maint-val">{data.maintenanceImplications.lubricationIntervalHours} Operating Hours</strong>
+                    </div>
+                    <div className="maint-kv-box">
+                      <span className="maint-label">RECOMMENDED LUBRICANT:</span>
+                      <strong className="maint-val">{data.maintenanceImplications.lubricantType}</strong>
+                    </div>
+                    <div className="maint-kv-box">
+                      <span className="maint-label">INSPECTION CADENCE:</span>
+                      <strong className="maint-val">Every {data.maintenanceImplications.inspectionIntervalHours} Operating Hours</strong>
+                    </div>
+                    <div className="maint-kv-box">
+                      <span className="maint-label">BACKLASH SENSITIVITY:</span>
+                      <strong className="maint-val">{data.maintenanceImplications.backlashSensitivity}</strong>
+                    </div>
+                  </div>
+
+                  <div className="maint-points-box">
+                    <span className="maint-points-head">CRITICAL INSPECTION &amp; MONITORING REGIME:</span>
+                    <ul className="maint-points-list">
+                      {data.maintenanceImplications.keyMonitoringPoints.map((pt, idx) => (
+                        <li key={idx}>
+                          <Icon>check</Icon> {pt}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {/* Replacement Frequency Assumptions */}
+              {data.replacementFrequencyAssumptions && (
+                <div className="mfg-section mfg-freq-card">
+                  <span className="mfg-label"><Icon>update</Icon> REPLACEMENT FREQUENCY ASSUMPTIONS</span>
+                  <div className="mfg-freq-grid">
+                    <div className="freq-box">
+                      <span className="freq-num">{data.replacementFrequencyAssumptions.contactFatigueL10LifeHours.toLocaleString()}</span>
+                      <span className="freq-label">L10 FATIGUE LIFE (HOURS)</span>
+                    </div>
+                    <div className="freq-box">
+                      <span className="freq-num">{data.replacementFrequencyAssumptions.expectedServiceYears} yrs</span>
+                      <span className="freq-label">EXPECTED SERVICE LIFE</span>
+                    </div>
+                    <div className="freq-box">
+                      <span className="freq-num">{data.replacementFrequencyAssumptions.annualOperatingHours.toLocaleString()}</span>
+                      <span className="freq-label">ANNUAL RUN HOURS (2-SHIFT)</span>
+                    </div>
+                  </div>
+                  <div className="freq-note">
+                    <strong>Duty Cycle Factor:</strong> {data.replacementFrequencyAssumptions.dutyCycleFactor}
+                  </div>
+                  <div className="freq-note">
+                    <strong>Operating Environment:</strong> {data.replacementFrequencyAssumptions.environmentCondition}
+                  </div>
+                </div>
+              )}
+
+              {/* Estimated Long-Term Cost */}
+              {data.estimatedLongTermCost && (
+                <div className="mfg-section mfg-tco-card">
+                  <span className="mfg-label"><Icon>account_balance</Icon> ESTIMATED LONG-TERM COST (TCO)</span>
+                  <div className="tco-headline-row">
+                    <div className="tco-stat-box primary">
+                      <span className="tco-val">₹{formatINR(data.estimatedLongTermCost.fiveYearTCOINR)}</span>
+                      <span className="tco-label">5-YEAR TOTAL COST OF OWNERSHIP</span>
+                    </div>
+                    <div className="tco-stat-box secondary">
+                      <span className="tco-val">₹{formatINR(data.estimatedLongTermCost.tenYearTCOINR)}</span>
+                      <span className="tco-label">10-YEAR ESTIMATED TCO</span>
+                    </div>
+                  </div>
+
+                  <div className="tco-breakdown-table-wrap">
+                    <table className="tco-breakdown-table">
+                      <thead>
+                        <tr>
+                          <th>Cost Component</th>
+                          <th>5-Year Cumulative Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td>Initial Component Procurement</td>
+                          <td>₹{formatINR(data.estimatedLongTermCost.breakdown.initialProcurementINR)}</td>
+                        </tr>
+                        <tr>
+                          <td>Expected Replacement Cycles ({data.estimatedLongTermCost.expectedReplacements5Yr} cycle{data.estimatedLongTermCost.expectedReplacements5Yr === 1 ? '' : 's'})</td>
+                          <td>₹{formatINR(data.estimatedLongTermCost.breakdown.replacementsCostINR)}</td>
+                        </tr>
+                        <tr>
+                          <td>Routine Lubrication &amp; Filter Maintenance</td>
+                          <td>₹{formatINR(data.estimatedLongTermCost.breakdown.routineMaintenanceINR)}</td>
+                        </tr>
+                        <tr>
+                          <td>Downtime Risk Mitigation Allowance</td>
+                          <td>₹{formatINR(data.estimatedLongTermCost.breakdown.downtimeRiskMitigationINR)}</td>
+                        </tr>
+                        <tr className="tco-total-row">
+                          <td><strong>Total 5-Year Lifecycle Cost</strong></td>
+                          <td><strong>₹{formatINR(data.estimatedLongTermCost.fiveYearTCOINR)}</strong></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {activeMfgSubTab === 'materials' && (
+            <div className="mfg-section mfg-embedded-materials">
+              <MaterialComparisonPanel
+                analysis={analysis}
+                manufacturingIntelligence={data}
+              />
+            </div>
+          )}
+
+          {/* Assumptions collapsible */}
           {data.assumptions?.length > 0 && (
             <div className="mfg-assumptions">
               <button
@@ -467,7 +692,7 @@ function ManufacturingPanel({ analysis, onData, quantity: externalQuantity, setQ
           )}
 
           <p className="mfg-disclaimer">
-            Illustrative estimate · India job-shop rates (v1 placeholders). Not a real quote.
+            Illustrative estimate · India job-shop rates (v1 standard models) · Not a formal vendor quote.
           </p>
         </>
       )}
@@ -790,7 +1015,15 @@ function FeatureIdentificationPanel({
 
 // ─── Automatic Engineering Drawing Viewer Modal ────────────────────────────
 
-function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose, isWorkWindow = false }) {
+function EngineeringDrawingModal({
+  analysis,
+  manufacturingIntelligence,
+  onClose,
+  isWorkWindow = false,
+  machineryState,
+  activeComponentId,
+  setActiveComponentId,
+}) {
   const [revision, setRevision] = useState('A');
   const [viewFilter, setViewFilter] = useState('all');
   const [showDimensions, setShowDimensions] = useState(true);
@@ -886,6 +1119,14 @@ function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose,
 
   const content = (
     <div className={`drawing-modal-content ${isWorkWindow ? 'work-window-content' : ''}`}>
+      {machineryState && (
+        <ComponentDropdown
+          machineryState={machineryState}
+          activeComponentId={activeComponentId}
+          setActiveComponentId={setActiveComponentId}
+          title="DRAWING TARGET COMPONENT"
+        />
+      )}
       <header className="drawing-modal-header">
         <div className="drawing-title-row">
           <button className="back drawing-back-btn" onClick={onClose} title="Dock to 3D Viewport">
@@ -1426,10 +1667,21 @@ function WhatIfSimulator({
   materialVolumeImpact,
   ready,
   onOpenReport,
+  machineryState,
+  activeComponentId,
+  setActiveComponentId,
 }) {
   if (!ready || !analysis) {
     return (
       <div className="whatif-container">
+        {machineryState && (
+          <ComponentDropdown
+            machineryState={machineryState}
+            activeComponentId={activeComponentId}
+            setActiveComponentId={setActiveComponentId}
+            title="WHAT-IF TARGET COMPONENT"
+          />
+        )}
         <div className="whatif-empty">
           <Icon>tune</Icon>
           <p>No active component analysis.<br />Run synthesis to unlock the What-If Simulator.</p>
@@ -1439,7 +1691,6 @@ function WhatIfSimulator({
   }
 
   const availableParams = PARAM_DEFINITIONS.filter(def => isParamActive(def, analysis));
-
 
   const hasModifications = Object.keys(scenarioParams).length > 0;
 
@@ -1455,6 +1706,14 @@ function WhatIfSimulator({
 
   return (
     <div className="whatif-container">
+      {machineryState && (
+        <ComponentDropdown
+          machineryState={machineryState}
+          activeComponentId={activeComponentId}
+          setActiveComponentId={setActiveComponentId}
+          title="WHAT-IF TARGET COMPONENT"
+        />
+      )}
       <div className="whatif-header">
         <h3><Icon>tune</Icon> ENGINEERING WHAT-IF</h3>
         <p>Modify a design parameter and preview its engineering impact.</p>
@@ -1621,6 +1880,9 @@ function EngineeringReportModal({
   images,
   onClose,
   isWorkWindow = false,
+  machineryState,
+  activeComponentId,
+  setActiveComponentId,
 }) {
   const label = resolveLabel(analysis);
   const conf = typeof analysis?.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
@@ -1639,6 +1901,14 @@ function EngineeringReportModal({
 
   const content = (
     <div className={`report-modal ${isWorkWindow ? 'work-window-report-modal' : ''}`} onClick={e => e.stopPropagation()}>
+      {machineryState && (
+        <ComponentDropdown
+          machineryState={machineryState}
+          activeComponentId={activeComponentId}
+          setActiveComponentId={setActiveComponentId}
+          title="REPORT TARGET COMPONENT"
+        />
+      )}
       <div className="report-toolbar">
         <div className="report-toolbar-title">
           <Icon>description</Icon>
@@ -1963,9 +2233,9 @@ const DEFAULT_ANALYSIS = {
 };
 
 const LEFT_TABS = [
-  { id: 'workbench', icon: 'view_in_ar', label: 'Workbench' },
+  { id: 'workbench', icon: 'view_in_ar', label: '3D Workbench' },
   { id: 'mfg', icon: 'receipt_long', label: 'Manufacturing Intel' },
-  { id: 'materials', icon: 'layers', label: 'Material Options' },
+  { id: 'health', icon: 'health_and_safety', label: 'Gear Health' },
   { id: 'report', icon: 'description', label: 'Engineering Decision Report' },
   { id: 'drawing', icon: 'architecture', label: 'Engineering Drawing' },
   { id: 'whatif', icon: 'tune', label: 'Engineering What-If Simulator' },
@@ -1997,7 +2267,7 @@ function Workbench() {
 
   const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
   const [copilotTab, setCopilotTab] = useState('chat'); // 'chat' | 'components'
-  const [activeTab, setActiveTab] = useState('workbench'); // Workbench tab open by default
+  const [activeTab, setActiveTab] = useState('workbench'); // 3D Workbench open by default
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [pipVisible, setPipVisible] = useState(true);
   const [scenarioParams, setScenarioParams] = useState({});
@@ -2019,6 +2289,7 @@ function Workbench() {
   const [thinking, setThinking] = useState(false);
   const historyRef = useRef([]);
   const thread = useRef(null);
+  const cameraStateRef = useRef({ radius: 8, theta: 0.55, phi: 1.35, target: { x: 0, y: 0, z: 0 } });
 
   useEffect(() => {
     if (thread.current) {
@@ -2041,45 +2312,40 @@ function Workbench() {
   const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(analysis);
   const features = useMemo(() => normalizeFeatures(analysis), [analysis]);
 
-  // Ensure manufacturing data is loaded for copilot, drawings, and reports
-  useEffect(() => {
-    if (!analysis) return;
-    fetchManufacturingIntelligence(analysis, quantity)
-      .then(res => setMfgData(res))
-      .catch(() => {});
-  }, [analysis, quantity]);
-
-  // Load sample gear helper
-  const loadSampleGear = useCallback(() => {
-    const initial = createInitialMachineryState();
-    initial.primaryGear.analysis = DEFAULT_ANALYSIS;
-    setMachineryState(initial);
-    setLastAnalyzedSnapshot(createMachinerySnapshot(initial));
-    setAnalysis(DEFAULT_ANALYSIS);
-    setStage('ready');
-  }, [setMachineryState, setLastAnalyzedSnapshot, setAnalysis, setStage]);
-
   // Determine active component and scope
   const allComponents = useMemo(() => getAllComponents(machineryState), [machineryState]);
   const activeComp = useMemo(() => {
-    return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear;
+    return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear || allComponents[0];
   }, [allComponents, activeComponentId, machineryState]);
 
+  const activeAnalysis = useMemo(() => {
+    return activeComp?.analysis || analysis;
+  }, [activeComp, analysis]);
+
   const activeScope = viewMode === 'assembly' ? 'assembly' : machineryState?.companionGear ? 'pair' : 'single';
+
+  // Ensure manufacturing data is loaded for copilot, drawings, and reports for active analysis
+  useEffect(() => {
+    if (!activeAnalysis) return;
+    fetchManufacturingIntelligence(activeAnalysis, quantity)
+      .then(res => setMfgData(res))
+      .catch(() => {});
+  }, [activeAnalysis, quantity]);
 
   // Build structured Engineering Context for Copilot
   const engineeringContext = useMemo(() => {
     if (!ready) return null;
     return buildEngineeringContext({
-      analysis,
+      analysis: activeAnalysis,
       manufacturingIntelligence: mfgData,
       quantity,
       features,
       materialAlternatives: null,
       machineryState,
       activeScope,
+      activeComponentId,
     });
-  }, [ready, analysis, mfgData, quantity, features, machineryState, activeScope]);
+  }, [ready, activeAnalysis, mfgData, quantity, features, machineryState, activeScope, activeComponentId]);
 
   // Generate context-aware suggestions
   const suggestions = useMemo(() => {
@@ -2320,7 +2586,7 @@ function Workbench() {
                 aria-selected={activeTab === tab.id}
                 className={`sidebar-tab-btn ${activeTab === tab.id ? 'active' : ''}`}
                 title={tab.label}
-                disabled={!ready && tab.id !== 'workbench'}
+                disabled={!ready && tab.id !== 'workbench' && tab.id !== 'mfg'}
                 onClick={() => {
                   setActiveTab(tab.id);
                   setPipVisible(true);
@@ -2393,6 +2659,7 @@ function Workbench() {
                   hoveredFeatureId={hoveredFeatureId}
                   ready={ready}
                   onOpenImageManager={() => setCopilotTab('components')}
+                  cameraStateRef={cameraStateRef}
                 />
               )}
 
@@ -2496,33 +2763,39 @@ function Workbench() {
                 <div className="work-window-title-group">
                   <Icon>receipt_long</Icon>
                   <h2>MANUFACTURING INTELLIGENCE WORK WINDOW</h2>
-                  <span className="work-window-badge">Cost &amp; Process Synthesis</span>
+                  <span className="work-window-badge">Cost, Process &amp; Materials</span>
                 </div>
               </div>
               <div className="work-window-body">
                 <ManufacturingPanel
-                  analysis={analysis}
+                  analysis={activeAnalysis}
                   onData={setMfgData}
                   quantity={quantity}
                   setQuantity={setQuantity}
+                  machineryState={machineryState}
+                  activeComponentId={activeComponentId}
+                  setActiveComponentId={setActiveComponentId}
                 />
               </div>
             </div>
           )}
 
-          {activeTab === 'materials' && (
-            <div className="work-window materials-work-window">
+          {activeTab === 'health' && (
+            <div className="work-window health-work-window">
               <div className="work-window-topbar">
                 <div className="work-window-title-group">
-                  <Icon>layers</Icon>
-                  <h2>MATERIAL OPTIONS WORK WINDOW</h2>
-                  <span className="work-window-badge">Alloy Trade-off Matrix</span>
+                  <Icon>health_and_safety</Icon>
+                  <h2>GEAR HEALTH &amp; CONDITION ASSESSMENT</h2>
+                  <span className="work-window-badge">Damage Evaluation &amp; Decision Engine</span>
                 </div>
               </div>
               <div className="work-window-body">
-                <MaterialComparisonPanel
-                  analysis={analysis}
-                  manufacturingIntelligence={mfgData}
+                <GearHealthPanel
+                  component={activeComp}
+                  analysis={activeAnalysis}
+                  machineryState={machineryState}
+                  activeComponentId={activeComponentId}
+                  setActiveComponentId={setActiveComponentId}
                 />
               </div>
             </div>
@@ -2531,7 +2804,7 @@ function Workbench() {
           {activeTab === 'report' && (
             <div className="work-window report-work-window">
               <EngineeringReportModal
-                analysis={analysis}
+                analysis={activeAnalysis}
                 scenarioParams={scenarioParams}
                 isGeometryValid={isGeometryValid}
                 geometryError={geometryError}
@@ -2540,6 +2813,9 @@ function Workbench() {
                 materialVolumeImpact={materialVolumeImpact}
                 images={images}
                 isWorkWindow={true}
+                machineryState={machineryState}
+                activeComponentId={activeComponentId}
+                setActiveComponentId={setActiveComponentId}
                 onClose={() => setActiveTab('workbench')}
               />
             </div>
@@ -2548,9 +2824,12 @@ function Workbench() {
           {activeTab === 'drawing' && (
             <div className="work-window drawing-work-window">
               <EngineeringDrawingModal
-                analysis={analysis}
+                analysis={activeAnalysis}
                 manufacturingIntelligence={mfgData}
                 isWorkWindow={true}
+                machineryState={machineryState}
+                activeComponentId={activeComponentId}
+                setActiveComponentId={setActiveComponentId}
                 onClose={() => setActiveTab('workbench')}
               />
             </div>
@@ -2567,7 +2846,7 @@ function Workbench() {
               </div>
               <div className="work-window-body">
                 <WhatIfSimulator
-                  analysis={analysis}
+                  analysis={activeAnalysis}
                   scenarioParams={scenarioParams}
                   setScenarioParams={setScenarioParams}
                   isGeometryValid={isGeometryValid}
@@ -2576,6 +2855,9 @@ function Workbench() {
                   impactStatus={impactStatus}
                   materialVolumeImpact={materialVolumeImpact}
                   ready={ready}
+                  machineryState={machineryState}
+                  activeComponentId={activeComponentId}
+                  setActiveComponentId={setActiveComponentId}
                   onOpenReport={() => setActiveTab('report')}
                 />
               </div>
@@ -2583,7 +2865,13 @@ function Workbench() {
           )}
 
           {activeTab === 'export' && (
-            <ExportWorkWindow analysis={activeReconstructionAnalysis} mfgData={mfgData} />
+            <ExportWorkWindow
+              analysis={activeReconstructionAnalysis || activeAnalysis}
+              mfgData={mfgData}
+              machineryState={machineryState}
+              activeComponentId={activeComponentId}
+              setActiveComponentId={setActiveComponentId}
+            />
           )}
 
           {/* Picture-in-Picture Floating 3D Workbench when in other work windows */}
@@ -2606,12 +2894,17 @@ function Workbench() {
               setResetKey={setResetKey}
               selectedFeatureId={selectedFeatureId}
               hoveredFeatureId={hoveredFeatureId}
+              showFeatures={showFeatures}
+              setShowFeatures={setShowFeatures}
+              activeComponentId={activeComponentId}
+              setActiveComponentId={setActiveComponentId}
               label={label}
               conf={conf}
               onDockToMain={() => setActiveTab('workbench')}
               onClose={() => setPipVisible(false)}
               dimensionList={dimensionList}
               ReconstructedViewport={ReconstructedViewport}
+              cameraStateRef={cameraStateRef}
             />
           )}
 

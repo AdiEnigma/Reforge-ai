@@ -14,7 +14,9 @@
 export const ROLE_TYPES = {
   PRIMARY: 'PRIMARY',
   COMPANION: 'COMPANION',
-  ADDITIONAL_GEAR: 'ADDITIONAL GEAR',
+  SECONDARY: 'SECONDARY GEAR TRAIN',
+  ADDITIONAL_GEAR: 'SECONDARY GEAR TRAIN',
+  UNASSIGNED: 'UNASSIGNED',
   COMPONENT: 'COMPONENT',
   MACHINERY_CONTEXT: 'MACHINERY / CONTEXT',
 };
@@ -55,7 +57,7 @@ export function createInitialMachineryState() {
   return {
     primaryGear: {
       id: primaryId,
-      name: 'Primary Gear',
+      name: 'Gear 1',
       role: ROLE_TYPES.PRIMARY,
       type: 'spur_gear',
       images: [],
@@ -98,8 +100,8 @@ export function createInitialMachineryState() {
  */
 export function createComponentEntity({
   id = null,
-  name = 'New Component',
-  role = ROLE_TYPES.ADDITIONAL_GEAR,
+  name = 'Gear 1',
+  role = ROLE_TYPES.SECONDARY,
   type = 'spur_gear',
   images = [],
   reference = {},
@@ -120,14 +122,14 @@ export function createComponentEntity({
 }
 
 /**
- * Generates the next sequential gear name (Gear 3, Gear 4, Gear 5, etc.).
+ * Generates the next sequential gear name (Gear 1, Gear 2, Gear 3, etc.).
  */
 export function getNextGearName(state) {
   const allComps = getAllComponents(state);
   const existingNames = new Set(allComps.map((c) => c.name.toLowerCase()));
   
   // Find highest Gear N number
-  let maxN = 2;
+  let maxN = 0;
   allComps.forEach((c) => {
     const match = c.name.match(/^gear\s*(\d+)$/i);
     if (match) {
@@ -167,14 +169,45 @@ export function getGearCount(state) {
 }
 
 /**
- * Finds a component by ID across all slots (including assembly and environment contexts).
+ * Finds a component by ID across all slots.
+ *
+ * IMPORTANT – resolution order:
+ *   1. Exact ID match in every slot (primaryGear, companionGear, additionalComponents,
+ *      assemblyContext, environmentContext, machineryContext).
+ *   2. Only if no exact match is found anywhere, fall back to human-friendly string
+ *      aliases ('primary', 'companion', 'assembly', …).
+ *
+ * This ordering prevents a gear whose literal ID happens to match an alias string
+ * (e.g. 'comp-primary-gear') from being resolved to the wrong slot after a role swap.
  */
 export function findComponentById(state, id) {
   if (!state || !id) return null;
+
+  // ── 1. Exact ID scan across all slots ─────────────────────────────────────
+  if (state.primaryGear?.id === id) {
+    return { component: state.primaryGear, slot: 'primaryGear' };
+  }
+  if (state.companionGear?.id === id) {
+    return { component: state.companionGear, slot: 'companionGear' };
+  }
+  const exactIdx = state.additionalComponents?.findIndex((c) => c.id === id);
+  if (exactIdx !== undefined && exactIdx >= 0) {
+    return { component: state.additionalComponents[exactIdx], slot: 'additionalComponents', index: exactIdx };
+  }
+  if (state.assemblyContext?.id === id) {
+    return { component: state.assemblyContext, slot: 'assemblyContext' };
+  }
+  if (state.environmentContext?.id === id) {
+    return { component: state.environmentContext, slot: 'environmentContext' };
+  }
+  if (state.machineryContext?.id === id) {
+    return { component: state.machineryContext, slot: 'machineryContext' };
+  }
+
+  // ── 2. Alias fallback (for shorthand IDs used by callers, e.g. 'primary') ─
   const cleanId = String(id).toLowerCase();
 
   if (
-    state.primaryGear?.id === id ||
     cleanId === 'primary' ||
     cleanId === 'primarygear' ||
     cleanId === 'comp-primary' ||
@@ -183,7 +216,6 @@ export function findComponentById(state, id) {
     return { component: state.primaryGear, slot: 'primaryGear' };
   }
   if (
-    state.companionGear?.id === id ||
     cleanId === 'companion' ||
     cleanId === 'companiongear' ||
     cleanId === 'comp-companion' ||
@@ -192,7 +224,6 @@ export function findComponentById(state, id) {
     return { component: state.companionGear, slot: 'companionGear' };
   }
   if (
-    state.assemblyContext?.id === id ||
     cleanId === 'assembly-context' ||
     cleanId === 'comp-assembly-context' ||
     cleanId === 'assembly'
@@ -200,7 +231,6 @@ export function findComponentById(state, id) {
     return { component: state.assemblyContext, slot: 'assemblyContext' };
   }
   if (
-    state.environmentContext?.id === id ||
     cleanId === 'environment-context' ||
     cleanId === 'comp-environment-context' ||
     cleanId === 'environment'
@@ -208,44 +238,51 @@ export function findComponentById(state, id) {
     return { component: state.environmentContext, slot: 'environmentContext' };
   }
   if (
-    state.machineryContext?.id === id ||
     cleanId === 'machinery-context' ||
     cleanId === 'comp-machinery-surroundings' ||
     cleanId === 'surroundings'
   ) {
     return { component: state.machineryContext, slot: 'machineryContext' };
   }
-  const idx = state.additionalComponents?.findIndex((c) => c.id === id);
-  if (idx !== undefined && idx >= 0) {
-    return { component: state.additionalComponents[idx], slot: 'additionalComponents', index: idx };
-  }
+
   return null;
 }
 
+
 /**
- * Validates if setting a component to a role causes a conflict.
+ * Validates if setting a component to a role causes a conflict (slot already occupied).
+ * Returns a swap-aware conflict object so the UI can show which two gears will swap.
  */
 export function checkRoleConflict(state, targetId, newRole) {
   if (!state || !targetId || !newRole) return { hasConflict: false };
 
-  if (newRole === ROLE_TYPES.COMPANION) {
-    if (state.companionGear && state.companionGear.id !== targetId) {
+  const targetComp = findComponentById(state, targetId)?.component;
+  const targetName = targetComp?.name || 'Selected Gear';
+
+  if (newRole === ROLE_TYPES.PRIMARY) {
+    if (state.primaryGear && state.primaryGear.id !== targetId) {
+      const existingName = state.primaryGear.name || 'Gear 1';
       return {
         hasConflict: true,
-        type: 'REPLACE_COMPANION',
-        currentCompanion: state.companionGear,
-        message: `Replace current Companion Gear (${state.companionGear.name}) with selected component?`,
+        type: 'SWAP_PRIMARY',
+        currentHolder: state.primaryGear,
+        existingName,
+        targetName,
+        message: `A Primary Gear is already assigned to ${existingName}. Do you want to make ${targetName} the Primary Gear instead? ${existingName} will swap into the ${targetComp?.role === ROLE_TYPES.COMPANION ? 'Companion Gear' : 'Secondary Gear Train'} slot.`,
       };
     }
   }
 
-  if (newRole === ROLE_TYPES.PRIMARY) {
-    if (state.primaryGear && state.primaryGear.id !== targetId) {
+  if (newRole === ROLE_TYPES.COMPANION) {
+    if (state.companionGear && state.companionGear.id !== targetId) {
+      const existingName = state.companionGear.name || 'Gear 2';
       return {
         hasConflict: true,
-        type: 'REPLACE_PRIMARY',
-        currentPrimary: state.primaryGear,
-        message: `Replace current Primary Gear (${state.primaryGear.name}) with selected component?`,
+        type: 'SWAP_COMPANION',
+        currentHolder: state.companionGear,
+        existingName,
+        targetName,
+        message: `A Companion Gear is already assigned to ${existingName}. Do you want to make ${targetName} the Companion Gear instead? ${existingName} will swap into the ${targetComp?.role === ROLE_TYPES.PRIMARY ? 'Primary Gear' : 'Secondary Gear Train'} slot.`,
       };
     }
   }
@@ -254,7 +291,17 @@ export function checkRoleConflict(state, targetId, newRole) {
 }
 
 /**
- * Reassigns role for a component. Handles moving between primaryGear, companionGear, and additionalComponents.
+ * True role-swap system:
+ * - If the target role is unoccupied, simply moves the component into that slot.
+ * - If the target role IS occupied by another gear (Gear B), the two gears
+ *   exchange roles exactly: Gear A takes the new role, Gear B takes Gear A's
+ *   previous role. No component data is lost, no gear is demoted to Unassigned.
+ *
+ * @param {object}  state        Current machinery state (immutable input)
+ * @param {string}  targetId     ID of the gear whose role is changing
+ * @param {string}  newRole      The role to assign to targetId
+ * @param {boolean} forceReplace When false, throws on conflict so the UI can
+ *                               show the confirmation modal first.
  */
 export function assignComponentRole(state, targetId, newRole, forceReplace = false) {
   if (!state || !targetId) return state;
@@ -262,8 +309,11 @@ export function assignComponentRole(state, targetId, newRole, forceReplace = fal
   const found = findComponentById(state, targetId);
   if (!found || found.slot.endsWith('Context')) return state;
 
-  const { component } = found;
-  if (component && component.role === newRole) return state;
+  const gearA = found.component;
+  const roleA = gearA?.role;  // Gear A's current role (the one it's leaving)
+
+  // No-op: already in the requested role
+  if (roleA === newRole) return state;
 
   // Check for conflict unless forceReplace is true
   if (!forceReplace) {
@@ -275,45 +325,62 @@ export function assignComponentRole(state, targetId, newRole, forceReplace = fal
     }
   }
 
+  // ── Identify Gear B: the current occupant of the destination slot ────────
+  let gearB = null;
+  let gearBSlot = null;
+  let gearBIndex = -1;
+
+  if (newRole === ROLE_TYPES.PRIMARY && state.primaryGear && state.primaryGear.id !== targetId) {
+    gearB = state.primaryGear;
+    gearBSlot = 'primaryGear';
+  } else if (newRole === ROLE_TYPES.COMPANION && state.companionGear && state.companionGear.id !== targetId) {
+    gearB = state.companionGear;
+    gearBSlot = 'companionGear';
+  }
+  // Secondary Gear Train has unlimited slots — no single occupant to displace.
+
+  // ── Build next state ─────────────────────────────────────────────────────
   const nextState = {
     ...state,
     additionalComponents: [...(state.additionalComponents || [])],
     revision: (state.revision || 0) + 1,
   };
 
-  // Remove component from its previous position
+  // Remove Gear A from its current slot
   if (found.slot === 'primaryGear') {
     nextState.primaryGear = null;
   } else if (found.slot === 'companionGear') {
     nextState.companionGear = null;
   } else if (found.slot === 'additionalComponents') {
-    nextState.additionalComponents.splice(found.index, 1);
+    nextState.additionalComponents = nextState.additionalComponents.filter((c) => c.id !== targetId);
   }
 
-  const updatedComponent = {
-    ...(component || {}),
-    role: newRole,
-  };
+  // ── Place Gear A into its new slot ───────────────────────────────────────
+  const updatedGearA = { ...gearA, role: newRole };
 
-  // Place into new slot based on role
   if (newRole === ROLE_TYPES.PRIMARY) {
-    if (state.primaryGear && state.primaryGear.id !== targetId) {
-      nextState.additionalComponents.push({
-        ...state.primaryGear,
-        role: ROLE_TYPES.ADDITIONAL_GEAR,
-      });
-    }
-    nextState.primaryGear = updatedComponent;
+    nextState.primaryGear = updatedGearA;
   } else if (newRole === ROLE_TYPES.COMPANION) {
-    if (state.companionGear && state.companionGear.id !== targetId) {
-      nextState.additionalComponents.push({
-        ...state.companionGear,
-        role: ROLE_TYPES.ADDITIONAL_GEAR,
-      });
-    }
-    nextState.companionGear = updatedComponent;
+    nextState.companionGear = updatedGearA;
   } else {
-    nextState.additionalComponents.push(updatedComponent);
+    // SECONDARY or any future non-singleton role → additionalComponents
+    nextState.additionalComponents.push(updatedGearA);
+  }
+
+  // ── Swap: place Gear B into Gear A's vacated slot ────────────────────────
+  if (gearB) {
+    // Gear B inherits Gear A's previous role exactly (true swap)
+    const updatedGearB = { ...gearB, role: roleA };
+
+    if (roleA === ROLE_TYPES.PRIMARY) {
+      nextState.primaryGear = updatedGearB;
+    } else if (roleA === ROLE_TYPES.COMPANION) {
+      nextState.companionGear = updatedGearB;
+    } else {
+      // Gear A was in Secondary (or any additionalComponents slot) —
+      // Gear B moves into additionalComponents with Gear A's former role.
+      nextState.additionalComponents.push(updatedGearB);
+    }
   }
 
   return nextState;
@@ -327,7 +394,7 @@ export function addGearFromImages(state, files, customName = null) {
   const autoName = customName || getNextGearName(state);
   const newComp = createComponentEntity({
     name: autoName,
-    role: ROLE_TYPES.ADDITIONAL_GEAR,
+    role: ROLE_TYPES.SECONDARY,
     type: 'spur_gear',
     images: [],
   });
@@ -344,12 +411,13 @@ export function addGearFromImages(state, files, customName = null) {
 /**
  * Creates or populates the Companion Gear exclusively from uploaded image files.
  */
-export function addCompanionFromImages(state, files, customName = 'Companion Gear') {
+export function addCompanionFromImages(state, files, customName = null) {
   if (!state || !files || !files.length) return state;
+  const autoName = customName || getNextGearName(state);
   let nextState = state;
   if (!state.companionGear) {
     const newComp = createComponentEntity({
-      name: customName,
+      name: autoName,
       role: ROLE_TYPES.COMPANION,
       type: 'spur_gear',
       images: [],

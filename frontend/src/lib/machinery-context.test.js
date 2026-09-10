@@ -44,7 +44,7 @@ test('Image-only gear creation: addCompanionFromImages & addGearFromImages with 
   // Add Companion from images
   state = addCompanionFromImages(state, [file1]);
   assert.ok(state.companionGear);
-  assert.equal(state.companionGear.name, 'Companion Gear');
+  assert.equal(state.companionGear.name, 'Gear 2');
   assert.equal(state.companionGear.images.length, 1);
 
   // Add Additional Gears from images -> auto-named Gear 3, Gear 4
@@ -110,7 +110,7 @@ test('Snapshot dirty detection responds to image metadata and notes changes', ()
   assert.equal(hasDirtyContext(state, snapshot), true);
 });
 
-test('checkRoleConflict and assignComponentRole handle Companion replacement with conflict detection', () => {
+test('checkRoleConflict and assignComponentRole swap Companion roles with conflict detection', () => {
   let state = createInitialMachineryState();
   state = addAdditionalComponent(state, { id: 'gear-b', name: 'Gear B', role: ROLE_TYPES.ADDITIONAL_GEAR });
   state = addAdditionalComponent(state, { id: 'gear-c', name: 'Gear C', role: ROLE_TYPES.ADDITIONAL_GEAR });
@@ -122,19 +122,20 @@ test('checkRoleConflict and assignComponentRole handle Companion replacement wit
   // Attempting to assign Gear C without forceReplace detects conflict
   const conflict = checkRoleConflict(state, 'gear-c', ROLE_TYPES.COMPANION);
   assert.equal(conflict.hasConflict, true);
-  assert.equal(conflict.type, 'REPLACE_COMPANION');
-  assert.equal(conflict.currentCompanion.id, 'gear-b');
+  assert.equal(conflict.type, 'SWAP_COMPANION');
+  assert.equal(conflict.currentHolder.id, 'gear-b');
 
   assert.throws(() => {
     assignComponentRole(state, 'gear-c', ROLE_TYPES.COMPANION, false);
-  }, /ROLE_CONFLICT:REPLACE_COMPANION/);
+  }, /ROLE_CONFLICT:SWAP_COMPANION/);
 
-  // Force replacement demotes old companion (Gear B) to ADDITIONAL_GEAR and sets Gear C as COMPANION
+  // Force swap: Gear C becomes COMPANION, Gear B swaps into Gear C's old SECONDARY role
   state = assignComponentRole(state, 'gear-c', ROLE_TYPES.COMPANION, true);
   assert.equal(state.companionGear.id, 'gear-c');
   assert.equal(state.additionalComponents.length, 1);
   assert.equal(state.additionalComponents[0].id, 'gear-b');
-  assert.equal(state.additionalComponents[0].role, ROLE_TYPES.ADDITIONAL_GEAR);
+  // Gear B inherits Gear C's former role (SECONDARY GEAR TRAIN) — true swap
+  assert.equal(state.additionalComponents[0].role, ROLE_TYPES.SECONDARY);
 });
 
 test('computeAssemblyRelations calculates center distance, gear ratio, and multi-gear relations', () => {

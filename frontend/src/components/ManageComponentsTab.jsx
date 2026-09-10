@@ -2,21 +2,21 @@
  * ManageComponentsTab.jsx
  * Central Image & Context Manager for the Engineering Copilot.
  *
- * Rules:
- * 1. Companion Gear & Additional Gears created ONLY through image upload (no manual CAD or text-only creation).
- * 2. Auto-generated identifiers (Gear 3, Gear 4, Gear 5, ...) with inline renaming.
- * 3. Categorized into: Primary Gear, Companion Gear, Additional Gears, Assembly Context, Environment Context.
- * 4. Rich per-image tools: Thumbnail preview, Reorder, Replace, Delete, Image Purpose tag, Priority, and Custom Note.
- * 5. Full Drag & Drop upload support on EVERY sector card.
- * 6. Role replacement guard modal for Companion Gear conflicts.
- * 7. Continuous Regeneration Notice Banner with non-destructive state preservation.
+ * Clean & Streamlined Component Management:
+ * 1. Default component naming: Gear 1, Gear 2, Gear 3, ... (user can rename).
+ * 2. Exactly ONE role/status dropdown per gear:
+ *    - Primary Gear (Max 1)
+ *    - Companion Gear (Max 1)
+ *    - Secondary Gear Train (Unlimited)
+ *    - Unassigned (Unlimited)
+ * 3. Role conflict modal with clear choices (Change Role / Cancel).
+ * 4. Demoted gears are preserved in Unassigned without deleting images/data.
+ * 5. Simplified photo cards: clean image thumbnail, replace/delete overlay, reorder & note actions.
  */
 
 import React, { useState, useRef } from 'react';
 import {
   ROLE_TYPES,
-  IMAGE_PURPOSES,
-  IMAGE_PRIORITIES,
   getAllComponents,
   addGearFromImages,
   addCompanionFromImages,
@@ -50,8 +50,7 @@ export function ManageComponentsTab({
   const [replaceModal, setReplaceModal] = useState(null); // { targetId, newRole, conflict }
   const [renameModal, setRenameModal] = useState(null); // { targetId, currentName }
   const [expandedImageId, setExpandedImageId] = useState(null); // imageId for note editing
-  const [actionMenuOpenId, setActionMenuOpenId] = useState(null);
-  const [dragOverSector, setDragOverSector] = useState(null); // 'primary' | 'companion' | 'gear-id' | 'assembly' | 'env'
+  const [dragOverSector, setDragOverSector] = useState(null);
 
   // Global File Input Reference
   const fileInputRef = useRef(null);
@@ -60,6 +59,15 @@ export function ManageComponentsTab({
   const primary = machineryState?.primaryGear;
   const companion = machineryState?.companionGear;
   const additional = machineryState?.additionalComponents || [];
+
+  const secondaryGears = additional.filter(
+    (c) => c.role === ROLE_TYPES.SECONDARY || c.role === ROLE_TYPES.ADDITIONAL_GEAR
+  );
+
+  const unassignedGears = additional.filter(
+    (c) => c.role === ROLE_TYPES.UNASSIGNED || (!c.role && c.id !== primary?.id && c.id !== companion?.id)
+  );
+
   const assemblyCtx = machineryState?.assemblyContext;
   const envCtx = machineryState?.environmentContext;
 
@@ -108,7 +116,7 @@ export function ManageComponentsTab({
       } else if (mode.type === 'replace_image') {
         return replaceComponentImage(prevState, mode.targetId, mode.imageId, files[0]);
       } else if (mode.type === 'add_companion') {
-        return addCompanionFromImages(prevState, files, 'Companion Gear');
+        return addCompanionFromImages(prevState, files);
       } else if (mode.type === 'add_gear') {
         return addGearFromImages(prevState, files);
       }
@@ -142,7 +150,7 @@ export function ManageComponentsTab({
       if (modeType === 'add_images') {
         return addImagesToComponent(prevState, targetId, files);
       } else if (modeType === 'add_companion') {
-        return addCompanionFromImages(prevState, files, 'Companion Gear');
+        return addCompanionFromImages(prevState, files);
       } else if (modeType === 'add_gear') {
         return addGearFromImages(prevState, files);
       }
@@ -168,27 +176,26 @@ export function ManageComponentsTab({
     const conflict = checkRoleConflict(machineryState, componentId, newRole);
     if (conflict.hasConflict) {
       setReplaceModal({ targetId: componentId, newRole, conflict });
-      setActionMenuOpenId(null);
       return;
     }
     try {
       setMachineryState((prevState) => assignComponentRole(prevState, componentId, newRole, false));
+      onSelectComponent?.(componentId);
     } catch (err) {
       console.error(err);
     }
-    setActionMenuOpenId(null);
   };
 
   const handleConfirmReplace = () => {
     if (!replaceModal) return;
     const { targetId, newRole } = replaceModal;
     setMachineryState((prevState) => assignComponentRole(prevState, targetId, newRole, true));
+    onSelectComponent?.(targetId);
     setReplaceModal(null);
   };
 
   const handleDeleteGear = (id) => {
     setMachineryState((prevState) => removeComponent(prevState, id));
-    setActionMenuOpenId(null);
   };
 
   const handleSaveRename = (e) => {
@@ -198,6 +205,109 @@ export function ManageComponentsTab({
       renameGearComponent(prevState, renameModal.targetId, renameModal.name)
     );
     setRenameModal(null);
+  };
+
+  const renderGearCardContent = (gear, sectorKey) => {
+    if (!gear) return null;
+    const isSelected = activeComponentId === gear.id;
+
+    return (
+      <div
+        className={`comp-mgr-card gear-card-block ${isSelected ? 'active-selected' : ''} ${dragOverSector === sectorKey ? 'drag-over' : ''}`}
+        onClick={() => onSelectComponent?.(gear.id)}
+        onDragOver={(e) => handleDragOver(e, sectorKey)}
+        onDragLeave={(e) => handleDragLeave(e, sectorKey)}
+        onDrop={(e) => handleDropFiles(e, gear.id, 'add_images')}
+      >
+        <div className="comp-card-header">
+          <div className="comp-card-title">
+            <span className={`role-tag ${gear.role === ROLE_TYPES.PRIMARY ? 'primary' : gear.role === ROLE_TYPES.COMPANION ? 'companion' : 'other'}`}>
+              {gear.role || 'UNASSIGNED'}
+            </span>
+            <div className="gear-name-row">
+              <h3>{gear.name}</h3>
+              <button
+                className="gear-rename-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setRenameModal({ targetId: gear.id, name: gear.name });
+                }}
+                title="Rename Component"
+              >
+                <Icon>edit</Icon>
+              </button>
+            </div>
+          </div>
+
+          <div className="gear-header-controls" onClick={(e) => e.stopPropagation()}>
+            {/* Single Role Dropdown */}
+            <select
+              className="comp-single-role-dropdown"
+              value={
+                gear.role === ROLE_TYPES.UNASSIGNED || !gear.role
+                  ? ROLE_TYPES.SECONDARY
+                  : gear.role
+              }
+              onChange={(e) => handleRoleChange(gear.id, e.target.value)}
+              title="Assign Component Role"
+              aria-label={`Role selector for ${gear.name}`}
+            >
+              <option value={ROLE_TYPES.PRIMARY}>Primary Gear</option>
+              <option value={ROLE_TYPES.COMPANION}>Companion Gear</option>
+              <option value={ROLE_TYPES.SECONDARY}>Secondary Gear Train</option>
+            </select>
+
+            <button
+              className="comp-delete-btn"
+              onClick={() => handleDeleteGear(gear.id)}
+              title={`Remove ${gear.name}`}
+            >
+              <Icon>delete</Icon>
+            </button>
+          </div>
+        </div>
+
+        {/* Clean Thumbnail Gallery */}
+        <div className="comp-image-grid" onClick={(e) => e.stopPropagation()}>
+          {gear.images?.map((img, idx) => (
+            <ImageItemCard
+              key={img.id}
+              image={img}
+              index={idx}
+              total={gear.images.length}
+              onDelete={() => handleRemoveImage(gear.id, img.id)}
+              onReplace={() => triggerReplaceImage(gear.id, img.id)}
+              onMoveLeft={() => handleReorder(gear.id, idx, idx - 1)}
+              onMoveRight={() => handleReorder(gear.id, idx, idx + 1)}
+              onUpdateMetadata={(key, val) => handleMetadataChange(gear.id, img.id, key, val)}
+              isExpanded={expandedImageId === img.id}
+              onToggleExpand={() => setExpandedImageId(expandedImageId === img.id ? null : img.id)}
+            />
+          ))}
+
+          <button
+            className="comp-thumb-add-box"
+            onClick={() => triggerAddImages(gear.id)}
+            title={`Upload photos for ${gear.name}`}
+          >
+            <Icon>add_photo_alternate</Icon>
+            <span>+ Add Images</span>
+          </button>
+        </div>
+
+        <div className="comp-notes-row" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="text"
+            className="comp-note-input"
+            placeholder={`Optional notes for ${gear.name}...`}
+            value={gear.notes || ''}
+            onChange={(e) => {
+              setMachineryState((prevState) => updateComponentNotes(prevState, gear.id, e.target.value));
+            }}
+          />
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -219,7 +329,7 @@ export function ManageComponentsTab({
             <Icon className="regen-icon-pulse">info</Icon>
             <div>
               <strong>New visual information added.</strong>
-              <span>Your current reconstruction has been preserved. Regenerate to incorporate the newly added images.</span>
+              <span>Your current reconstruction is preserved. Click Regenerate to incorporate new images.</span>
             </div>
           </div>
           <button
@@ -235,172 +345,30 @@ export function ManageComponentsTab({
       )}
 
       <div className="comp-mgr-scroll-body">
-        {/* ========================================================================= */}
-        {/* 1. PRIMARY GEAR                                                           */}
-        {/* ========================================================================= */}
-        <section
-          className={`comp-mgr-card primary-card ${dragOverSector === 'primary' ? 'drag-over' : ''}`}
-          onDragOver={(e) => handleDragOver(e, 'primary')}
-          onDragLeave={(e) => handleDragLeave(e, 'primary')}
-          onDrop={(e) => handleDropFiles(e, primary?.id || 'comp-primary-gear', 'add_images')}
-        >
-          <div className="comp-card-header">
-            <div className="comp-card-title">
-              <span className="role-tag primary">PRIMARY GEAR</span>
-              <div className="gear-name-row">
-                <h3>{primary?.name || 'Primary Gear'}</h3>
-                <button
-                  className="gear-rename-btn"
-                  onClick={() => setRenameModal({ targetId: primary?.id || 'comp-primary-gear', name: primary?.name || 'Primary Gear' })}
-                  title="Rename Primary Gear"
-                >
-                  <Icon>edit</Icon>
-                </button>
-              </div>
-            </div>
-            <span className="comp-count-pill">
-              {primary?.images?.length || 0} image{primary?.images?.length === 1 ? '' : 's'}
-            </span>
-          </div>
-          <p className="comp-card-desc">Main component being reverse-engineered, dimensioned, and evaluated.</p>
-
-          {/* Thumbnail Gallery with Full Image Controls */}
-          <div className="comp-image-grid">
-            {primary?.images?.map((img, idx) => (
-              <ImageItemCard
-                key={img.id}
-                image={img}
-                index={idx}
-                total={primary.images.length}
-                onDelete={() => handleRemoveImage(primary?.id || 'comp-primary-gear', img.id)}
-                onReplace={() => triggerReplaceImage(primary?.id || 'comp-primary-gear', img.id)}
-                onMoveLeft={() => handleReorder(primary?.id || 'comp-primary-gear', idx, idx - 1)}
-                onMoveRight={() => handleReorder(primary?.id || 'comp-primary-gear', idx, idx + 1)}
-                onUpdateMetadata={(key, val) => handleMetadataChange(primary?.id || 'comp-primary-gear', img.id, key, val)}
-                isExpanded={expandedImageId === img.id}
-                onToggleExpand={() => setExpandedImageId(expandedImageId === img.id ? null : img.id)}
-              />
-            ))}
-
-            <button
-              className="comp-thumb-add-box"
-              onClick={() => triggerAddImages(primary?.id || 'comp-primary-gear')}
-              title="Upload more photos for Primary Gear"
-            >
-              <Icon>add_photo_alternate</Icon>
-              <span>+ Add Images</span>
-            </button>
-          </div>
-
-          <div className="comp-notes-row">
-            <input
-              type="text"
-              className="comp-note-input"
-              placeholder="Optional notes for Primary Gear (e.g. 24 teeth, 15mm bore, mild wear on flank)..."
-              value={primary?.notes || ''}
-              onChange={(e) => {
-                const targetId = primary?.id || 'comp-primary-gear';
-                setMachineryState((prevState) => updateComponentNotes(prevState, targetId, e.target.value));
-              }}
-            />
-          </div>
-        </section>
-
-        {/* ========================================================================= */}
-        {/* 2. COMPANION GEAR                                                         */}
-        {/* ========================================================================= */}
-        <section
-          className={`comp-mgr-card companion-card ${dragOverSector === 'companion' ? 'drag-over' : ''}`}
-          onDragOver={(e) => handleDragOver(e, 'companion')}
-          onDragLeave={(e) => handleDragLeave(e, 'companion')}
-          onDrop={(e) => handleDropFiles(e, companion?.id || 'comp-companion-gear', companion ? 'add_images' : 'add_companion')}
-        >
-          <div className="comp-card-header">
-            <div className="comp-card-title">
-              <span className="role-tag companion">COMPANION GEAR</span>
-              {companion ? (
-                <div className="gear-name-row">
-                  <h3>{companion.name}</h3>
-                  <button
-                    className="gear-rename-btn"
-                    onClick={() => setRenameModal({ targetId: companion.id, name: companion.name })}
-                    title="Rename Companion Gear"
-                  >
-                    <Icon>edit</Icon>
-                  </button>
-                </div>
-              ) : (
-                <h3>No Companion Gear</h3>
-              )}
-            </div>
-            {companion && (
-              <span className="comp-count-pill">
-                {companion.images?.length || 0} image{companion.images?.length === 1 ? '' : 's'}
-              </span>
-            )}
-          </div>
-
-          {companion ? (
-            <>
-              <p className="comp-card-desc">Direct mating gear interacting with Primary Gear in the gear train.</p>
-
-              <div className="comp-image-grid">
-                {companion.images?.map((img, idx) => (
-                  <ImageItemCard
-                    key={img.id}
-                    image={img}
-                    index={idx}
-                    total={companion.images.length}
-                    onDelete={() => handleRemoveImage(companion.id, img.id)}
-                    onReplace={() => triggerReplaceImage(companion.id, img.id)}
-                    onMoveLeft={() => handleReorder(companion.id, idx, idx - 1)}
-                    onMoveRight={() => handleReorder(companion.id, idx, idx + 1)}
-                    onUpdateMetadata={(key, val) => handleMetadataChange(companion.id, img.id, key, val)}
-                    isExpanded={expandedImageId === img.id}
-                    onToggleExpand={() => setExpandedImageId(expandedImageId === img.id ? null : img.id)}
-                  />
-                ))}
-
-                <button
-                  className="comp-thumb-add-box"
-                  onClick={() => triggerAddImages(companion.id)}
-                  title="Upload more photos for Companion Gear"
-                >
-                  <Icon>add_photo_alternate</Icon>
-                  <span>+ Add Images</span>
-                </button>
-              </div>
-
-              <div className="comp-notes-row">
-                <input
-                  type="text"
-                  className="comp-note-input"
-                  placeholder="Optional notes for Companion Gear (e.g. driven gear, center distance ~75mm)..."
-                  value={companion.notes || ''}
-                  onChange={(e) => {
-                    setMachineryState((prevState) => updateComponentNotes(prevState, companion.id, e.target.value));
-                  }}
-                />
-              </div>
-
-              <div className="comp-card-actions">
-                <button
-                  className="comp-action-link"
-                  onClick={() => handleRoleChange(companion.id, ROLE_TYPES.ADDITIONAL_GEAR)}
-                >
-                  <Icon>swap_horiz</Icon> Demote to Additional Gear
-                </button>
-                <button
-                  className="comp-action-link danger"
-                  onClick={() => handleDeleteGear(companion.id)}
-                >
-                  <Icon>delete</Icon> Remove Companion Gear
-                </button>
-              </div>
-            </>
+        {/* 1. PRIMARY GEAR SECTION */}
+        <div className="comp-section-block">
+          <h4 className="comp-section-title">
+            <Icon>stars</Icon> PRIMARY GEAR (MAX 1)
+          </h4>
+          {primary ? (
+            renderGearCardContent(primary, 'primary')
           ) : (
             <div className="empty-companion-prompt">
-              <p>Mating gear directly interacting with the Primary Gear. Unlocks center distance calibration and pair kinematics.</p>
+              <p>No Primary Gear assigned. Select a gear below to assign as Primary Gear.</p>
+            </div>
+          )}
+        </div>
+
+        {/* 2. COMPANION GEAR SECTION */}
+        <div className="comp-section-block">
+          <h4 className="comp-section-title">
+            <Icon>link</Icon> COMPANION GEAR (MAX 1)
+          </h4>
+          {companion ? (
+            renderGearCardContent(companion, 'companion')
+          ) : (
+            <div className="empty-companion-prompt">
+              <p>Mating gear directly interacting with Primary Gear. Unlocks center distance calibration and pair kinematics.</p>
               <button
                 className="comp-btn-upload-action"
                 onClick={triggerAddCompanionGear}
@@ -409,124 +377,46 @@ export function ManageComponentsTab({
               </button>
             </div>
           )}
-        </section>
+        </div>
 
-        {/* ========================================================================= */}
-        {/* 3. ADDITIONAL GEARS (Unlimited: Gear 3, Gear 4, ...)                      */}
-        {/* ========================================================================= */}
-        <section className="comp-mgr-card additional-gears-card">
-          <div className="comp-card-header">
-            <div className="comp-card-title">
-              <span className="role-tag other">ADDITIONAL GEARS</span>
-              <h3>Secondary Gear Train ({additional.length})</h3>
-            </div>
-            <span className="comp-count-pill">
-              {additional.length} Gear{additional.length === 1 ? '' : 's'}
-            </span>
-          </div>
-          <p className="comp-card-desc">Idlers, intermediate reduction gears, and multi-stage transmission gears.</p>
+        {/* 3. SECONDARY GEAR TRAIN SECTION */}
+        <div className="comp-section-block">
+          <h4 className="comp-section-title">
+            <Icon>settings</Icon> SECONDARY GEAR TRAIN ({secondaryGears.length})
+          </h4>
+          {secondaryGears.length > 0 ? (
+            secondaryGears.map((gear) => (
+              <React.Fragment key={gear.id}>
+                {renderGearCardContent(gear, gear.id)}
+              </React.Fragment>
+            ))
+          ) : (
+            <p className="comp-empty-hint">No secondary gear train components currently assigned.</p>
+          )}
 
-          <div className="additional-gears-list">
-            {additional.map((gear) => (
-              <div
-                key={gear.id}
-                className={`additional-gear-block ${dragOverSector === gear.id ? 'drag-over' : ''}`}
-                onDragOver={(e) => handleDragOver(e, gear.id)}
-                onDragLeave={(e) => handleDragLeave(e, gear.id)}
-                onDrop={(e) => handleDropFiles(e, gear.id, 'add_images')}
-              >
-                <div className="gear-item-topbar">
-                  <div className="gear-item-title-group">
-                    <span className="gear-badge">{gear.role === ROLE_TYPES.ADDITIONAL_GEAR ? 'GEAR' : 'COMP'}</span>
-                    <strong>{gear.name}</strong>
-                    <button
-                      className="gear-rename-btn"
-                      onClick={() => setRenameModal({ targetId: gear.id, name: gear.name })}
-                      title="Rename Gear"
-                    >
-                      <Icon>edit</Icon>
-                    </button>
-                  </div>
+          <button
+            className="comp-btn-add-gear-upload"
+            onClick={triggerAddNewGear}
+          >
+            <Icon>add_photo_alternate</Icon> + Add Gear → Upload Images
+          </button>
+        </div>
 
-                  <div className="comp-menu-wrap">
-                    <button
-                      className="comp-menu-trigger"
-                      onClick={() => setActionMenuOpenId(actionMenuOpenId === gear.id ? null : gear.id)}
-                      title="Gear Actions"
-                    >
-                      <Icon>more_vert</Icon>
-                    </button>
-                    {actionMenuOpenId === gear.id && (
-                      <div className="comp-action-dropdown">
-                        <button onClick={() => handleRoleChange(gear.id, ROLE_TYPES.COMPANION)}>
-                          <Icon>swap_horiz</Icon> Set as Companion Gear
-                        </button>
-                        <button onClick={() => handleRoleChange(gear.id, ROLE_TYPES.PRIMARY)}>
-                          <Icon>star</Icon> Set as Primary Gear
-                        </button>
-                        <button className="danger" onClick={() => handleDeleteGear(gear.id)}>
-                          <Icon>delete</Icon> Delete {gear.name}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Images for this additional gear */}
-                <div className="comp-image-grid">
-                  {gear.images?.map((img, idx) => (
-                    <ImageItemCard
-                      key={img.id}
-                      image={img}
-                      index={idx}
-                      total={gear.images.length}
-                      onDelete={() => handleRemoveImage(gear.id, img.id)}
-                      onReplace={() => triggerReplaceImage(gear.id, img.id)}
-                      onMoveLeft={() => handleReorder(gear.id, idx, idx - 1)}
-                      onMoveRight={() => handleReorder(gear.id, idx, idx + 1)}
-                      onUpdateMetadata={(key, val) => handleMetadataChange(gear.id, img.id, key, val)}
-                      isExpanded={expandedImageId === img.id}
-                      onToggleExpand={() => setExpandedImageId(expandedImageId === img.id ? null : img.id)}
-                    />
-                  ))}
-
-                  <button
-                    className="comp-thumb-add-box"
-                    onClick={() => triggerAddImages(gear.id)}
-                    title={`Upload photos for ${gear.name}`}
-                  >
-                    <Icon>add_photo_alternate</Icon>
-                    <span>+ Add Images</span>
-                  </button>
-                </div>
-
-                <div className="comp-notes-row">
-                  <input
-                    type="text"
-                    className="comp-note-input"
-                    placeholder={`Optional notes for ${gear.name}...`}
-                    value={gear.notes || ''}
-                    onChange={(e) => {
-                      setMachineryState((prevState) => updateComponentNotes(prevState, gear.id, e.target.value));
-                    }}
-                  />
-                </div>
-              </div>
+        {/* 4. UNASSIGNED COMPONENTS SECTION */}
+        {unassignedGears.length > 0 && (
+          <div className="comp-section-block">
+            <h4 className="comp-section-title">
+              <Icon>category</Icon> UNASSIGNED COMPONENTS ({unassignedGears.length})
+            </h4>
+            {unassignedGears.map((gear) => (
+              <React.Fragment key={gear.id}>
+                {renderGearCardContent(gear, gear.id)}
+              </React.Fragment>
             ))}
-
-            {/* Main Add Gear Button (Image Upload Only) */}
-            <button
-              className="comp-btn-add-gear-upload"
-              onClick={triggerAddNewGear}
-            >
-              <Icon>add_photo_alternate</Icon> + Add Gear → Upload Images
-            </button>
           </div>
-        </section>
+        )}
 
-        {/* ========================================================================= */}
-        {/* 4. ASSEMBLY CONTEXT                                                       */}
-        {/* ========================================================================= */}
+        {/* 5. ASSEMBLY CONTEXT */}
         <section
           className={`comp-mgr-card assembly-card ${dragOverSector === 'assembly' ? 'drag-over' : ''}`}
           onDragOver={(e) => handleDragOver(e, 'assembly')}
@@ -582,9 +472,7 @@ export function ManageComponentsTab({
           </div>
         </section>
 
-        {/* ========================================================================= */}
-        {/* 5. ENVIRONMENT CONTEXT                                                    */}
-        {/* ========================================================================= */}
+        {/* 6. ENVIRONMENT CONTEXT */}
         <section
           className={`comp-mgr-card environment-card ${dragOverSector === 'env' ? 'drag-over' : ''}`}
           onDragOver={(e) => handleDragOver(e, 'env')}
@@ -641,63 +529,68 @@ export function ManageComponentsTab({
         </section>
       </div>
 
-      {/* ========================================================================= */}
-      {/* MODAL 1: Replace Companion Confirmation                                    */}
-      {/* ========================================================================= */}
+      {/* MODAL 1: Role Swap Confirmation */}
       {replaceModal && (
         <div className="modal-backdrop-custom" role="dialog" aria-modal="true">
           <div className="modal-content-custom">
             <div className="modal-header-custom">
               <Icon className="warn-icon">swap_horiz</Icon>
-              <h4>Replace Current Companion Gear?</h4>
+              <h4>Swap Roles?</h4>
             </div>
-            <p className="modal-desc-custom">
-              Only one gear can be designated as the Companion Gear at a time.
+            <p className="modal-desc-custom" style={{ fontSize: '13px', color: 'var(--text)', lineHeight: '1.5' }}>
+              {replaceModal.conflict?.message ||
+                `A ${replaceModal.newRole === ROLE_TYPES.PRIMARY ? 'Primary' : 'Companion'} Gear is already assigned. The two gears will swap roles.`}
             </p>
-            <div className="replace-comparison-box">
-              <div className="replace-row">
-                <span>Current Companion:</span>
-                <strong>{replaceModal.conflict?.currentCompanion?.name || 'Current Gear'}</strong>
+            {replaceModal.conflict?.currentHolder && (
+              <div className="swap-summary">
+                <div className="swap-row">
+                  <span className="swap-gear-name">{replaceModal.conflict.targetName}</span>
+                  <Icon>arrow_forward</Icon>
+                  <span className={`role-tag ${replaceModal.newRole === ROLE_TYPES.PRIMARY ? 'primary' : replaceModal.newRole === ROLE_TYPES.COMPANION ? 'companion' : 'other'}`}>
+                    {replaceModal.newRole === ROLE_TYPES.PRIMARY ? 'PRIMARY' : replaceModal.newRole === ROLE_TYPES.COMPANION ? 'COMPANION' : 'SECONDARY'}
+                  </span>
+                </div>
+                <div className="swap-row">
+                  <span className="swap-gear-name">{replaceModal.conflict.existingName}</span>
+                  <Icon>arrow_forward</Icon>
+                  <span className="role-tag other">
+                    {replaceModal.conflict.currentHolder.role === ROLE_TYPES.PRIMARY ? 'PRIMARY'
+                      : replaceModal.conflict.currentHolder.role === ROLE_TYPES.COMPANION ? 'COMPANION'
+                      : 'SECONDARY'}
+                  </span>
+                </div>
               </div>
-              <div className="replace-row new-val">
-                <span>New Companion:</span>
-                <strong>
-                  {getAllComponents(machineryState).find((c) => c.id === replaceModal.targetId)?.name || 'New Gear'}
-                </strong>
-              </div>
-            </div>
+            )}
             <p className="replace-note">
-              The current companion gear will be safely demoted to an <em>Additional Gear</em> in the machinery.
+              No data, images, or analysis will be lost. Only the role assignment changes.
             </p>
             <div className="modal-actions-custom">
               <button className="btn-cancel-custom" onClick={() => setReplaceModal(null)}>
                 Cancel
               </button>
               <button className="btn-replace-custom" onClick={handleConfirmReplace}>
-                Replace Companion
+                Swap Roles
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* MODAL 2: Rename Gear Modal                                                */}
-      {/* ========================================================================= */}
+      {/* MODAL 2: Rename Gear Modal */}
       {renameModal && (
         <div className="modal-backdrop-custom" role="dialog" aria-modal="true">
           <form className="modal-content-custom" onSubmit={handleSaveRename}>
             <div className="modal-header-custom">
               <Icon>edit</Icon>
-              <h4>Rename Gear</h4>
+              <h4>Rename Component</h4>
             </div>
             <div className="modal-form-fields">
               <label>
-                <span>Gear Name</span>
+                <span>Component Name</span>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Input Pinion, Idler Gear 32T, Output Bull Gear"
+                  placeholder="e.g. Gear 1, Gear 2, Input Pinion"
                   value={renameModal.name}
                   onChange={(e) => setRenameModal({ ...renameModal, name: e.target.value })}
                   autoFocus
@@ -720,14 +613,8 @@ export function ManageComponentsTab({
 }
 
 /**
- * Individual Interactive Image Card supporting:
- * - Preview
- * - Delete
- * - Replace
- * - Reorder (Left/Right)
- * - Purpose Dropdown
- * - Priority Dropdown
- * - Expandable Note
+ * Clean & Streamlined Image Card
+ * Displays thumbnail, replace/delete overlay actions, reorder controls, and note toggle.
  */
 function ImageItemCard({
   image,
@@ -745,23 +632,18 @@ function ImageItemCard({
     <div className={`comp-img-card ${isExpanded ? 'expanded' : ''}`}>
       <div className="comp-img-thumb-wrap">
         {image.url ? (
-          <img src={image.url} alt={image.name} className="comp-img-thumb" />
+          <img src={image.url} alt={image.name || `Photo #${index + 1}`} className="comp-img-thumb" />
         ) : (
           <div className="no-preview">
             <Icon>image</Icon>
           </div>
         )}
 
-        {/* Priority Badge */}
-        <span className={`img-priority-badge ${image.priority || 'high'}`}>
-          {image.priority === 'low' ? 'LOW' : image.priority === 'medium' ? 'MED' : 'HIGH'}
-        </span>
-
         {/* Top Overlay Actions: Replace & Delete */}
         <div className="comp-img-top-actions">
           <button
             className="img-icon-btn replace"
-            title="Replace this photo with a new file"
+            title="Replace photo with new file"
             onClick={onReplace}
           >
             <Icon>swap_horiz</Icon>
@@ -775,63 +657,36 @@ function ImageItemCard({
           </button>
         </div>
 
-        {/* Bottom Overlay Actions: Reorder Arrows */}
+        {/* Bottom Overlay Actions: Reorder Arrows, Index Label, Note Toggle */}
         <div className="comp-img-bottom-actions">
+          <div className="img-nav-group">
+            <button
+              className="img-icon-btn nav"
+              title="Move photo left"
+              disabled={index <= 0}
+              onClick={onMoveLeft}
+            >
+              <Icon>chevron_left</Icon>
+            </button>
+            <span className="img-idx-label">#{index + 1}</span>
+            <button
+              className="img-icon-btn nav"
+              title="Move photo right"
+              disabled={index >= total - 1}
+              onClick={onMoveRight}
+            >
+              <Icon>chevron_right</Icon>
+            </button>
+          </div>
+
           <button
-            className="img-icon-btn nav"
-            title="Move photo left"
-            disabled={index <= 0}
-            onClick={onMoveLeft}
+            className={`img-icon-btn note ${image.note ? 'has-note' : ''}`}
+            onClick={onToggleExpand}
+            title={image.note ? `Note: ${image.note}` : 'Add note to photo'}
           >
-            <Icon>chevron_left</Icon>
-          </button>
-          <span className="img-idx-label">#{index + 1}</span>
-          <button
-            className="img-icon-btn nav"
-            title="Move photo right"
-            disabled={index >= total - 1}
-            onClick={onMoveRight}
-          >
-            <Icon>chevron_right</Icon>
+            <Icon>sticky_note_2</Icon>
           </button>
         </div>
-      </div>
-
-      {/* Image Metadata Strip */}
-      <div className="comp-img-meta-strip">
-        <select
-          className="img-purpose-select"
-          value={image.purpose || 'overall_view'}
-          onChange={(e) => onUpdateMetadata('purpose', e.target.value)}
-          title="Image Purpose / Feature focus"
-        >
-          {IMAGE_PURPOSES.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-
-        <select
-          className="img-priority-select"
-          value={image.priority || 'high'}
-          onChange={(e) => onUpdateMetadata('priority', e.target.value)}
-          title="Image Priority Level"
-        >
-          {IMAGE_PRIORITIES.map((pr) => (
-            <option key={pr.id} value={pr.id}>
-              {pr.label}
-            </option>
-          ))}
-        </select>
-
-        <button
-          className={`img-note-toggle-btn ${image.note ? 'has-note' : ''}`}
-          onClick={onToggleExpand}
-          title={image.note ? `Note: ${image.note}` : 'Add note to photo'}
-        >
-          <Icon>sticky_note_2</Icon>
-        </button>
       </div>
 
       {/* Expandable Image Note Drawer */}
@@ -840,9 +695,9 @@ function ImageItemCard({
           <input
             type="text"
             className="img-note-field"
-            placeholder="Photo note (e.g. root undercut, tooth pitch 2.5mm)..."
+            placeholder="Photo note (e.g. root undercut)..."
             value={image.note || ''}
-            onChange={(e) => onUpdateMetadata('note', e.target.value)}
+            onChange={(e) => onUpdateMetadata?.('note', e.target.value)}
             autoFocus
           />
         </div>
@@ -852,3 +707,4 @@ function ImageItemCard({
 }
 
 export default ManageComponentsTab;
+

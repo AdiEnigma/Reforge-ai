@@ -6,6 +6,7 @@
 
 import React, { useState } from 'react';
 import * as exporters from '../lib/exporters.js';
+import { ComponentDropdown } from './ComponentDropdown.jsx';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -170,7 +171,13 @@ const EXPORT_CATEGORIES = [
   },
 ];
 
-export function ExportWorkWindow({ analysis, mfgData }) {
+export function ExportWorkWindow({
+  analysis,
+  mfgData,
+  machineryState,
+  activeComponentId,
+  setActiveComponentId,
+}) {
   const [activeCategory, setActiveCategory] = useState('all');
   const [downloadedFormat, setDownloadedFormat] = useState(null);
 
@@ -192,6 +199,14 @@ export function ExportWorkWindow({ analysis, mfgData }) {
 
   return (
     <div className="work-window export-window">
+      {machineryState && (
+        <ComponentDropdown
+          machineryState={machineryState}
+          activeComponentId={activeComponentId}
+          setActiveComponentId={setActiveComponentId}
+          title="EXPORT TARGET COMPONENT"
+        />
+      )}
       <header className="work-window-header">
         <div className="work-window-title-col">
           <div className="work-window-tag"><Icon>download</Icon> EXPORT CENTER</div>

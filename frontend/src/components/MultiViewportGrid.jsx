@@ -18,6 +18,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { buildModel, buildAssemblyScene, dimensionList, resolveLabel } from '../lib/reconstruct.js';
 import { getAllComponents, ROLE_TYPES } from '../lib/machinery-context.js';
+import { ComponentDropdown } from './ComponentDropdown.jsx';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -81,6 +82,7 @@ function SingleViewportCanvas({
   hoveredFeatureId,
   onSelectComponent,
   headerControls = null,
+  cameraStateRef = null,
 }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
@@ -141,13 +143,36 @@ function SingleViewportCanvas({
     });
     const stressMaterial = createStressMaterial();
 
-    const view = { radius: isAssembly ? 14 : 8, theta: 0.55, phi: 1.35 };
-    const target = new THREE.Vector3();
+    const initialCam = cameraStateRef?.current || {
+      radius: isAssembly ? 14 : 8,
+      theta: 0.55,
+      phi: 1.35,
+      target: { x: 0, y: 0, z: 0 },
+    };
+    const view = { radius: initialCam.radius, theta: initialCam.theta, phi: initialCam.phi };
+    const target = new THREE.Vector3(
+      initialCam.target?.x || 0,
+      initialCam.target?.y || 0,
+      initialCam.target?.z || 0
+    );
+
+    const syncCamera = () => {
+      if (cameraStateRef) {
+        cameraStateRef.current = {
+          radius: view.radius,
+          theta: view.theta,
+          phi: view.phi,
+          target: { x: target.x, y: target.y, z: target.z },
+        };
+      }
+    };
+
     const reset = () => {
       view.radius = isAssembly ? 14 : 8;
       view.theta = 0.55;
       view.phi = 1.35;
       target.set(0, 0, 0);
+      syncCamera();
     };
     resetViewRef.current = reset;
 
@@ -179,6 +204,7 @@ function SingleViewportCanvas({
         target.x -= dx * 0.006 * view.radius;
         target.y += dy * 0.006 * view.radius;
       }
+      syncCamera();
     };
 
     const onUp = () => {
@@ -190,6 +216,7 @@ function SingleViewportCanvas({
     const onWheel = (e) => {
       e.preventDefault();
       view.radius = Math.max(2.5, Math.min(35, view.radius * (1 + e.deltaY * 0.001)));
+      syncCamera();
     };
 
     const preventContext = (e) => e.preventDefault();
@@ -215,7 +242,10 @@ function SingleViewportCanvas({
     let frame;
     const animate = () => {
       frame = requestAnimationFrame(animate);
-      if (options.current.autoRotate) view.theta += 0.005;
+      if (options.current.autoRotate) {
+        view.theta += 0.005;
+        syncCamera();
+      }
       gridHelper.visible = options.current.grid;
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
@@ -337,6 +367,7 @@ export function MultiViewportGrid({
   hoveredFeatureId,
   ready,
   onOpenImageManager,
+  cameraStateRef,
 }) {
   const allComponents = useMemo(() => getAllComponents(machineryState), [machineryState]);
   const primary = machineryState?.primaryGear;
@@ -385,16 +416,24 @@ export function MultiViewportGrid({
     }
   }, [allComponents.length, primary?.id, companion?.id]);
 
-  // Safety fallback if viewMode is invalid for current gear count
+  // View Mode availability checks
+  // Rule: Assembly View MUST NOT simply activate because multiple gears exist.
+  // It should ONLY become available when user added at least one image under Assembly Alignment & Fit.
+  const hasAssemblyImages = (machineryState?.assemblyContext?.images?.length || 0) > 0;
+  const isDualEnabled = totalGears >= 2;
+  const isQuadEnabled = totalGears >= 3;
+  const isAssemblyEnabled = hasAssemblyImages;
+
+  // Safety fallback if viewMode is invalid for current gear count / image availability
   useEffect(() => {
-    if (totalGears < 2 && viewMode !== 'single') {
+    if (viewMode === 'assembly' && !isAssemblyEnabled) {
       setViewMode?.('single');
-    } else if (totalGears === 2 && (viewMode === 'quad' || viewMode === 'assembly')) {
+    } else if (totalGears < 2 && (viewMode === 'dual' || viewMode === 'quad')) {
+      setViewMode?.('single');
+    } else if (totalGears === 2 && viewMode === 'quad') {
       setViewMode?.('dual');
-    } else if (totalGears === 3 && viewMode === 'assembly') {
-      setViewMode?.('quad');
     }
-  }, [totalGears, viewMode, setViewMode]);
+  }, [totalGears, viewMode, setViewMode, isAssemblyEnabled]);
 
   // Active single component & analysis
   const activeComponent =
@@ -418,11 +457,6 @@ export function MultiViewportGrid({
     return allComponents[fallbackIdx] || null;
   };
 
-  // View Mode availability checks
-  const isDualEnabled = totalGears >= 2;
-  const isQuadEnabled = totalGears >= 3;
-  const isAssemblyEnabled = totalGears >= 4;
-
   const dualTooltip = isDualEnabled
     ? 'Dual Split View (2 Viewports)'
     : 'Requires at least 2 gears to enable Dual View';
@@ -432,8 +466,8 @@ export function MultiViewportGrid({
     : 'Requires at least 3 gears to enable Quad View';
 
   const assemblyTooltip = isAssemblyEnabled
-    ? 'Complete Machinery Assembly View (4+ Gears)'
-    : 'Requires at least 4 gears to enable Assembly View';
+    ? 'Complete Machinery Assembly View'
+    : 'Assembly View requires at least 1 image uploaded under Assembly Alignment & Fit';
 
   // Render Viewport Dropdown Selector
   const renderViewportDropdown = (currentId, onSelect, label = '') => (
@@ -502,20 +536,14 @@ export function MultiViewportGrid({
 
         {/* Component Selector / Viewport Configuration Header */}
         <div className="viewport-comp-selector">
-          {viewMode === 'single' && (
-            <div className="comp-radio-group">
-              <span className="selector-label">VIEWING:</span>
-              {allComponents.map((comp) => (
-                <button
-                  key={comp.id}
-                  className={`comp-pill-btn ${activeComponentId === comp.id ? 'active' : ''}`}
-                  onClick={() => handleSelectComponent(comp.id)}
-                >
-                  <span className={`pill-role-dot ${comp.role?.toLowerCase().replace(/\s+/g, '-')}`} />
-                  {comp.name}
-                </button>
-              ))}
-            </div>
+          {viewMode === 'single' && machineryState && (
+            <ComponentDropdown
+              machineryState={machineryState}
+              activeComponentId={activeComponentId}
+              setActiveComponentId={handleSelectComponent}
+              title="ACTIVE TARGET GEAR"
+              showSummary={false}
+            />
           )}
 
           {viewMode === 'dual' && (
@@ -568,6 +596,7 @@ export function MultiViewportGrid({
             resetKey={resetKey}
             selectedFeatureId={selectedFeatureId}
             hoveredFeatureId={hoveredFeatureId}
+            cameraStateRef={cameraStateRef}
           />
         )}
 
@@ -595,6 +624,7 @@ export function MultiViewportGrid({
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
                   onSelectComponent={() => handleSelectComponent(comp1?.id)}
+                  cameraStateRef={cameraStateRef}
                 />
               );
             })()}
@@ -626,6 +656,7 @@ export function MultiViewportGrid({
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
                   onSelectComponent={() => handleSelectComponent(comp2?.id)}
+                  cameraStateRef={cameraStateRef}
                 />
               );
             })()}
@@ -655,6 +686,7 @@ export function MultiViewportGrid({
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
                   onSelectComponent={() => handleSelectComponent(comp1?.id)}
+                  cameraStateRef={cameraStateRef}
                 />
               );
             })()}
@@ -686,6 +718,7 @@ export function MultiViewportGrid({
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
                   onSelectComponent={() => handleSelectComponent(comp2?.id)}
+                  cameraStateRef={cameraStateRef}
                 />
               );
             })()}
@@ -717,6 +750,7 @@ export function MultiViewportGrid({
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
                   onSelectComponent={() => handleSelectComponent(comp3?.id)}
+                  cameraStateRef={cameraStateRef}
                 />
               );
             })()}
@@ -769,6 +803,7 @@ export function MultiViewportGrid({
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
                   onSelectComponent={() => handleSelectComponent(fallbackComp4?.id)}
+                  cameraStateRef={cameraStateRef}
                 />
               );
             })()}
@@ -788,6 +823,7 @@ export function MultiViewportGrid({
             resetKey={resetKey}
             selectedFeatureId={selectedFeatureId}
             hoveredFeatureId={hoveredFeatureId}
+            cameraStateRef={cameraStateRef}
           />
         )}
       </div>

@@ -75,26 +75,39 @@ export function PipWorkbench({
   setResetKey,
   selectedFeatureId,
   hoveredFeatureId,
+  showFeatures,
+  setShowFeatures,
+  activeComponentId,
+  setActiveComponentId,
   label,
   conf,
   onDockToMain,
   onClose,
   initialPipMode = 'single', // 'single' | 'assembly'
   ReconstructedViewport,
+  cameraStateRef,
 }) {
   const [pos, setPos] = useState({ x: window.innerWidth > 1200 ? window.innerWidth - 750 : 20, y: 30 });
   const [size, setSize] = useState({ width: 420, height: 300 });
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [pipMode, setPipMode] = useState(initialPipMode === 'assembly' ? 'assembly' : 'single');
-  const [pipActiveCompId, setPipActiveCompId] = useState(machineryState?.primaryGear?.id || 'comp-primary-gear');
+
+  const hasAssemblyImages = (machineryState?.assemblyContext?.images?.length || 0) > 0;
+
+  // Fallback if assembly mode selected without assembly images
+  useEffect(() => {
+    if (pipMode === 'assembly' && !hasAssemblyImages) {
+      setPipMode('single');
+    }
+  }, [pipMode, hasAssemblyImages]);
 
   const dragStartRef = useRef({ mouseX: 0, mouseY: 0, posX: 0, posY: 0 });
   const resizeStartRef = useRef({ mouseX: 0, mouseY: 0, width: 0, height: 0 });
   const pipRef = useRef(null);
 
   const allComponents = getAllComponents(machineryState);
-  const activeComp = allComponents.find((c) => c.id === pipActiveCompId) || machineryState?.primaryGear || allComponents[0];
+  const activeComp = allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear || allComponents[0];
   const currentAnalysis = getComponentEffectiveAnalysis(activeComp, analysis);
 
   // Mouse Drag Handler
@@ -194,17 +207,21 @@ export function PipWorkbench({
               onChange={(e) => {
                 const val = e.target.value;
                 if (val === 'assembly') {
-                  setPipMode('assembly');
+                  if (hasAssemblyImages) {
+                    setPipMode('assembly');
+                  }
                 } else {
                   setPipMode('single');
-                  setPipActiveCompId(val);
+                  setActiveComponentId?.(val);
                 }
               }}
               title="Select which gear or assembly to display in 3D"
               aria-label="Select which gear or assembly to display in 3D"
             >
               <optgroup label="Machinery View">
-                <option value="assembly">⚙ Assembly (All Gears)</option>
+                <option value="assembly" disabled={!hasAssemblyImages}>
+                  ⚙ Assembly {hasAssemblyImages ? '(All Gears)' : '(Requires Alignment Images)'}
+                </option>
               </optgroup>
               <optgroup label="Select Gear">
                 {allComponents.map((comp) => (
@@ -227,9 +244,14 @@ export function PipWorkbench({
               Single
             </button>
             <button
-              className={`pip-mode-btn ${pipMode === 'assembly' ? 'active' : ''}`}
-              onClick={() => setPipMode('assembly')}
-              title="Complete Machinery Assembly 3D View"
+              className={`pip-mode-btn ${pipMode === 'assembly' ? 'active' : ''} ${!hasAssemblyImages ? 'disabled' : ''}`}
+              onClick={() => hasAssemblyImages && setPipMode('assembly')}
+              disabled={!hasAssemblyImages}
+              title={
+                hasAssemblyImages
+                  ? 'Complete Machinery Assembly 3D View'
+                  : 'Assembly View requires at least 1 image uploaded under Assembly Alignment & Fit'
+              }
             >
               Assembly
             </button>
@@ -268,6 +290,7 @@ export function PipWorkbench({
                 stress={stress}
                 autoRotate={autoRotate}
                 resetKey={resetKey}
+                cameraStateRef={cameraStateRef}
               />
             ) : (
               <ReconstructedViewport
@@ -279,6 +302,7 @@ export function PipWorkbench({
                 resetKey={resetKey}
                 selectedFeatureId={selectedFeatureId}
                 hoveredFeatureId={hoveredFeatureId}
+                cameraStateRef={cameraStateRef}
               />
             )}
           </div>
@@ -345,6 +369,14 @@ export function PipWorkbench({
             <Icon>straighten</Icon>
           </button>
           <button
+            className={showFeatures ? 'active' : ''}
+            onClick={() => setShowFeatures?.((f) => !f)}
+            title="Detected Features"
+            aria-label="Toggle Detected Features"
+          >
+            <Icon>center_focus_strong</Icon>
+          </button>
+          <button
             onClick={() => setResetKey((k) => k + 1)}
             title="Reset Viewport"
             aria-label="Reset Viewport"
@@ -364,7 +396,7 @@ export function PipWorkbench({
   );
 }
 
-function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, resetKey }) {
+function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, resetKey, cameraStateRef }) {
   const mount = useRef(null);
   const resetRef = useRef(null);
   const options = useRef({ wire, grid, stress, autoRotate });
@@ -386,13 +418,27 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, res
     key.position.set(6, 8, 10);
     scene.add(key);
 
-    const view = { radius: 14, theta: 0.55, phi: 1.35 };
-    const target = new THREE.Vector3();
+    const initialCam = cameraStateRef?.current || { radius: 14, theta: 0.55, phi: 1.35, target: { x: 0, y: 0, z: 0 } };
+    const view = { radius: initialCam.radius, theta: initialCam.theta, phi: initialCam.phi };
+    const target = new THREE.Vector3(initialCam.target?.x || 0, initialCam.target?.y || 0, initialCam.target?.z || 0);
+
+    const syncCamera = () => {
+      if (cameraStateRef) {
+        cameraStateRef.current = {
+          radius: view.radius,
+          theta: view.theta,
+          phi: view.phi,
+          target: { x: target.x, y: target.y, z: target.z },
+        };
+      }
+    };
+
     resetRef.current = () => {
       view.radius = 14;
       view.theta = 0.55;
       view.phi = 1.35;
       target.set(0, 0, 0);
+      syncCamera();
     };
 
     let pointerMode = null;
@@ -417,6 +463,7 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, res
         target.x -= dx * 0.006 * view.radius;
         target.y += dy * 0.006 * view.radius;
       }
+      syncCamera();
     };
     const onUp = () => {
       pointerMode = null;
@@ -425,6 +472,7 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, res
     const onWheel = (e) => {
       e.preventDefault();
       view.radius = Math.max(3.0, Math.min(35, view.radius * (1 + e.deltaY * 0.001)));
+      syncCamera();
     };
 
     canvas.addEventListener('pointerdown', onDown);
@@ -447,7 +495,10 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, res
     let frame;
     const animate = () => {
       frame = requestAnimationFrame(animate);
-      if (options.current.autoRotate) view.theta += 0.005;
+      if (options.current.autoRotate) {
+        view.theta += 0.005;
+        syncCamera();
+      }
       const r = view.radius * Math.sin(view.phi);
       camera.position.set(
         target.x + r * Math.cos(view.theta),
