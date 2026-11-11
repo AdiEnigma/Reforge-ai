@@ -108,3 +108,4 @@ All pre-existing ReForge AI capabilities and API contracts were tested and confi
 3. **Reflective Metal Surfaces**: Chrome, machined steel, or wet surfaces create specular highlights that may split contours or lower SAM 2 confidence.
 4. **Scale Calibration**: Calibration is only computed when a user-supplied reference dimension matches an unambiguously detected circle or line. Otherwise, calibration status remains `uncalibrated`.
 5. **No CAD Overwrite**: The vision evidence is supplementary evidence passed into Gemini prompt text. It does not replace the Three.js geometry recipe builders or the parametric CAD exporters.
+
