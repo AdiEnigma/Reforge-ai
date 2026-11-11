@@ -186,8 +186,87 @@ function referenceBlock(reference) {
   ].join("\n");
 }
 
-function analysisPrompt(reference) {
-  return [
+function visionEvidenceBlock(visionEvidence) {
+  if (!visionEvidence || !Array.isArray(visionEvidence.images)) return "";
+
+  const lines = [
+    "",
+    "VISION PREPROCESSING EVIDENCE (supplementary — treat as hypotheses, not ground truth):",
+    "The following structured evidence was extracted by a computer-vision pipeline before this Gemini analysis.",
+    "Provenance:",
+    "- SAM 2 segmentation: a machine-learning hypothesis about component boundaries. May be incomplete or ambiguous.",
+    "- OpenCV features: pixel-space candidates (contours, circles, lines). Coordinates are in PIXELS, NOT millimetres.",
+    "- Depth Anything V2: RELATIVE depth only. Values are NOT metric distances. NEVER interpret as mm or physical scale.",
+    "- Calibration: unless marked calibrated with a matching reference feature, do NOT use pixel counts as mm estimates.",
+    "",
+    `Overall vision pipeline status: ${visionEvidence.status || "unknown"}`,
+    `Inference device: ${visionEvidence.device?.actual ?? "unknown"}`,
+    "",
+  ];
+
+  for (const img of visionEvidence.images) {
+    lines.push(`Image ${img.image_index} (${img.width ?? "?"}x${img.height ?? "?"} px):`);
+
+    if (img.quality) {
+      lines.push(
+        `  Quality: blur_score=${(img.quality.blur_score ?? 0).toFixed(2)}, ` +
+        `contrast=${(img.quality.contrast_score ?? 0).toFixed(2)}, ` +
+        `clipped=${(img.quality.clipped_fraction ?? 0).toFixed(3)}`
+      );
+    }
+
+    if (img.segmentation) {
+      const seg = img.segmentation;
+      lines.push(
+        `  Segmentation: status=${seg.status}, ` +
+        `score=${(seg.score ?? 0).toFixed(3)}, ` +
+        `area_ratio=${(seg.mask_area_ratio ?? 0).toFixed(3)}, ` +
+        `candidates=${seg.candidate_count ?? 0}`
+      );
+      if (seg.needs_user_selection) {
+        lines.push("  AMBIGUITY WARNING: Multiple similar components detected — target selection is ambiguous.");
+      }
+      if (seg.bbox_xyxy_px) {
+        lines.push(`  Component bounding box (pixels only): [${seg.bbox_xyxy_px.join(", ")}]`);
+      }
+    }
+
+    if (img.opencv) {
+      const cv = img.opencv;
+      lines.push(
+        `  OpenCV candidates: ${cv.contour_count ?? 0} contours, ` +
+        `${cv.circle_count ?? 0} circles, ` +
+        `${cv.ellipse_count ?? 0} ellipses, ` +
+        `${cv.line_count ?? 0} lines`
+      );
+      if (cv.bounding_box) lines.push(`  Component bounding box (pixels): ${JSON.stringify(cv.bounding_box)}`);
+      if (cv.symmetry_hints?.length) lines.push(`  Symmetry hints: ${cv.symmetry_hints.join(", ")}`);
+      if (cv.warnings?.length) lines.push(`  OpenCV warnings: ${cv.warnings.join("; ")}`);
+    }
+
+    if (img.depth) {
+      lines.push(`  Depth: status=${img.depth.status}, type=${img.depth.depth_type} (RELATIVE ONLY — metric=false — NOT a measurement in mm)`);
+    }
+
+    if (img.calibration) {
+      const cal = img.calibration;
+      const calStr = cal.mm_per_pixel
+        ? `, mm/px=${cal.mm_per_pixel} (confidence=${cal.confidence?.toFixed(2)})`
+        : " (uncalibrated — do NOT infer mm from pixels)";
+      lines.push(`  Calibration: ${cal.status}${calStr}`);
+    }
+    lines.push("");
+  }
+
+  if (visionEvidence.warnings?.length) {
+    lines.push(`Overall warnings: ${visionEvidence.warnings.join("; ")}`);
+  }
+
+  return lines.join("\n");
+}
+
+function analysisPrompt(reference, visionEvidence) {
+  const promptParts = [
     "You are a mechanical reverse-engineering analyst. Inspect the provided component photographs jointly and classify the part.",
     'Classify the part with a specific, free-form component type (e.g. "helical gear", "spur gear", "shaft", "flange", "bearing", "valve", "bolt", "bracket"). Do NOT limit yourself to a fixed list.',
     referenceBlock(reference),
@@ -214,7 +293,14 @@ function analysisPrompt(reference) {
     '- "gear": toothed wheels. Provide gear = {teeth, module, pressureAngle (default 20), helixAngle (0 = spur, > 0 = helical), faceWidth (tooth face width), boreRadius}. Mirror teeth/module/helixAngle into the top-level fields too.',
     '- "combination": complex or ambiguous parts. Compose from up to ~8 additive primitives (kind: box | cylinder | sphere | cone | torus), each with its size fields, position and rotation.',
     "All recipe lengths are in mm, angles in degrees, counts as integers. Use sane, bounded magnitudes — never extreme values like 50000 or 0.0001. IMPORTANT: Do NOT fall back to a single plain box primitive. If you cannot determine the exact recipe, make your best geometric approximation using the component type — for example, use cylinders for shafts, the 'revolved' style for axisymmetric parts, or the 'gear' style for toothed wheels. A single box is never an acceptable fallback.",
-  ].join("\n");
+  ];
+
+  const visionText = visionEvidenceBlock(visionEvidence);
+  if (visionText) {
+    promptParts.push(visionText);
+  }
+
+  return promptParts.join("\n");
 }
 
 function stripFences(text) {
@@ -407,12 +493,12 @@ export function sanitizeRecipe(rawRecipe) {
   return recipe;
 }
 
-export async function analyzeComponent({ images, reference }) {
+export async function analyzeComponent({ images, reference, visionEvidence }) {
   const genAI = client();
   const parts = images.map((image) => ({
     inlineData: { data: image.data, mimeType: image.mimeType },
   }));
-  parts.push({ text: analysisPrompt(reference) });
+  parts.push({ text: analysisPrompt(reference, visionEvidence) });
 
   const candidateModels = getCandidateModels();
   let lastError = null;

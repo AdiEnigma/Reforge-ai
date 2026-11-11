@@ -6,6 +6,7 @@ import { analyzeComponent, chatWithEngineer, sanitizeRecipe } from "./gemini.js"
 import { computeManufacturingIntelligence } from "./manufacturing.js";
 import { computeMaterialAlternatives } from "./material-comparison.js";
 import { simulateEngineeringChange, analyzeDimensionSensitivity } from "./engineering-analysis.js";
+import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from './vision-adapter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
@@ -81,8 +82,44 @@ app.post("/api/analyze-component", async (req, res) => {
   try {
     const images = validateImages(req.body?.images);
     const reference = sanitizeReference(req.body?.reference);
-    const analysis = await analyzeComponent({ images, reference });
-    res.json({ analysis });
+
+    // Optional vision preprocessing — fail-open by default (null if disabled/offline/error)
+    let visionEvidence = null;
+    if (isVisionEnabled()) {
+      try {
+        const visionResult = await callVisionService(images, reference);
+        if (visionResult) {
+          visionEvidence = buildVisionEvidenceSummary(visionResult);
+        }
+      } catch (visionError) {
+        // callVisionService should never throw (resolves null on error), but guard anyway
+        console.warn('[analyze-component] Unexpected vision error (continuing without vision):', visionError?.message);
+      }
+    }
+
+    const analysis = await analyzeComponent({ images, reference, visionEvidence });
+
+    // Build response — visionDiagnostics is additive and optional
+    const responseBody = { analysis };
+    if (visionEvidence) {
+      responseBody.visionDiagnostics = {
+        status: visionEvidence.status,
+        images: visionEvidence.images.map((img) => ({
+          image_index: img.image_index,
+          segmentation_status: img.segmentation?.status ?? 'unavailable',
+          candidate_count: img.segmentation?.candidate_count ?? 0,
+          depth_status: img.depth?.status ?? 'unavailable',
+          opencv_contour_count: img.opencv?.contour_count ?? 0,
+          warnings: [
+            ...(img.opencv?.warnings || []),
+            ...(img.depth?.warnings || []),
+          ],
+        })),
+        warnings: visionEvidence.warnings || [],
+      };
+    }
+
+    res.json(responseBody);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || "Analysis failed." });
   }

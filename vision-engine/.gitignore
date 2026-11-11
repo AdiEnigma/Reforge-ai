@@ -1,0 +1,24 @@
+# Model weights and checkpoints (Rule 7: Never commit model weights)
+models/
+*.pt
+*.pth
+*.onnx
+
+# Temporary processing artifacts
+artifacts/
+temp/
+*.tmp
+
+# Python virtual environment and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+

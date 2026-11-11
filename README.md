@@ -79,3 +79,62 @@ frontend/  React + Vite + Three.js app (landing, upload, 3D reconstruction workb
 ## License
 
 Prototype — for demonstration purposes.
+
+
+---
+
+## Vision Preprocessing Service (Optional)
+
+ReForge AI includes an optional Python-based vision preprocessing service that uses
+**SAM 2.1** image segmentation, **OpenCV** geometric feature extraction, and **Depth Anything V2 Small**
+depth estimation to provide supplementary visual evidence to the Gemini analysis.
+
+> **Disabled by default.** The existing Gemini-only analysis path works exactly as
+> before when `VISION_PIPELINE_ENABLED=false` (the default).
+
+### Prerequisites
+
+- Python >= 3.10
+- ~2 GB disk space for model checkpoints (downloaded separately)
+- Recommended: Linux or WSL2 with Ubuntu on Windows (for SAM 2 CUDA support; CPU fallback is automatic)
+
+### Quick start
+
+```bash
+# 1. Create virtual environment for vision service
+cd vision-engine
+python -m venv .venv
+
+# Windows (PowerShell)
+.venv\Scripts\activate
+# Linux / macOS / WSL2
+source .venv/bin/activate
+
+# 2. Install Python dependencies
+pip install -r requirements.txt
+
+# 3. Download model checkpoints (~284 MB)
+python scripts/download_models.py
+
+# 4. Start the vision service (loopback only)
+uvicorn app:app --host 127.0.0.1 --port 8765
+```
+
+### Enable in backend
+
+Add to `backend/.env.local`:
+```env
+VISION_PIPELINE_ENABLED=true
+VISION_SERVICE_URL=http://127.0.0.1:8765
+```
+
+### Fail-safe behavior
+
+If the vision service is offline, times out, or returns an error:
+- `VISION_FAIL_OPEN=true` (default): analysis continues using Gemini only
+- A warning is logged server-side
+- The API response `{ analysis }` is unaffected
+
+### Model information
+
+See [MODEL_NOTICES.md](MODEL_NOTICES.md) for upstream URLs, licenses (both Apache-2.0), and checkpoint details.

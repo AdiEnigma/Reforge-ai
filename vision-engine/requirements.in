@@ -1,0 +1,14 @@
+# Dependencies for ReForge AI Vision Preprocessing Service
+# Pin compatible versions for Python >= 3.10
+fastapi>=0.115.0,<0.116
+uvicorn[standard]>=0.32.0,<0.33
+pydantic>=2.9.0,<3.0
+Pillow>=11.0.0,<12.0
+opencv-python-headless>=4.10.0,<5.0
+numpy>=1.26.0,<2.0
+torch>=2.5.1
+torchvision>=0.20.1
+httpx>=0.27.0,<0.28
+pytest>=8.0.0,<9.0
+pytest-asyncio>=0.24.0,<0.25
+
