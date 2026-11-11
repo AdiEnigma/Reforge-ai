@@ -7,6 +7,7 @@ import { computeManufacturingIntelligence } from "./manufacturing.js";
 import { computeMaterialAlternatives } from "./material-comparison.js";
 import { simulateEngineeringChange, analyzeDimensionSensitivity } from "./engineering-analysis.js";
 import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from './vision-adapter.js';
+import { isReconstructionEnabled, callReconstructionService } from './reconstruction-adapter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
@@ -327,6 +328,21 @@ app.post("/api/material-alternatives", (req, res) => {
     res
       .status(error.status || 500)
       .json({ error: error.message || "Material comparison failed." });
+  }
+});
+
+app.post("/api/reconstruct", async (req, res) => {
+  try {
+    if (!isReconstructionEnabled()) {
+      return res.json({ status: "unavailable", message: "Reconstruction pipeline is not enabled. Set RECONSTRUCTION_ENABLED=true." });
+    }
+    const result = await callReconstructionService(req.body);
+    if (!result) {
+      return res.status(503).json({ status: "unavailable", error: "Reconstruction service is unreachable." });
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ status: "failed", error: error.message });
   }
 });
 
