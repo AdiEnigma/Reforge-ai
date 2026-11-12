@@ -60,32 +60,19 @@ class SAM2Segmentor:
                 resolved = device
             self._device = resolved
 
-            from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore
-            from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator  # type: ignore
-
             if not os.path.isfile(checkpoint_path):
                 logger.warning("SAM2 checkpoint not found at %s", checkpoint_path)
                 return False
 
-            # Build predictor from local checkpoint
-            self._predictor = SAM2ImagePredictor.from_pretrained(
-                model_id=None,
-                # fall back to building from local files if from_pretrained not available
-            )
-        except TypeError:
-            # from_pretrained may not accept None — try alternative approach
-            try:
-                from sam2.build_sam import build_sam2  # type: ignore
-                sam_model = build_sam2(config_path, checkpoint_path, device=self._device)
-                from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore
-                self._predictor = SAM2ImagePredictor(sam_model)
-                from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator  # type: ignore
-                self._mask_generator = SAM2AutomaticMaskGenerator(sam_model)
-                self._loaded = True
-                return True
-            except Exception as exc:
-                logger.warning("SAM2 load failed (alternative): %s", exc)
-                return False
+            from sam2.build_sam import build_sam2  # type: ignore
+            from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore
+            from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator  # type: ignore
+
+            sam_model = build_sam2(config_path, checkpoint_path, device=self._device)
+            self._predictor = SAM2ImagePredictor(sam_model)
+            self._mask_generator = SAM2AutomaticMaskGenerator(sam_model)
+            self._loaded = True
+            return True
         except ImportError as exc:
             logger.warning("SAM2 not installed: %s", exc)
             return False

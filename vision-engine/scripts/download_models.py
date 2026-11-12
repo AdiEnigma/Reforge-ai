@@ -31,7 +31,7 @@ CHECKPOINTS = {
         "url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/main/depth_anything_v2_vits.pth",
         "description": "Depth Anything V2 Small (ViT-S) Checkpoint (~99 MB)",
         "license": "Apache-2.0",
-        "sha256": "5c4232ec39178c772e0989f6d4d12543e33918aa08381dd00676451e6ba5f617",
+        "sha256": "715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378",
     },
 }
 
