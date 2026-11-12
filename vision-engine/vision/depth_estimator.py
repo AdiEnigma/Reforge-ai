@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Optional
 
 import numpy as np
@@ -34,6 +35,9 @@ class DepthEstimator:
         import config
 
         checkpoint_path = os.path.join(config.VISION_MODELS_DIR, config.DEPTH_CHECKPOINT_FILENAME)
+        source_dir = config.DEPTH_ANYTHING_V2_SOURCE_DIR
+        if source_dir and os.path.isdir(source_dir) and source_dir not in sys.path:
+            sys.path.insert(0, source_dir)
 
         try:
             import torch  # type: ignore
@@ -118,25 +122,13 @@ class DepthEstimator:
             return base_result
 
         try:
-            import torch  # type: ignore
-            from torchvision import transforms  # type: ignore
-
-            # Prepare input tensor
-            transform = transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize((384, 384)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            ])
-            inp = transform(rgb).unsqueeze(0).to(self._device)
-
-            with torch.inference_mode():
-                depth_tensor = self._model(inp)
-
-            if isinstance(depth_tensor, (tuple, list)):
-                depth_tensor = depth_tensor[0]
-
-            depth_np = depth_tensor.squeeze().cpu().numpy()
+            depth_np = self._infer_depth_map(rgb)
+            if not np.isfinite(depth_np).all():
+                return {
+                    **base_result,
+                    "status": "low_quality",
+                    "warnings": base_result["warnings"] + ["Depth map contains non-finite values."],
+                }
 
             # Quality check: flat map
             depth_std = float(np.std(depth_np))
@@ -168,3 +160,40 @@ class DepthEstimator:
             return {**base_result, "warnings": warn}
         except Exception as exc:
             return {**base_result, "warnings": base_result["warnings"] + [f"Depth inference error: {exc}"]}
+
+    def _infer_depth_map(self, rgb: np.ndarray) -> np.ndarray:
+        """Run official Depth Anything V2 preprocessing and return source-sized relative depth."""
+        import torch  # type: ignore
+        import cv2  # type: ignore
+        from torchvision.transforms import Compose  # type: ignore
+        from depth_anything_v2.util.transform import NormalizeImage, PrepareForNet, Resize  # type: ignore
+
+        transform = Compose([
+            Resize(
+                width=518,
+                height=518,
+                resize_target=False,
+                keep_aspect_ratio=True,
+                ensure_multiple_of=14,
+                resize_method="lower_bound",
+                image_interpolation_method=cv2.INTER_CUBIC,
+            ),
+            NormalizeImage(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            PrepareForNet(),
+        ])
+        image = rgb.astype(np.float32) / 255.0
+        inp = torch.from_numpy(transform({"image": image})["image"]).unsqueeze(0).to(self._device)
+
+        with torch.inference_mode():
+            depth_tensor = self._model(inp)
+
+        if isinstance(depth_tensor, (tuple, list)):
+            depth_tensor = depth_tensor[0]
+
+        depth_tensor = torch.nn.functional.interpolate(
+            depth_tensor.unsqueeze(1),
+            size=rgb.shape[:2],
+            mode="bilinear",
+            align_corners=True,
+        ).squeeze(1)
+        return depth_tensor.squeeze().cpu().numpy()

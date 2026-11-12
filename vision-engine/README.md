@@ -40,22 +40,29 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-#### Hardware-specific PyTorch (Optional CUDA acceleration)
-By default, the CPU version of PyTorch is installed if no CUDA toolkit is detected.
-To install CUDA-enabled PyTorch:
+#### Hardware-specific PyTorch
+Install the matching official PyTorch and TorchVision builds for your hardware. The CPU pair exercised for this setup is:
+
 ```bash
-# Example for CUDA 12.4:
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+pip install torch==2.14.1 torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cpu
 ```
 
-#### Optional SAM 2 and Depth Anything V2 source installations:
+For GPU, select a matching PyTorch/TorchVision release pair and official CUDA wheel index for the installed CUDA runtime. GPU execution was not tested in this verification; the runtime selects CUDA only when PyTorch reports it available.
+
+#### SAM 2 and Depth Anything V2 source installations:
 ```bash
 # SAM 2.1
-pip install git+https://github.com/facebookresearch/sam2.git@v1.0
-
-# Depth Anything V2
-pip install git+https://github.com/DepthAnything/Depth-Anything-V2.git
+pip install "huggingface_hub==0.36.2"
+pip install git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4
 ```
+
+The official Depth Anything V2 repository has no `pyproject.toml` or `setup.py`; its documented setup is a source checkout plus its requirements. ReForge pins the official source to commit `a561b849ebae10a6f5ef49e26c83cbbcd36c71bf` in the ignored project-local `.dependencies/Depth-Anything-V2` path. With Git available, run from `vision-engine`:
+
+```bash
+python scripts/install_depth_anything_v2.py
+```
+
+At runtime `vision/depth_estimator.py` imports `depth_anything_v2.dpt.DepthAnythingV2` and the official `depth_anything_v2.util.transform` preprocessing classes from that checkout. Its transitive source imports include `dinov2.py`, `dinov2_layers/*`, and `util/blocks.py`. The model's inference dependencies (`torch`, `torchvision`, OpenCV, and NumPy) are already project requirements; upstream Gradio demo packages are not needed by this service. The default source path is resolved from the project directory, so no `PYTHONPATH` or temporary `C:\Temp` checkout is required. `DEPTH_ANYTHING_V2_SOURCE_DIR` remains an optional override.
 
 ---
 
@@ -125,6 +132,7 @@ All settings can be configured via environment variables:
 | `VISION_REQUEST_TIMEOUT_SECONDS` | `60` | Per-request timeout |
 | `VISION_SAM2_ENABLED` | `true` | Enable SAM2 segmentation when model is present |
 | `VISION_DEPTH_ENABLED` | `true` | Enable Depth Anything V2 when model is present |
+| `DEPTH_ANYTHING_V2_SOURCE_DIR` | `vision-engine/.dependencies/Depth-Anything-V2` | Optional override for the pinned official Depth Anything V2 source checkout |
 
 ---
 

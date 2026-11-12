@@ -327,7 +327,7 @@ async def process_images(
                     timeout=config.VISION_REQUEST_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
-                raise ValueError(
+                raise TimeoutError(
                     f"Image {img_input.image_index} timed out after {config.VISION_REQUEST_TIMEOUT_SECONDS}s"
                 )
 

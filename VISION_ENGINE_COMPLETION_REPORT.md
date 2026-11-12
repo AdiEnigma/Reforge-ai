@@ -1,0 +1,71 @@
+# ReForge AI Vision Engine Completion Report
+
+Date: 2026-11-12
+
+## Executive Status
+
+The existing Vision Engine imports and runs the official Depth Anything V2 implementation from a pinned, project-local source checkout. Real Depth, SAM2, OpenCV, combined-pipeline, API, fresh-environment, Express route, and frontend upload checks were executed. The complete Python suite passes.
+
+The engine is **not fully operational for default full-grid SAM2 requests on this CPU**: automatic segmentation takes about 547 seconds, far beyond the default 60-second per-image timeout, and its selected result on the gear fixture is background rather than the gear. Smaller grids are faster but have the same selector-quality issue. Fail-open behavior is preserved. The combined pipeline was verified with a test-only prompt grid that isolates the gear, but that is not the production automatic-grid behavior. The full Express route and browser workflow did succeed with the vision-enabled backend and real Depth/OpenCV; service SAM2 auto mode was disabled for that latency-bounded run.
+
+## Results
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Original API 400 diagnosis | PASS | A controlled valid-PNG request reproduced HTTP 400 with body `{"detail":"Image 0 timed out after 0.05s"}`. The route maps `ValueError` to 400; the timeout was incorrectly raised as `ValueError`. The real default SAM2 workload takes 546.947 seconds, versus the 60-second configured service timeout. PNG decoding and the 50 mm reference are valid. |
+| Timeout fail-open regression | PASS | `tests/test_api.py::test_process_timeout_uses_fail_open_response`: HTTP 200 with a per-image timeout warning. Invalid-input errors remain on the 4xx path. Latest focused run: 6.31 seconds. |
+| Valid-image API test | PASS | `tests/test_api.py::test_process_valid_image` passed in 38.94 seconds with real Depth Anything V2 enabled and SAM2 disabled to isolate the request contract and depth stage. No `PYTHONPATH` or temporary source override was used. |
+| Official Depth source provenance | PASS | Official remote `https://github.com/DepthAnything/Depth-Anything-V2.git`, pinned commit `a561b849ebae10a6f5ef49e26c83cbbcd36c71bf` (2026-03-24). The upstream repo has no `pyproject.toml` or `setup.py`; its README requires a source checkout. ReForge uses `scripts/install_depth_anything_v2.py` to install to ignored `vision-engine/.dependencies/Depth-Anything-V2`. |
+| Depth checkpoint integrity/configuration | PASS | Existing `models/depth_anything_v2_vits.pth`, 99,218,434 bytes; SHA-256 `715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378`, verified by the project's downloader against official Hugging Face LFS metadata. Strict load: all 239 state keys matched ViT-S (24,785,089 parameters). The prior downloader hash was stale and has been corrected. |
+| Depth model load | PASS | Dedicated `tests/test_depth_integration.py::test_depth_model_loads_official_checkpoint` passed in 11.18 seconds using the project-local source default. Model class is `depth_anything_v2.dpt.DepthAnythingV2`. A measured standalone load was 5.934 seconds. |
+| Depth actual inference | PASS | Dedicated `tests/test_depth_integration.py::test_depth_actual_inference_returns_finite_source_sized_map` passed in 20.10 seconds. `spur_gear.png` output was 512x512, finite and non-flat; standalone estimator measured 6.780 seconds for inference, status `ok`, `depth_type=relative`, `metric=false`. CPU inference works. |
+| Depth preprocessing contract | PASS | Uses official `Resize` with preserved aspect ratio, multiple-of-14 dimensions and 518 target, official normalization/array layout, then bilinear resize to original dimensions. Non-finite results are not reported as successful. The API continues to return statistics only and enforces relative/non-metric output. |
+| SAM2 model load | PASS | `tests/test_segmentation.py::test_segmentor_loads_real_sam2_model_when_available` passed in 12.37 seconds. The local SAM2.1 Hiera Small checkpoint constructs with `configs/sam2.1/sam2.1_hiera_s`. Installed package is SAM-2 1.0 from commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`. |
+| SAM2 prompted inference/isolation | PASS | `tests/test_segmentation.py::test_segmentor_runs_real_inference_on_mechanical_image` passed in 73.44 seconds. Actual point-prompt mask is 512x512; measured overlap against known gear foreground was IoU 0.969, precision 1.0, recall 0.969, score 0.980. The prompt was placed on gear material, not the empty center bore. |
+| SAM2 default automatic inference | FAIL for timely/useful CPU path | Real default 32x32-grid inference completed in 546.947 seconds with 3 candidates, status `ambiguous`, mask area ratio 0.6624, and bounding box `[0, 2, 511, 511]`. The selected top-score candidate has 0 IoU with the known gear region. It exceeds the default 60-second request budget. Production defaults were not changed. |
+| SAM2 automatic 16x16 grid | FAIL quality / BLOCKED latency | 121.311 seconds, 3 candidates; top-score selected mask IoU 0.0, best candidate IoU 0.9867. Still exceeds 60 seconds and selector picks background. |
+| SAM2 automatic 8x8 grid | FAIL quality | 49.196 seconds, 3 candidates; selected mask IoU 0.0, best candidate IoU 0.9886, selected area 0.6626. Faster than timeout but the selected mask is wrong. Candidate diagnostics show gear is rank 2 behind background. |
+| SAM2 automatic 4x4 grid | FAIL quality | 32.562 seconds, 2 candidates; selected mask IoU 0.0, best candidate IoU 0.9810, selected area 0.6616. Faster but selection remains wrong. Candidate scores/stability do not safely distinguish background from gear. No smaller grid is recommended for production. |
+| SAM2 smaller `points_per_batch=16` | NOT TESTED | The 16x16/64-point batch baseline completed; changing to batch 16 was interrupted after 16x16 took 121 seconds and the next setting entered a much slower decoder path. No comparative result was recorded, so no batch-size claim is made. |
+| OpenCV | PASS | Existing OpenCV extraction remains active. Combined run found contours, circles, ellipses and lines; Node adapter response also contained geometric features. |
+| Combined pipeline | PASS, test-configured sampling | `tests/test_pipeline_integration.py::test_pipeline_combines_real_models_and_opencv` passed in 35.39 seconds. It ran the existing pipeline with real loaded SAM2 and Depth models, OpenCV, and a fixture-specific single-point SAM grid. Result: status `ok`, segmentation candidate count 1, area ratio 0.2691, bounding box `[87, 90, 426, 423]`, depth `ok` relative/non-metric, and geometric features present. This does not certify the production default automatic-grid quality or latency. |
+| Node adapter to Python service | PASS | The Express `/api/analyze-component` route on an isolated test server (8788) received the gear image with vision enabled. It returned `analysis` plus `visionDiagnostics`: pipeline status `ok`, depth `ok`, relative/metric false, and 4 OpenCV contours. The service had SAM2 disabled for request latency. The successful Gemini result confirms the route continued through analysis after vision preprocessing. |
+| Frontend upload and synthesis | PASS | In the existing browser UI, uploaded `spur_gear.png`, saw it in the Primary Gear preview, clicked Create 3D Model, and reached the Workbench showing reconstruction from staged views. A temporary local proxy routed the browser's `/api` requests to the isolated vision-enabled Express server. The Python service logged two successful `/process` requests (200); an additional palette image warning appeared for one staged view. |
+| Python dependency consistency | PASS | `pip check`: no broken requirements after restoring `huggingface_hub==0.36.2` and `h11==0.14.0`. Runtime tested: Python 3.10.11, PyTorch 2.14.1+cpu, torchvision 0.29.2+cpu, SAM-2 1.0, huggingface_hub 0.36.2. |
+| Pinned source installer | PASS | Cross-platform `scripts/install_depth_anything_v2.py` cloned and checked out the official source at the pinned SHA, then passed its idempotence check. The checkout path is ignored by Git. No permanent config uses `C:\Temp` or requires `PYTHONPATH`. |
+| Fresh isolated environment | PASS, focused scope | Created `%LOCALAPPDATA%/Temp/reforge-vision-clean` with Python 3.10.11; installed README requirements, CPU torch 2.14.1/torchvision 0.29.2, Hub 0.36.2, and pinned SAM2. The official Depth source installer verified the project-local checkout. `pip check` was clean. From the fresh interpreter, Depth inference returned a finite 512x512 map (load 4.840s, inference 3.447s) and SAM2 prompted inference returned a 512x512 mask with IoU 0.969 (load 1.929s, inference 0.319s). Focused tests: 5 passed in 45.03s. The complete suite was not run in the fresh environment. |
+| GPU availability | BLOCKED by installed hardware/build | The verified environment has `torch 2.14.1+cpu`, `torch.cuda.is_available() == false`, `torch.version.cuda is None`, device count 0, and MPS unavailable. No GPU acceleration was possible or attempted. Safest options: use a supported NVIDIA GPU machine and install a matching official torch/torchvision CUDA wheel pair in a separate venv, or use a supported Apple Silicon/MPS environment; do not replace this working CPU environment. |
+| Full Python regression suite | PASS | Final existing-environment `pytest tests -q`: 38 passed, 4 warnings in 119.14 seconds. It ran without `PYTHONPATH`; dedicated integration tests explicitly load and execute real models. Warnings were upstream/deprecation warnings, not test failures. |
+
+## Changes Made
+
+- Fixed timeout classification in `vision/pipeline.py`: processing timeouts are `TimeoutError`, so configured fail-open handling returns a partial result instead of misreporting invalid input as HTTP 400.
+- Added a timeout fail-open test and separate real SAM2 load/inference tests.
+- Fixed SAM2 local loading to use `build_sam2` and the installed package's SAM2.1 Small config name.
+- Integrated the upstream Depth Anything V2 source imports directly from the pinned official checkout. Relevant imported modules are `depth_anything_v2.dpt`, `depth_anything_v2.util.transform`, and their transitive `dinov2.py`, `dinov2_layers/*`, and `util/blocks.py` modules.
+- Corrected Depth preprocessing to the upstream patch-size and normalization contract; resized returned depth tensors to source dimensions and reject non-finite output as successful depth.
+- Added a cross-platform, pinned source installer, real depth integration tests, and an all-stage combined pipeline integration test. The tests use a fixture-specific SAM2 point grid only for deterministic and bounded integration testing; production defaults are unchanged.
+- Corrected the stale official Depth checkpoint SHA in `scripts/download_models.py`; verified the existing checkpoint without re-downloading it.
+- Pinned Hub 0.36.2 and SAM2 source commit in documented setup and reconciled the environment to `pip check` clean.
+
+## Reproducible Setup
+
+1. Create/activate the Python 3.10+ environment and install `vision-engine/requirements.txt`; choose the PyTorch CPU/CUDA wheel channel for the target hardware as documented in the README.
+2. Install SAM2 1.0 from the pinned source commit shown in `vision-engine/README.md` and use `huggingface_hub==0.36.2`.
+3. From `vision-engine`, run `python scripts/install_depth_anything_v2.py`. It checks out the official Depth Anything V2 source at `a561b849ebae10a6f5ef49e26c83cbbcd36c71bf` into the ignored `.dependencies/Depth-Anything-V2` path. Upstream demo-only requirements such as Gradio and Matplotlib are not needed by ReForge; inference requirements are already declared.
+4. Run `python scripts/download_models.py`. The existing Depth checkpoint is checksum-verified; no duplicate download was performed during this work.
+5. Start `uvicorn app:app --host 127.0.0.1 --port 8765` from `vision-engine`.
+
+`DEPTH_ANYTHING_V2_SOURCE_DIR` is an optional override. Its default is resolved relative to the project config and points to the pinned ignored checkout. `C:\Temp\depth_anything_v2_repo` was used only during early diagnosis and is no longer a permanent configuration dependency.
+
+## Remaining Limitations
+
+- **BLOCKED for timely default CPU segmentation:** The existing automatic 1024-point SAM2 grid takes about 547 seconds on the tested CPU, exceeding the 60-second service and usual adapter timeout. It returns an ambiguous, overly broad mask for the gear fixture. No production inference quality or sampling defaults were silently changed.
+- Combined SAM2+Depth+OpenCV correctness is proven using real models and test-only point sampling, but the default automatic-grid endpoint has both unacceptable CPU latency and wrong selected mask on the gear fixture.
+- The actual Express route and frontend upload workflow passed with vision enabled and SAM2 disabled to bound latency. Full Express+Gemini integration with default SAM2 auto mode is BLOCKED by the measured timeout/selection behavior.
+- A fresh isolated environment and focused real-model tests passed; the complete suite was only run in the existing environment.
+- The SAM2 checkpoint loaded and produced real masks, but unlike the Depth checkpoint its local SHA-256 (`6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38`) differs from the downloader's expected checksum (`47333a5cf0f23ba5b550dd7eb762b322a30ba5be669b7b9db893444458514930`). It was not redownloaded; strict authenticity against that checksum remains unresolved.
+
+## Acceptance
+
+PASS: official Depth implementation and checksum-verified checkpoint perform real CPU inference; SAM2 performs real prompted segmentation; OpenCV works; the combined pipeline returns valid schema results; fresh-environment focused tests pass; the full Express route and browser upload succeed with vision evidence. FAIL: automatic 16x16, 8x8 and 4x4 grids select background despite containing high-IoU gear candidates. BLOCKED: default CPU automatic SAM2 latency and selection quality; GPU acceleration unavailable in this CPU-only build. NOT TESTED: complete fresh-environment suite and production-default SAM2-enabled Express route. No smaller automatic grid is promoted because the measured speed gain sacrifices selected-mask quality.

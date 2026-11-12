@@ -3,6 +3,7 @@ test_api.py — Test FastAPI REST endpoints (/health and /process).
 """
 import base64
 import io
+import time
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -57,6 +58,30 @@ def test_process_valid_image(client):
     assert "depth" in img0
     assert img0["depth"]["depth_type"] == "relative"
     assert img0["depth"]["metric"] is False
+
+
+def test_process_timeout_uses_fail_open_response(client, monkeypatch):
+    import config
+    import vision.pipeline as pipeline
+
+    monkeypatch.setattr(pipeline.registry, "initialize", lambda: None)
+    monkeypatch.setattr(config, "VISION_REQUEST_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(config, "VISION_FAIL_OPEN", True)
+
+    def slow_image(*args, **kwargs):
+        time.sleep(0.05)
+
+    monkeypatch.setattr(pipeline, "_process_single_image", slow_image)
+    payload = {
+        "images": [{"data": make_b64((100, 100)), "mimeType": "image/png", "image_index": 0}],
+        "reference": {"known_diameter_mm": 50.0},
+    }
+
+    response = client.post("/process", json=payload)
+
+    assert response.status_code == 200
+    image_result = response.json()["images"][0]
+    assert any("timed out" in warning for warning in image_result["warnings"])
 
 
 def test_process_too_many_images(client):
