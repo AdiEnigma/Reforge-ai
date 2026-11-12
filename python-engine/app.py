@@ -21,6 +21,14 @@ from pydantic import BaseModel, Field
 
 from reconstruction.multiview import find_colmap_executable, run_multiview_reconstruction
 from reconstruction.geometry_solver import solve_geometry
+from recipe_validator import validate_recipe, CadSpec
+from cad.cad_generator import generate_cad, CadGenerationError
+from cad.cad_validator import validate_cad_geometry
+from exports.step_export import export_step, StepExportError
+from exports.mesh_export import export_stl, MeshExportError
+from dataclasses import asdict
+import os
+import uuid
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("reforge-reconstruction-service")
@@ -145,4 +153,207 @@ def full_reconstruct_endpoint(payload: ReconstructRequest):
         "job_id": payload.job_id,
         "multiview": mv_res,
         "solver": solver_res,
+    }
+
+
+class CadGenerateRequest(BaseModel):
+    job_id: str = Field(default="cad_001")
+    recipe: Dict[str, Any] = Field(..., description="Component recipe dictionary")
+    user_dimensions: Optional[Dict[str, Any]] = Field(default=None, description="Explicit user dimensional overrides")
+    solver_output: Optional[Dict[str, Any]] = Field(default=None, description="Reconstruction solver output")
+    output_dir: Optional[str] = Field(default=None, description="Custom directory for export files")
+
+
+@app.post("/cad/generate")
+def generate_cad_endpoint(payload: CadGenerateRequest):
+    """
+    Executes the end-to-end CAD generation pipeline:
+    1. Recipe validation (validate_recipe).
+    2. CAD solid generation (generate_cad).
+    3. CAD geometry validation (validate_cad_geometry).
+    4. STEP file export.
+    5. STL file export.
+    6. Structured response delivery.
+    """
+    # 1. Recipe Validation
+    try:
+        cad_spec = validate_recipe(
+            recipe=payload.recipe,
+            solver_result=payload.solver_output,
+            user_dims=payload.user_dimensions,
+        )
+    except Exception as e:
+        logger.exception("Recipe validation encountered unexpected exception")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "status": "error",
+                "stage": "recipe_validation",
+                "error": f"Recipe validation failed: {str(e)}",
+                "job_id": payload.job_id,
+            },
+        )
+
+    # Check status
+    if cad_spec.status == "rejected":
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "status": "error",
+                "stage": "recipe_validation",
+                "error": "Recipe was rejected by specification validator.",
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+            },
+        )
+    elif cad_spec.status == "needs_input":
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "status": "needs_input",
+                "stage": "recipe_validation",
+                "error": "Recipe requires additional input or missing parameters.",
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+                "missing": cad_spec.missing,
+            },
+        )
+
+    # 2. CAD Solid Generation
+    try:
+        workplane, feature_tree = generate_cad(cad_spec)
+    except CadGenerationError as cge:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "status": "error",
+                "stage": "cad_generation",
+                "error": cge.message,
+                "style": cge.style,
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+            },
+        )
+    except Exception as e:
+        logger.exception("CAD generation encountered unexpected exception")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "cad_generation",
+                "error": f"CAD generation failed unexpectedly: {str(e)}",
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+            },
+        )
+
+    # 3. CAD Geometry Validation
+    try:
+        validation_report = validate_cad_geometry(workplane, cad_spec, feature_tree)
+    except Exception as e:
+        logger.exception("CAD validation encountered unexpected exception")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "cad_validation",
+                "error": f"CAD validation encountered unexpected exception: {str(e)}",
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+                "feature_tree": feature_tree,
+            },
+        )
+
+    if not validation_report.get("valid", False):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "status": "error",
+                "stage": "cad_validation",
+                "error": "Generated CAD geometry failed geometric or bounding-box validation.",
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+                "feature_tree": feature_tree,
+                "validation_report": validation_report,
+            },
+        )
+
+    # 4 & 5. STEP and STL Export
+    target_dir = payload.output_dir
+    if not target_dir:
+        target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "exports"))
+    os.makedirs(target_dir, exist_ok=True)
+
+    uid = uuid.uuid4().hex[:8]
+    base_name = f"{payload.job_id}_{uid}"
+    step_path = os.path.join(target_dir, f"{base_name}.step")
+    stl_path = os.path.join(target_dir, f"{base_name}.stl")
+
+    try:
+        exported_step_path = export_step(workplane, step_path)
+    except StepExportError as see:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "step_export",
+                "error": str(see),
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+                "feature_tree": feature_tree,
+                "validation_report": validation_report,
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "step_export",
+                "error": f"STEP export encountered unexpected exception: {str(e)}",
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+                "feature_tree": feature_tree,
+                "validation_report": validation_report,
+            },
+        )
+
+    try:
+        exported_stl_path = export_stl(workplane, stl_path)
+    except MeshExportError as mee:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "stl_export",
+                "error": str(mee),
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+                "feature_tree": feature_tree,
+                "validation_report": validation_report,
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "stl_export",
+                "error": f"STL export encountered unexpected exception: {str(e)}",
+                "job_id": payload.job_id,
+                "cad_spec": asdict(cad_spec),
+                "feature_tree": feature_tree,
+                "validation_report": validation_report,
+            },
+        )
+
+    # 6. Structured Success Response
+    return {
+        "status": "success",
+        "job_id": payload.job_id,
+        "cad_spec": asdict(cad_spec),
+        "feature_tree": feature_tree,
+        "validation_report": validation_report,
+        "step_path": exported_step_path,
+        "stl_path": exported_stl_path,
     }
