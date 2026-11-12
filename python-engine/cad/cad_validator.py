@@ -59,11 +59,11 @@ def _invoke_backend_volume_estimator(geometry_recipe: Dict[str, Any]) -> Tuple[O
         return None, None, f"Estimator file not found at {estimator_path}"
 
     payload = json.dumps({"geometryRecipe": geometry_recipe})
-    # Node script that requires/imports estimateVolumeCm3
+    # Pass the filesystem path as an argv value, not as JavaScript source.
     node_code = f"""
     try {{
-        const path = require('path');
-        const {{ estimateVolumeCm3 }} = require(path.resolve('{estimator_path}'));
+        const estimatorPath = process.argv[1];
+        const {{ estimateVolumeCm3 }} = require(estimatorPath);
         const analysis = {payload};
         const result = estimateVolumeCm3(analysis);
         console.log(JSON.stringify(result));
@@ -73,7 +73,12 @@ def _invoke_backend_volume_estimator(geometry_recipe: Dict[str, Any]) -> Tuple[O
     }}
     """
     try:
-        res = subprocess.run(["node", "-e", node_code], capture_output=True, text=True, timeout=5)
+        res = subprocess.run(
+            ["node", "-e", node_code, estimator_path],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
         if res.returncode != 0:
             return None, None, f"Node execution error: {res.stderr.strip()}"
         out = json.loads(res.stdout.strip())
