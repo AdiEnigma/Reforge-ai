@@ -86,6 +86,7 @@ export function PipWorkbench({
   const [size, setSize] = useState({ width: 420, height: 300 });
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
   const [pipMode, setPipMode] = useState(initialPipMode === 'assembly' ? 'assembly' : 'single');
   const [pipActiveCompId, setPipActiveCompId] = useState(machineryState?.primaryGear?.id || 'comp-primary-gear');
 
@@ -161,13 +162,24 @@ export function PipWorkbench({
   return (
     <div
       ref={pipRef}
-      className={`pip-workbench ${isDragging ? 'dragging' : ''} ${isResizing ? 'resizing' : ''}`}
-      style={{
-        left: `${pos.x}px`,
-        top: `${pos.y}px`,
-        width: `${size.width}px`,
-        height: `${size.height}px`,
-      }}
+      className={`pip-workbench ${isDragging ? 'dragging' : ''} ${isResizing ? 'resizing' : ''} ${isMaximized ? 'maximized' : ''}`}
+      style={
+        isMaximized
+          ? {
+            position: 'fixed',
+            top: '48px',
+            left: 0,
+            width: '100vw',
+            height: 'calc(100vh - 48px)',
+            zIndex: 95,
+          }
+          : {
+            left: `${pos.x}px`,
+            top: `${pos.y}px`,
+            width: `${size.width}px`,
+            height: `${size.height}px`,
+          }
+      }
       aria-label="Picture-in-Picture 3D Workbench"
     >
       {/* Draggable Header */}
@@ -236,6 +248,14 @@ export function PipWorkbench({
           </div>
 
           <div className="pip-actions">
+            <button
+              className="pip-action-btn"
+              onClick={() => setIsMaximized(m => !m)}
+              title={isMaximized ? "Restore PiP Size" : "Maximize PiP Window"}
+              aria-label={isMaximized ? "Restore PiP" : "Maximize PiP"}
+            >
+              <Icon>{isMaximized ? 'fullscreen_exit' : 'fullscreen'}</Icon>
+            </button>
             <button
               className="pip-action-btn"
               onClick={onDockToMain}

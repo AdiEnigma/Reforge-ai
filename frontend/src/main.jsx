@@ -25,6 +25,22 @@ import { ManageComponentsTab } from './components/ManageComponentsTab.jsx';
 import { MultiViewportGrid } from './components/MultiViewportGrid.jsx';
 import { PipWorkbench } from './components/PipWorkbench.jsx';
 import { ExportWorkWindow } from './components/ExportWorkWindow.jsx';
+import { TopRibbon } from './components/TopRibbon.jsx';
+import { FloatingPanelWrapper } from './components/FloatingPanelWrapper.jsx';
+import { DockDropOverlay } from './components/DockDropOverlay.jsx';
+import {
+  loadWorkspaceLayout,
+  saveWorkspaceLayout,
+  resetWorkspaceLayout,
+  repositionPanelSlot,
+  enforceResponsiveBounds,
+  DEFAULT_WORKSPACE_LAYOUT,
+  LAYOUT_BOUNDS,
+} from './lib/workspace-layout.js';
+import { LeftContextualPanel } from './components/LeftContextualPanel.jsx';
+import { ManufacturingDecisionPanel } from './components/ManufacturingDecisionPanel.jsx';
+import { CostEstimationPanel } from './components/CostEstimationPanel.jsx';
+import { ReportEditorDialog } from './components/ReportEditorDialog.jsx';
 
 const AppContext = createContext();
 const useApp = () => useContext(AppContext);
@@ -133,10 +149,10 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
     const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
     const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
     const gridHelper = new THREE.GridHelper(10, 12, '#544337', '#3d332c'); gridHelper.position.z = -1.2; gridHelper.visible = false; scene.add(gridHelper);
-    
+
     const originals = new Map();
     group.traverse(node => { if (node.isMesh) originals.set(node.uuid, node.material); });
-    
+
     const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
     const selectHighlightMat = new THREE.MeshStandardMaterial({
       color: '#c9f88d',
@@ -165,7 +181,7 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
     const preventContext = event => event.preventDefault();
     canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMove); canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointercancel', onUp); canvas.addEventListener('wheel', onWheel, { passive: false }); canvas.addEventListener('contextmenu', preventContext);
     const resize = () => { const { width, height } = host.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height, false); }; const observer = new ResizeObserver(resize); observer.observe(host); resize();
-    
+
     let frame;
     const animate = () => {
       frame = requestAnimationFrame(animate);
@@ -497,8 +513,8 @@ function DeltaChip({ value, unit }) {
   const cls = value <= -15 ? 'down' : value >= 15 ? 'up' : 'flat';
   const arrow = value <= -15 ? '↓' : value >= 15 ? '↑' : '≈';
   const text = value <= -15 ? `${arrow} ${abs}% ${unit === 'weight' ? 'lighter' : 'cheaper'}`
-             : value >= 15  ? `${arrow} ${abs}% ${unit === 'weight' ? 'heavier' : 'more expensive'}`
-             : `${arrow} similar ${unit}`;
+    : value >= 15 ? `${arrow} ${abs}% ${unit === 'weight' ? 'heavier' : 'more expensive'}`
+      : `${arrow} similar ${unit}`;
   return <span className={`matcomp-delta ${cls}`}>{text}</span>;
 }
 
@@ -895,137 +911,137 @@ function EngineeringDrawingModal({ analysis, manufacturingIntelligence, onClose,
           <span className="drawing-part-name">{drawingModel.partName}</span>
         </div>
 
-          <div className="drawing-export-group">
-            <button className="drawing-export-btn" disabled={exporting} onClick={handleExportSvg}>
-              <Icon>download</Icon> SVG
-            </button>
-            <button className="drawing-export-btn" disabled={exporting} onClick={handleExportPng}>
-              <Icon>image</Icon> PNG (3x)
-            </button>
-            <button className="drawing-export-btn primary" disabled={exporting} onClick={handleExportPdf}>
-              <Icon>picture_as_pdf</Icon> PDF (A4)
-            </button>
-          </div>
-        </header>
+        <div className="drawing-export-group">
+          <button className="drawing-export-btn" disabled={exporting} onClick={handleExportSvg}>
+            <Icon>download</Icon> SVG
+          </button>
+          <button className="drawing-export-btn" disabled={exporting} onClick={handleExportPng}>
+            <Icon>image</Icon> PNG (3x)
+          </button>
+          <button className="drawing-export-btn primary" disabled={exporting} onClick={handleExportPdf}>
+            <Icon>picture_as_pdf</Icon> PDF (A4)
+          </button>
+        </div>
+      </header>
 
-        {/* Toolbar */}
-        <div className="drawing-toolbar">
-          <div className="drawing-toolbar-section">
-            <span className="drawing-toolbar-label">VIEW:</span>
-            {['all', 'front', 'top', 'side'].map((v) => (
-              <button
-                key={v}
-                className={`drawing-pill ${viewFilter === v ? 'active' : ''}`}
-                onClick={() => setViewFilter(v)}
-              >
-                {v.toUpperCase()}
-              </button>
-            ))}
-          </div>
-
-          <div className="drawing-toolbar-section">
-            <span className="drawing-toolbar-label">LAYERS:</span>
-            <label className="drawing-toggle-label">
-              <input
-                type="checkbox"
-                checked={showDimensions}
-                onChange={(e) => setShowDimensions(e.target.checked)}
-              />
-              <span>Dims</span>
-            </label>
-            <label className="drawing-toggle-label">
-              <input
-                type="checkbox"
-                checked={showCenterlines}
-                onChange={(e) => setShowCenterlines(e.target.checked)}
-              />
-              <span>Centerlines</span>
-            </label>
-            <label className="drawing-toggle-label">
-              <input
-                type="checkbox"
-                checked={showHiddenLines}
-                onChange={(e) => setShowHiddenLines(e.target.checked)}
-              />
-              <span>Hidden</span>
-            </label>
-          </div>
-
-          <div className="drawing-toolbar-section">
-            <span className="drawing-toolbar-label">REV:</span>
-            <input
-              type="text"
-              maxLength={3}
-              className="drawing-rev-input"
-              value={revision}
-              onChange={(e) => setRevision(e.target.value.toUpperCase())}
-            />
-          </div>
-
-          <div className="drawing-toolbar-section drawing-zoom-section">
-            <button className="drawing-zoom-btn" title="Zoom Out" onClick={() => setZoom((z) => Math.max(0.4, z * 0.85))}>
-              <Icon>remove</Icon>
+      {/* Toolbar */}
+      <div className="drawing-toolbar">
+        <div className="drawing-toolbar-section">
+          <span className="drawing-toolbar-label">VIEW:</span>
+          {['all', 'front', 'top', 'side'].map((v) => (
+            <button
+              key={v}
+              className={`drawing-pill ${viewFilter === v ? 'active' : ''}`}
+              onClick={() => setViewFilter(v)}
+            >
+              {v.toUpperCase()}
             </button>
-            <span className="drawing-zoom-label">{Math.round(zoom * 100)}%</span>
-            <button className="drawing-zoom-btn" title="Zoom In" onClick={() => setZoom((z) => Math.min(4.0, z * 1.15))}>
-              <Icon>add</Icon>
-            </button>
-            <button className="drawing-zoom-btn" title="Fit to Page" onClick={resetView}>
-              <Icon>fit_screen</Icon> Fit
-            </button>
-          </div>
+          ))}
         </div>
 
-        {/* AI Estimation Banner */}
-        {drawingModel.isEstimated && (
-          <div className="drawing-banner" role="alert">
-            <Icon>warning</Icon>
-            <span>
-              <strong>AI-Estimated Geometry:</strong> Dimensions and profile were reconstructed from imagery. Verify critical dimensions and tolerances before manufacturing.
-            </span>
+        <div className="drawing-toolbar-section">
+          <span className="drawing-toolbar-label">LAYERS:</span>
+          <label className="drawing-toggle-label">
+            <input
+              type="checkbox"
+              checked={showDimensions}
+              onChange={(e) => setShowDimensions(e.target.checked)}
+            />
+            <span>Dims</span>
+          </label>
+          <label className="drawing-toggle-label">
+            <input
+              type="checkbox"
+              checked={showCenterlines}
+              onChange={(e) => setShowCenterlines(e.target.checked)}
+            />
+            <span>Centerlines</span>
+          </label>
+          <label className="drawing-toggle-label">
+            <input
+              type="checkbox"
+              checked={showHiddenLines}
+              onChange={(e) => setShowHiddenLines(e.target.checked)}
+            />
+            <span>Hidden</span>
+          </label>
+        </div>
+
+        <div className="drawing-toolbar-section">
+          <span className="drawing-toolbar-label">REV:</span>
+          <input
+            type="text"
+            maxLength={3}
+            className="drawing-rev-input"
+            value={revision}
+            onChange={(e) => setRevision(e.target.value.toUpperCase())}
+          />
+        </div>
+
+        <div className="drawing-toolbar-section drawing-zoom-section">
+          <button className="drawing-zoom-btn" title="Zoom Out" onClick={() => setZoom((z) => Math.max(0.4, z * 0.85))}>
+            <Icon>remove</Icon>
+          </button>
+          <span className="drawing-zoom-label">{Math.round(zoom * 100)}%</span>
+          <button className="drawing-zoom-btn" title="Zoom In" onClick={() => setZoom((z) => Math.min(4.0, z * 1.15))}>
+            <Icon>add</Icon>
+          </button>
+          <button className="drawing-zoom-btn" title="Fit to Page" onClick={resetView}>
+            <Icon>fit_screen</Icon> Fit
+          </button>
+        </div>
+      </div>
+
+      {/* AI Estimation Banner */}
+      {drawingModel.isEstimated && (
+        <div className="drawing-banner" role="alert">
+          <Icon>warning</Icon>
+          <span>
+            <strong>AI-Estimated Geometry:</strong> Dimensions and profile were reconstructed from imagery. Verify critical dimensions and tolerances before manufacturing.
+          </span>
+        </div>
+      )}
+
+      {/* Main Canvas Viewport */}
+      <div
+        className={`drawing-viewport-wrap ${isPanning ? 'panning' : ''}`}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
+        <div
+          className="drawing-sheet-container"
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: 'center center',
+          }}
+          dangerouslySetInnerHTML={{ __html: svgMarkup }}
+        />
+
+        {activeDimTooltip && (
+          <div
+            className="drawing-dim-tooltip"
+            style={{ left: activeDimTooltip.x + 12, top: activeDimTooltip.y + 12 }}
+          >
+            <div className="drawing-tooltip-title">Dimension Inspection</div>
+            <div className="drawing-tooltip-row">
+              <span>Source:</span> <strong>{activeDimTooltip.source}</strong>
+            </div>
+            <div className="drawing-tooltip-row">
+              <span>Confidence:</span> <strong>{activeDimTooltip.confidence}</strong>
+            </div>
+            {activeDimTooltip.isEstimated && (
+              <div className="drawing-tooltip-warn">Verify dimension before production tooling.</div>
+            )}
           </div>
         )}
+      </div>
 
-        {/* Main Canvas Viewport */}
-        <div
-          className={`drawing-viewport-wrap ${isPanning ? 'panning' : ''}`}
-          onWheel={handleWheel}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-        >
-          <div
-            className="drawing-sheet-container"
-            style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-              transformOrigin: 'center center',
-            }}
-            dangerouslySetInnerHTML={{ __html: svgMarkup }}
-          />
-
-          {activeDimTooltip && (
-            <div
-              className="drawing-dim-tooltip"
-              style={{ left: activeDimTooltip.x + 12, top: activeDimTooltip.y + 12 }}
-            >
-              <div className="drawing-tooltip-title">Dimension Inspection</div>
-              <div className="drawing-tooltip-row">
-                <span>Source:</span> <strong>{activeDimTooltip.source}</strong>
-              </div>
-              <div className="drawing-tooltip-row">
-                <span>Confidence:</span> <strong>{activeDimTooltip.confidence}</strong>
-              </div>
-              {activeDimTooltip.isEstimated && (
-                <div className="drawing-tooltip-warn">Verify dimension before production tooling.</div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <footer className="drawing-modal-footer">
-          <span>ISO A4 Landscape · Drag to Pan · Scroll to Zoom · Click dimensions to inspect confidence</span>
-        </footer>
+      <footer className="drawing-modal-footer">
+        <span>ISO A4 Landscape · Drag to Pan · Scroll to Zoom · Click dimensions to inspect confidence</span>
+      </footer>
     </div>
   );
 
@@ -1122,9 +1138,9 @@ function Upload() {
         },
         companionGear: machineryState.companionGear
           ? {
-              ...machineryState.companionGear,
-              analysis: cAnalysis,
-            }
+            ...machineryState.companionGear,
+            analysis: cAnalysis,
+          }
           : null,
       };
 
@@ -1146,7 +1162,7 @@ function Upload() {
   const surroundingsCount = surroundings?.images?.length || 0;
 
   return (
-    <>
+    <div className="upload-page-wrapper">
       <Nav />
       <main className="upload-page">
         <button className="back" onClick={() => setPage('home')}>
@@ -1161,7 +1177,7 @@ function Upload() {
         </header>
 
         {/* Upload Slots Tab Switcher */}
-        <div className="copilot-tab-bar" style={{ marginBottom: '16px', borderRadius: '3px 3px 0 0' }}>
+        <div className="copilot-tab-bar" style={{ marginBottom: '12px', borderRadius: '3px 3px 0 0' }}>
           <button
             className={`copilot-tab-btn ${activeUploadSlot === 'primary' ? 'active' : ''}`}
             onClick={() => setActiveUploadSlot('primary')}
@@ -1321,8 +1337,8 @@ function Upload() {
 
         {/* Previews Area */}
         <section className="preview-area">
-          <div>
-            <p className="eyebrow">
+          <div className="preview-list-wrap">
+            <p className="eyebrow" style={{ margin: '0 0 6px' }}>
               PRIMARY ({primaryCount}) · COMPANION ({companionCount}) · SURROUNDINGS ({surroundingsCount})
             </p>
             <div className="previews">
@@ -1389,10 +1405,9 @@ function Upload() {
           </div>
         </section>
       </main>
-    </>
+    </div>
   );
 }
-
 const PARAM_DEFINITIONS = [
   { key: 'outerDiameter', label: 'Outer Ø', unit: 'mm', min: 1, step: 0.5, isDim: true },
   { key: 'innerDiameter', label: 'Inner Ø (bore)', unit: 'mm', min: 0.5, step: 0.5, isDim: true },
@@ -1481,10 +1496,10 @@ function WhatIfSimulator({
           {impactStatus === 'INVALID'
             ? 'Scenario exceeds valid geometric constraints.'
             : impactStatus === 'STABLE'
-            ? 'Modifications within baseline envelope (<5% deviation).'
-            : impactStatus === 'REVIEW'
-            ? 'Interface or moderate dimensional change (5–15%). Engineering check advised.'
-            : 'Significant deviation from baseline (>15%). Rigorous verification required.'}
+              ? 'Modifications within baseline envelope (<5% deviation).'
+              : impactStatus === 'REVIEW'
+                ? 'Interface or moderate dimensional change (5–15%). Engineering check advised.'
+                : 'Significant deviation from baseline (>15%). Rigorous verification required.'}
         </p>
       </div>
 
@@ -1702,220 +1717,220 @@ function EngineeringReportModal({
                 <span className="kv-value">{analysis.geometryType}</span>
               </div>
             ) : null}
-              {analysis?.materialEstimate && analysis.materialEstimate.toLowerCase() !== 'unknown' ? (
-                <div className="report-kv-card">
-                  <span className="kv-label">MATERIAL ESTIMATE</span>
-                  <span className="kv-value">{analysis.materialEstimate}</span>
-                </div>
-              ) : null}
-              {analysis?.manufacturingProcess && analysis.manufacturingProcess.toLowerCase() !== 'unknown' ? (
-                <div className="report-kv-card">
-                  <span className="kv-label">MANUFACTURING PROCESS</span>
-                  <span className="kv-value">{analysis.manufacturingProcess}</span>
-                </div>
-              ) : null}
+            {analysis?.materialEstimate && analysis.materialEstimate.toLowerCase() !== 'unknown' ? (
               <div className="report-kv-card">
-                <span className="kv-label">STAGED VIEWS</span>
-                <span className="kv-value">{images?.length || 1} View{images?.length === 1 ? '' : 's'}</span>
+                <span className="kv-label">MATERIAL ESTIMATE</span>
+                <span className="kv-value">{analysis.materialEstimate}</span>
+              </div>
+            ) : null}
+            {analysis?.manufacturingProcess && analysis.manufacturingProcess.toLowerCase() !== 'unknown' ? (
+              <div className="report-kv-card">
+                <span className="kv-label">MANUFACTURING PROCESS</span>
+                <span className="kv-value">{analysis.manufacturingProcess}</span>
+              </div>
+            ) : null}
+            <div className="report-kv-card">
+              <span className="kv-label">STAGED VIEWS</span>
+              <span className="kv-value">{images?.length || 1} View{images?.length === 1 ? '' : 's'}</span>
+            </div>
+          </div>
+
+          {Array.isArray(analysis?.features) && analysis.features.length > 0 ? (
+            <div className="report-features-block">
+              <span className="kv-label">IDENTIFIED FEATURES</span>
+              <div className="feature-tags">
+                {analysis.features.map((feat, i) => (
+                  <span key={i} className="feature-tag">{feat}</span>
+                ))}
               </div>
             </div>
+          ) : null}
 
-            {Array.isArray(analysis?.features) && analysis.features.length > 0 ? (
-              <div className="report-features-block">
-                <span className="kv-label">IDENTIFIED FEATURES</span>
-                <div className="feature-tags">
-                  {analysis.features.map((feat, i) => (
-                    <span key={i} className="feature-tag">{feat}</span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+          {analysis?.reasoning ? (
+            <div className="report-text-block">
+              <span className="kv-label">ANALYSIS REASONING</span>
+              <p>{analysis.reasoning}</p>
+            </div>
+          ) : null}
 
-            {analysis?.reasoning ? (
-              <div className="report-text-block">
-                <span className="kv-label">ANALYSIS REASONING</span>
-                <p>{analysis.reasoning}</p>
-              </div>
-            ) : null}
-
-            {Array.isArray(analysis?.uncertainties) && analysis.uncertainties.length > 0 ? (
-              <div className="report-text-block text-block-uncertainty">
-                <span className="kv-label">MEASUREMENT UNCERTAINTIES</span>
-                <ul>
-                  {analysis.uncertainties.map((unc, i) => (
-                    <li key={i}>{unc}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </section>
-
-          {/* Section 2: Dimension Summary & Data Provenance */}
-          <section className="report-section">
-            <h3 className="section-title"><Icon>straighten</Icon> 2. DIMENSION SUMMARY & DATA PROVENANCE</h3>
-            {availableParams.length > 0 ? (
-              <table className="report-table">
-                <thead>
-                  <tr>
-                    <th>PARAMETER</th>
-                    <th>BASELINE</th>
-                    <th>BASELINE PROVENANCE</th>
-                    {hasModifications && <th>SCENARIO VALUE</th>}
-                    {hasModifications && <th>CHANGE / DELTA</th>}
-                    {hasModifications && <th>SCENARIO PROVENANCE</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {availableParams.map(def => {
-                    const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
-                    const scenVal = scenarioParams[def.key] ?? baseVal;
-                    const diff = scenVal - baseVal;
-                    const pct = baseVal !== 0 ? (diff / baseVal) * 100 : 0;
-                    const isMod = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
-                    const sign = diff > 0 ? '+' : '';
-                    const diffFmt = def.isInteger ? `${sign}${diff} ${def.unit}` : `${sign}${diff.toFixed(1)} ${def.unit}`;
-                    const pctFmt = `${sign}${pct.toFixed(1)}%`;
-
-                    return (
-                      <tr key={def.key} className={isMod ? 'row-modified' : ''}>
-                        <td><strong>{def.label}</strong></td>
-                        <td>{baseVal} {def.unit}</td>
-                        <td><span className="tag-provenance tag-ai">Image Analysis Estimate</span></td>
-                        {hasModifications && (
-                          <td className={isMod ? 'scen-value-cell' : ''}>
-                            {scenVal} {def.unit}
-                          </td>
-                        )}
-                        {hasModifications && (
-                          <td className={isMod ? (diff > 0 ? 'delta-pos' : 'delta-neg') : ''}>
-                            {isMod ? `${diffFmt} (${pctFmt})` : '—'}
-                          </td>
-                        )}
-                        {hasModifications && (
-                          <td>
-                            <span className={`tag-provenance ${isMod ? 'tag-scenario' : 'tag-baseline'}`}>
-                              {isMod ? 'What-If Scenario' : 'Unmodified Baseline'}
-                            </span>
-                          </td>
-                        )}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            ) : (
-              <p className="empty-notice">No physical dimensions were identified or measured for this component.</p>
-            )}
-          </section>
-
-          {/* Section 3: Engineering Validation */}
-          <section className="report-section">
-            <h3 className="section-title"><Icon>verified</Icon> 3. ENGINEERING GEOMETRY VALIDATION</h3>
-            <div className={`report-validation-banner ${isGeometryValid ? 'val-pass' : 'val-fail'}`}>
-              <div className="val-banner-header">
-                <Icon>{isGeometryValid ? 'check_circle' : 'error'}</Icon>
-                <strong>{isGeometryValid ? 'GEOMETRY CONSTRAINTS VALIDATED' : 'GEOMETRY CONSTRAINT VIOLATION'}</strong>
-              </div>
-              <ul className="val-checklist">
-                {availableParams.length > 0 && (
-                  <li className={isGeometryValid ? 'pass' : 'fail'}>
-                    <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
-                    <span>Dimensional values must be strictly positive</span>
-                  </li>
-                )}
-                {hasOD && hasID && (
-                  <li className={isGeometryValid ? 'pass' : 'fail'}>
-                    <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
-                    <span>Bore interface clearance: Inner diameter &lt; Outer diameter</span>
-                  </li>
-                )}
-                {hasTeeth && (
-                  <li className={isGeometryValid ? 'pass' : 'fail'}>
-                    <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
-                    <span>Gear tooth count: Integer value (minimum 6 teeth)</span>
-                  </li>
-                )}
+          {Array.isArray(analysis?.uncertainties) && analysis.uncertainties.length > 0 ? (
+            <div className="report-text-block text-block-uncertainty">
+              <span className="kv-label">MEASUREMENT UNCERTAINTIES</span>
+              <ul>
+                {analysis.uncertainties.map((unc, i) => (
+                  <li key={i}>{unc}</li>
+                ))}
               </ul>
-              {!isGeometryValid && geometryError && (
-                <div className="val-error-detail">
-                  <strong>Rejection Reason:</strong> {geometryError}
+            </div>
+          ) : null}
+        </section>
+
+        {/* Section 2: Dimension Summary & Data Provenance */}
+        <section className="report-section">
+          <h3 className="section-title"><Icon>straighten</Icon> 2. DIMENSION SUMMARY & DATA PROVENANCE</h3>
+          {availableParams.length > 0 ? (
+            <table className="report-table">
+              <thead>
+                <tr>
+                  <th>PARAMETER</th>
+                  <th>BASELINE</th>
+                  <th>BASELINE PROVENANCE</th>
+                  {hasModifications && <th>SCENARIO VALUE</th>}
+                  {hasModifications && <th>CHANGE / DELTA</th>}
+                  {hasModifications && <th>SCENARIO PROVENANCE</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {availableParams.map(def => {
+                  const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+                  const scenVal = scenarioParams[def.key] ?? baseVal;
+                  const diff = scenVal - baseVal;
+                  const pct = baseVal !== 0 ? (diff / baseVal) * 100 : 0;
+                  const isMod = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
+                  const sign = diff > 0 ? '+' : '';
+                  const diffFmt = def.isInteger ? `${sign}${diff} ${def.unit}` : `${sign}${diff.toFixed(1)} ${def.unit}`;
+                  const pctFmt = `${sign}${pct.toFixed(1)}%`;
+
+                  return (
+                    <tr key={def.key} className={isMod ? 'row-modified' : ''}>
+                      <td><strong>{def.label}</strong></td>
+                      <td>{baseVal} {def.unit}</td>
+                      <td><span className="tag-provenance tag-ai">Image Analysis Estimate</span></td>
+                      {hasModifications && (
+                        <td className={isMod ? 'scen-value-cell' : ''}>
+                          {scenVal} {def.unit}
+                        </td>
+                      )}
+                      {hasModifications && (
+                        <td className={isMod ? (diff > 0 ? 'delta-pos' : 'delta-neg') : ''}>
+                          {isMod ? `${diffFmt} (${pctFmt})` : '—'}
+                        </td>
+                      )}
+                      {hasModifications && (
+                        <td>
+                          <span className={`tag-provenance ${isMod ? 'tag-scenario' : 'tag-baseline'}`}>
+                            {isMod ? 'What-If Scenario' : 'Unmodified Baseline'}
+                          </span>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <p className="empty-notice">No physical dimensions were identified or measured for this component.</p>
+          )}
+        </section>
+
+        {/* Section 3: Engineering Validation */}
+        <section className="report-section">
+          <h3 className="section-title"><Icon>verified</Icon> 3. ENGINEERING GEOMETRY VALIDATION</h3>
+          <div className={`report-validation-banner ${isGeometryValid ? 'val-pass' : 'val-fail'}`}>
+            <div className="val-banner-header">
+              <Icon>{isGeometryValid ? 'check_circle' : 'error'}</Icon>
+              <strong>{isGeometryValid ? 'GEOMETRY CONSTRAINTS VALIDATED' : 'GEOMETRY CONSTRAINT VIOLATION'}</strong>
+            </div>
+            <ul className="val-checklist">
+              {availableParams.length > 0 && (
+                <li className={isGeometryValid ? 'pass' : 'fail'}>
+                  <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
+                  <span>Dimensional values must be strictly positive</span>
+                </li>
+              )}
+              {hasOD && hasID && (
+                <li className={isGeometryValid ? 'pass' : 'fail'}>
+                  <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
+                  <span>Bore interface clearance: Inner diameter &lt; Outer diameter</span>
+                </li>
+              )}
+              {hasTeeth && (
+                <li className={isGeometryValid ? 'pass' : 'fail'}>
+                  <Icon>{isGeometryValid ? 'check' : 'close'}</Icon>
+                  <span>Gear tooth count: Integer value (minimum 6 teeth)</span>
+                </li>
+              )}
+            </ul>
+            {!isGeometryValid && geometryError && (
+              <div className="val-error-detail">
+                <strong>Rejection Reason:</strong> {geometryError}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Section 4: What-If Scenario State & Impact */}
+        <section className="report-section">
+          <h3 className="section-title"><Icon>tune</Icon> 4. WHAT-IF SCENARIO STATE & IMPACT</h3>
+          {hasModifications ? (
+            <div className="report-scenario-details">
+              <div className="scenario-status-row">
+                <span className="kv-label">SCENARIO IMPACT RATING:</span>
+                <span className={`impact-badge impact-${impactStatus.toLowerCase().replace(/\s+/g, '-')}`}>
+                  {impactStatus}
+                </span>
+              </div>
+              <p className="scenario-status-desc">
+                {impactStatus === 'INVALID'
+                  ? 'Scenario exceeds valid geometric constraints.'
+                  : impactStatus === 'STABLE'
+                    ? 'Modifications are within baseline envelope (<5% deviation).'
+                    : impactStatus === 'REVIEW'
+                      ? 'Interface or moderate dimensional change (5–15%). Engineering review advised.'
+                      : 'Significant dimensional deviation from baseline (>15%). Rigorous engineering verification required.'}
+              </p>
+
+              {materialVolumeImpact && (
+                <div className="report-volume-box">
+                  <div className="vol-box-title">APPROX. MATERIAL VOLUME ENVELOPE</div>
+                  <div className="vol-box-row">
+                    <div><span className="cad-label">BASELINE:</span> <strong>{materialVolumeImpact.baselineCm3} cm³</strong></div>
+                    <Icon>arrow_forward</Icon>
+                    <div><span className="cad-label">SCENARIO:</span> <strong>{materialVolumeImpact.scenarioCm3} cm³</strong></div>
+                    <div><span className="cad-label">DELTA:</span> <strong className="scen-val">{materialVolumeImpact.deltaCm3} cm³ ({materialVolumeImpact.pct})</strong></div>
+                  </div>
+                  <small>Calculated using annular/cylindrical envelope approximation (V = π/4 × (OD² - ID²) × H).</small>
                 </div>
               )}
             </div>
-          </section>
-
-          {/* Section 4: What-If Scenario State & Impact */}
-          <section className="report-section">
-            <h3 className="section-title"><Icon>tune</Icon> 4. WHAT-IF SCENARIO STATE & IMPACT</h3>
-            {hasModifications ? (
-              <div className="report-scenario-details">
-                <div className="scenario-status-row">
-                  <span className="kv-label">SCENARIO IMPACT RATING:</span>
-                  <span className={`impact-badge impact-${impactStatus.toLowerCase().replace(/\s+/g, '-')}`}>
-                    {impactStatus}
-                  </span>
-                </div>
-                <p className="scenario-status-desc">
-                  {impactStatus === 'INVALID'
-                    ? 'Scenario exceeds valid geometric constraints.'
-                    : impactStatus === 'STABLE'
-                    ? 'Modifications are within baseline envelope (<5% deviation).'
-                    : impactStatus === 'REVIEW'
-                    ? 'Interface or moderate dimensional change (5–15%). Engineering review advised.'
-                    : 'Significant dimensional deviation from baseline (>15%). Rigorous engineering verification required.'}
-                </p>
-
-                {materialVolumeImpact && (
-                  <div className="report-volume-box">
-                    <div className="vol-box-title">APPROX. MATERIAL VOLUME ENVELOPE</div>
-                    <div className="vol-box-row">
-                      <div><span className="cad-label">BASELINE:</span> <strong>{materialVolumeImpact.baselineCm3} cm³</strong></div>
-                      <Icon>arrow_forward</Icon>
-                      <div><span className="cad-label">SCENARIO:</span> <strong>{materialVolumeImpact.scenarioCm3} cm³</strong></div>
-                      <div><span className="cad-label">DELTA:</span> <strong className="scen-val">{materialVolumeImpact.deltaCm3} cm³ ({materialVolumeImpact.pct})</strong></div>
-                    </div>
-                    <small>Calculated using annular/cylindrical envelope approximation (V = π/4 × (OD² - ID²) × H).</small>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="report-no-scenario">
-                <p>No active design scenario. The component is operating on its original baseline reconstruction.</p>
-              </div>
-            )}
-          </section>
-
-          {/* Section 5: Engineering Notes & Warnings */}
-          <section className="report-section">
-            <h3 className="section-title"><Icon>warning</Icon> 5. ENGINEERING NOTES & WARNINGS</h3>
-            {warnings.length > 0 ? (
-              <ul className="report-warnings-list">
-                {warnings.map((w, idx) => (
-                  <li key={idx} className="report-warning-item">
-                    <Icon>warning</Icon>
-                    <span>{w}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="report-clean-note">
-                <Icon>check</Icon> No compatibility or interface warnings detected for the current parameters.
-              </p>
-            )}
-          </section>
-
-          {/* Section 6: Verification Notice */}
-          <section className="report-section report-footer-notice">
-            <div className="verification-notice-box">
-              <Icon>info</Icon>
-              <div>
-                <strong>PHYSICAL VERIFICATION NOTICE</strong>
-                <p>All measurements, material estimates, and 3D geometry recipes are synthesized from photographs and/or deterministic prototype scenarios. Dimensions and mating tolerances must be physically verified with calibrated measurement equipment prior to tooling, CNC machining, or production.</p>
-              </div>
+          ) : (
+            <div className="report-no-scenario">
+              <p>No active design scenario. The component is operating on its original baseline reconstruction.</p>
             </div>
-          </section>
-        </article>
-      </div>
+          )}
+        </section>
+
+        {/* Section 5: Engineering Notes & Warnings */}
+        <section className="report-section">
+          <h3 className="section-title"><Icon>warning</Icon> 5. ENGINEERING NOTES & WARNINGS</h3>
+          {warnings.length > 0 ? (
+            <ul className="report-warnings-list">
+              {warnings.map((w, idx) => (
+                <li key={idx} className="report-warning-item">
+                  <Icon>warning</Icon>
+                  <span>{w}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="report-clean-note">
+              <Icon>check</Icon> No compatibility or interface warnings detected for the current parameters.
+            </p>
+          )}
+        </section>
+
+        {/* Section 6: Verification Notice */}
+        <section className="report-section report-footer-notice">
+          <div className="verification-notice-box">
+            <Icon>info</Icon>
+            <div>
+              <strong>PHYSICAL VERIFICATION NOTICE</strong>
+              <p>All measurements, material estimates, and 3D geometry recipes are synthesized from photographs and/or deterministic prototype scenarios. Dimensions and mating tolerances must be physically verified with calibrated measurement equipment prior to tooling, CNC machining, or production.</p>
+            </div>
+          </div>
+        </section>
+      </article>
+    </div>
   );
 
   if (isWorkWindow) {
@@ -1999,7 +2014,7 @@ function Workbench() {
   const [copilotTab, setCopilotTab] = useState('chat'); // 'chat' | 'components'
   const [activeTab, setActiveTab] = useState('workbench'); // Workbench tab open by default
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [pipVisible, setPipVisible] = useState(true);
+  const [pipVisible, setPipVisible] = useState(false); // PiP disabled by default as requested
   const [scenarioParams, setScenarioParams] = useState({});
   const [showReport, setShowReport] = useState(false);
   const [wire, setWire] = useState(false);
@@ -2020,6 +2035,352 @@ function Workbench() {
   const historyRef = useRef([]);
   const thread = useRef(null);
 
+  // ─── Persistent Modular Workspace State ─────────────────────────────
+  const [layoutState, setLayoutState] = useState(() => ({
+    ...loadWorkspaceLayout(),
+    isManufacturingActive: false, // Ensure manufacture is NEVER enabled by default!
+  }));
+
+  const updateLayout = useCallback((updater) => {
+    setLayoutState((prev) => {
+      const partial = typeof updater === 'function' ? updater(prev) : updater;
+      return { ...prev, ...partial };
+    });
+  }, []);
+
+  // Persist layout safely to localStorage when state changes
+  useEffect(() => {
+    saveWorkspaceLayout(layoutState);
+  }, [layoutState]);
+
+  const handleResetLayout = useCallback(() => {
+    const fresh = resetWorkspaceLayout();
+    setLayoutState(fresh);
+  }, []);
+
+  const {
+    leftPanelWidth,
+    mfgPanelWidth,
+    costPanelHeight,
+    isLeftPanelOpen,
+    isManufacturingActive,
+    isCostPanelCollapsed,
+    isLeftPanelDocked,
+    isMfgPanelDocked,
+    isCostPanelDocked,
+    isLeftPanelMaximized,
+    isMfgPanelMaximized,
+    isCostPanelMaximized,
+    isWorkspaceMaximized,
+    leftPanelFloatingPos,
+    mfgPanelFloatingPos,
+    costPanelFloatingPos,
+    ribbonExpanded,
+    contextualPanelSlot = 'left',
+    mfgPanelSlot = 'right',
+    costPanelSlot = 'bottom',
+  } = layoutState;
+
+  const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(analysis);
+  const isMfgActive = Boolean(ready && isManufacturingActive);
+
+  // Drag and Drop Panel Repositioning State
+  const [draggedPanel, setDraggedPanel] = useState(null); // 'contextual' | 'manufacturing' | 'cost' | null
+  const [hoveredDockZone, setHoveredDockZone] = useState(null); // 'left' | 'right' | 'bottom' | 'floating' | null
+  const [dragMousePos, setDragMousePos] = useState(null);
+  const [isResizingDivider, setIsResizingDivider] = useState(false);
+
+  // Responsive Window Constraints
+  useEffect(() => {
+    const handleWindowResize = () => {
+      updateLayout((prev) => enforceResponsiveBounds(prev, window.innerWidth, window.innerHeight));
+    };
+
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [updateLayout]);
+
+  // 1-Click Slot Switcher
+  const handleMoveSlot = useCallback((panelKey, targetSlot) => {
+    updateLayout((s) => repositionPanelSlot(s, panelKey, targetSlot));
+  }, [updateLayout]);
+
+  // Drag-and-drop repositioning initiator
+  const handleStartDragPanel = useCallback((panelKey, e) => {
+    e.preventDefault();
+    setDraggedPanel(panelKey);
+    setDragMousePos({ x: e.clientX, y: e.clientY });
+
+    const onMouseMove = (moveEv) => {
+      const x = moveEv.clientX;
+      const y = moveEv.clientY;
+      setDragMousePos({ x, y });
+
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+
+      if (x < w * 0.28) {
+        setHoveredDockZone('left');
+      } else if (x > w * 0.72) {
+        setHoveredDockZone('right');
+      } else if (y > h * 0.65) {
+        setHoveredDockZone('bottom');
+      } else {
+        setHoveredDockZone('floating');
+      }
+    };
+
+    const onMouseUp = (upEv) => {
+      const x = upEv.clientX;
+      const y = upEv.clientY;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+
+      let finalZone = 'floating';
+      if (x < w * 0.28) {
+        finalZone = 'left';
+      } else if (x > w * 0.72) {
+        finalZone = 'right';
+      } else if (y > h * 0.65) {
+        finalZone = 'bottom';
+      }
+
+      updateLayout((s) => {
+        const next = repositionPanelSlot(s, panelKey, finalZone);
+        if (finalZone === 'floating') {
+          const posKey = panelKey === 'contextual' ? 'leftPanelFloatingPos' : panelKey === 'manufacturing' ? 'mfgPanelFloatingPos' : 'costPanelFloatingPos';
+          next[posKey] = {
+            x: Math.max(10, Math.min(w - 420, x - 180)),
+            y: Math.max(50, Math.min(h - 220, y - 30)),
+          };
+        }
+        return next;
+      });
+
+      setDraggedPanel(null);
+      setHoveredDockZone(null);
+      setDragMousePos(null);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, [updateLayout]);
+
+  // Contextual tool selected in ribbon: 'components' by default (or 'inspection', 'health', or null if closed)
+  const [selectedContextTool, setSelectedContextTool] = useState('components');
+  // Active tab in left panel: 'components' by default alongside Copilot
+  const [activeLeftTab, setActiveLeftTab] = useState('components');
+
+  const [isReportDialogOpen, setIsReportDialogOpen] = useState(false);
+  const [reportNoticeOpen, setReportNoticeOpen] = useState(false);
+
+  const handleToggleRibbonContextTool = useCallback((tool) => {
+    setSelectedContextTool(prev => {
+      if (prev === tool) {
+        // Close it! Only Copilot remains
+        setActiveLeftTab('chat');
+        return null;
+      } else {
+        // Activate it and restore default width
+        setActiveLeftTab(tool);
+        updateLayout({
+          isLeftPanelOpen: true,
+          leftPanelWidth: DEFAULT_WORKSPACE_LAYOUT.leftPanelWidth,
+          isLeftPanelMaximized: false,
+        });
+        return tool;
+      }
+    });
+  }, [updateLayout]);
+
+  const handleToggleRibbonCopilot = useCallback(() => {
+    updateLayout((s) => {
+      if (!s.isLeftPanelOpen) {
+        setActiveLeftTab('chat');
+        return {
+          isLeftPanelOpen: true,
+          leftPanelWidth: DEFAULT_WORKSPACE_LAYOUT.leftPanelWidth,
+          isLeftPanelMaximized: false,
+        };
+      } else if (activeLeftTab === 'chat') {
+        if (selectedContextTool) {
+          setActiveLeftTab(selectedContextTool);
+          return {};
+        } else {
+          return { isLeftPanelOpen: false };
+        }
+      } else {
+        setActiveLeftTab('chat');
+        return {
+          isLeftPanelOpen: true,
+          leftPanelWidth: DEFAULT_WORKSPACE_LAYOUT.leftPanelWidth,
+          isLeftPanelMaximized: false,
+        };
+      }
+    });
+  }, [activeLeftTab, selectedContextTool, updateLayout]);
+
+  // Manufacturing Decisions State (with persistence)
+  const [decisions, setDecisions] = useState(() => {
+    const saved = localStorage.getItem('reforge_mfg_decisions');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        // fallback
+      }
+    }
+    return {
+      material: { id: 'aisi-4140', label: 'AISI 4140 Alloy Steel (Chromoly)', yieldMPa: 655, hardness: '28–32 HRC (Pre-hardened)' },
+      process: { id: 'hobbing-cnc', label: 'CNC Gear Hobbing + Milling', leadTime: '8–12 days', accuracy: 'DIN 7' },
+      surfaceTreatment: { id: 'black-oxide', label: 'Black Oxide (MIL-DTL-13924)' },
+      tolerances: { id: 'iso-grade-7', label: 'DIN 7 / ISO Grade 7 (Standard Precision)' },
+      heatTreatment: { id: 'case-carburizing', label: 'Case Carburized (58–62 HRC, 0.8–1.2mm depth)' },
+      inspection: { id: 'cmm-lead-profile', label: 'CMM Tooth Profile & Involute Lead Inspection' },
+      packaging: { id: 'vci-sealed', label: 'VCI Vapor-Inhibitor Sealed Bag + Foam Cradles' },
+    };
+  });
+
+  const updateDecision = useCallback((key, value) => {
+    setDecisions(prev => {
+      const next = { ...prev, [key]: value };
+      localStorage.setItem('reforge_mfg_decisions', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const handleToggleRibbon = useCallback(() => {
+    updateLayout((s) => ({ ribbonExpanded: !s.ribbonExpanded }));
+  }, [updateLayout]);
+
+  const handleToggleLeftPanel = useCallback((val) => {
+    updateLayout((s) => {
+      const willBeOpen = val !== undefined ? val : !s.isLeftPanelOpen;
+      return {
+        isLeftPanelOpen: willBeOpen,
+        // When reopening / enabling, restore the default width
+        ...(willBeOpen ? { leftPanelWidth: DEFAULT_WORKSPACE_LAYOUT.leftPanelWidth, isLeftPanelMaximized: false } : {}),
+      };
+    });
+  }, [updateLayout]);
+
+  const handleResizeLeftPanel = useCallback((w) => {
+    updateLayout({ leftPanelWidth: w });
+  }, [updateLayout]);
+
+  const handleResizeMfgPanel = useCallback((w) => {
+    updateLayout({ mfgPanelWidth: w });
+  }, [updateLayout]);
+
+  const handleResizeCostPanel = useCallback((h) => {
+    updateLayout({ costPanelHeight: h });
+  }, [updateLayout]);
+
+  const handleMouseDownLeftResizer = useCallback((e) => {
+    e.preventDefault();
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    setIsResizingDivider(true);
+
+    const onMouseMove = (moveEv) => {
+      const maxAvailable = Math.max(380, window.innerWidth - (isMfgActive ? mfgPanelWidth : 0) - 320);
+      const nextW = Math.max(LAYOUT_BOUNDS.leftPanelWidth.min, Math.min(Math.min(LAYOUT_BOUNDS.leftPanelWidth.max, maxAvailable), moveEv.clientX));
+      updateLayout({ leftPanelWidth: nextW });
+    };
+
+    const onMouseUp = () => {
+      setIsResizingDivider(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, [isMfgActive, mfgPanelWidth, updateLayout]);
+
+  const handleMouseDownRightResizer = useCallback((e) => {
+    e.preventDefault();
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    setIsResizingDivider(true);
+
+    const onMouseMove = (moveEv) => {
+      const maxAvailable = Math.max(380, window.innerWidth - (isLeftPanelOpen ? leftPanelWidth : 0) - 320);
+      const nextW = Math.max(LAYOUT_BOUNDS.mfgPanelWidth.min, Math.min(Math.min(LAYOUT_BOUNDS.mfgPanelWidth.max, maxAvailable), window.innerWidth - moveEv.clientX));
+      updateLayout({ mfgPanelWidth: nextW });
+    };
+
+    const onMouseUp = () => {
+      setIsResizingDivider(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, [isLeftPanelOpen, leftPanelWidth, updateLayout]);
+
+  const handleMouseDownCostResizer = useCallback((e) => {
+    e.preventDefault();
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    setIsResizingDivider(true);
+
+    const startY = e.clientY;
+    const startHeight = layoutState.costPanelHeight;
+
+    const onMouseMove = (moveEv) => {
+      const deltaY = startY - moveEv.clientY;
+      const maxH = Math.round(window.innerHeight * 0.55);
+      const nextH = Math.max(160, Math.min(maxH, startHeight + deltaY));
+      updateLayout({ costPanelHeight: nextH });
+    };
+
+    const onMouseUp = () => {
+      setIsResizingDivider(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, [layoutState.costPanelHeight, updateLayout]);
+
+  const decisionDependencies = useMemo(() => {
+    const deps = [];
+    if (decisions.material?.id === 'al-7075-t6' || decisions.material?.id === 'ss-316l') {
+      if (decisions.heatTreatment?.id === 'case-carburizing') {
+        deps.push({
+          target: 'heatTreatment',
+          title: 'Material / Heat Treatment Conflict',
+          reason: `${decisions.material.label} cannot be carburized. Solution heat treating, anodizing, or precipitation hardening required.`,
+        });
+      }
+    }
+    if (decisions.tolerances?.id === 'iso-grade-6') {
+      if (decisions.process?.id === 'hobbing-cnc') {
+        deps.push({
+          target: 'process',
+          title: 'Tolerance / Process Compatibility',
+          reason: 'DIN 6 / ISO Grade 6 requires tooth grinding or wire EDM finishing passes beyond conventional hobbing.',
+        });
+      }
+    }
+    return deps;
+  }, [decisions]);
+
+  const isManufacturingComplete = useMemo(() => {
+    return Boolean(decisions.material && decisions.tolerances && decisions.heatTreatment && decisions.process);
+  }, [decisions]);
+
   useEffect(() => {
     if (thread.current) {
       thread.current.scrollTo({ top: thread.current.scrollHeight, behavior: 'smooth' });
@@ -2038,7 +2399,6 @@ function Workbench() {
     }
   }, [stage, analysis, setStage]);
 
-  const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(analysis);
   const features = useMemo(() => normalizeFeatures(analysis), [analysis]);
 
   // Ensure manufacturing data is loaded for copilot, drawings, and reports
@@ -2046,7 +2406,7 @@ function Workbench() {
     if (!analysis) return;
     fetchManufacturingIntelligence(analysis, quantity)
       .then(res => setMfgData(res))
-      .catch(() => {});
+      .catch(() => { });
   }, [analysis, quantity]);
 
   // Load sample gear helper
@@ -2296,491 +2656,555 @@ function Workbench() {
 
   return (
     <>
-      <Nav />
-      <main className={`workbench ${sidebarCollapsed ? 'sidebar-collapsed' : 'sidebar-expanded'} ${open ? 'chat-open' : ''}`}>
-        {/* Left Vertical Navigation Sidebar */}
-        <aside className={`left-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`} aria-label="Engineering Navigation">
-          <div className="sidebar-top-bar">
-            {!sidebarCollapsed && <span className="sidebar-brand-title">ENGINEERING TOOLS</span>}
-            <button
-              className="sidebar-collapse-btn"
-              title={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
-              aria-label={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
-              onClick={() => setSidebarCollapsed(c => !c)}
-            >
-              <Icon>{sidebarCollapsed ? 'chevron_right' : 'chevron_left'}</Icon>
-            </button>
-          </div>
+      <main className="persistent-workspace-layout">
+        {/* Top Expandable/Collapsible Icon Ribbon */}
+        <TopRibbon
+          expanded={ribbonExpanded}
+          onToggleExpanded={handleToggleRibbon}
+          onNavigateHome={() => setPage('home')}
+          onNavigateUpload={() => setPage('upload')}
+          isCopilotActive={isLeftPanelOpen && activeLeftTab === 'chat'}
+          selectedContextTool={selectedContextTool}
+          onToggleCopilot={handleToggleRibbonCopilot}
+          onToggleContextTool={handleToggleRibbonContextTool}
+          autoRotate={autoRotate}
+          onToggleAutoRotate={() => setAutoRotate(v => !v)}
+          wire={wire}
+          onToggleWire={() => setWire(w => !w)}
+          stress={stress}
+          onToggleStress={() => setStress(s => !s)}
+          grid={grid}
+          onToggleGrid={() => setGrid(g => !g)}
+          dims={dims}
+          onToggleDims={() => setDims(d => !d)}
+          onResetView={() => setResetKey(k => k + 1)}
+          viewMode={viewMode}
+          onChangeViewMode={setViewMode}
+          availableGearsCount={allComponents.length}
+          pipVisible={pipVisible}
+          onTogglePip={() => setPipVisible(v => !v)}
+          isWorkspaceMaximized={isWorkspaceMaximized}
+          onToggleMaximizeWorkspace={() => updateLayout((s) => ({ isWorkspaceMaximized: !s.isWorkspaceMaximized }))}
+          onResetLayout={handleResetLayout}
+          onOpenWhatIf={() => setActiveTab(activeTab === 'whatif' ? 'workbench' : 'whatif')}
+          isWhatIfActive={activeTab === 'whatif'}
+          onOpen2DDrawing={() => setShowDrawing(true)}
+          onOpenExport={() => setActiveTab(activeTab === 'export' ? 'workbench' : 'export')}
+          isExportActive={activeTab === 'export'}
+          isManufacturingActive={isMfgActive}
+          onToggleManufacture={() => {
+            if (!ready) return;
+            updateLayout((s) => ({ isManufacturingActive: !s.isManufacturingActive }));
+          }}
+          onOpenReport={() => setIsReportDialogOpen(true)}
+          isManufacturingComplete={isManufacturingComplete}
+          onShowReportNotice={() => setReportNoticeOpen(true)}
+          ready={ready}
+          label={label}
+        />
 
-          <nav className="sidebar-nav" role="tablist">
-            {LEFT_TABS.map(tab => (
-              <button
-                key={tab.id}
-                role="tab"
-                aria-selected={activeTab === tab.id}
-                className={`sidebar-tab-btn ${activeTab === tab.id ? 'active' : ''}`}
-                title={tab.label}
-                disabled={!ready && tab.id !== 'workbench'}
-                onClick={() => {
-                  setActiveTab(tab.id);
-                  setPipVisible(true);
-                }}
-              >
-                <Icon className="sidebar-tab-icon">{tab.icon}</Icon>
-                {!sidebarCollapsed && <span className="sidebar-tab-label">{tab.label}</span>}
-                {tab.id === 'whatif' && modifiedCount > 0 && (
-                  <span className="sidebar-tab-badge">{modifiedCount}</span>
+        {/* Panel Render Helpers with slot-based docking */}
+        {(() => {
+          const renderContextualPanel = (slot, isFloating = false) => (
+            <LeftContextualPanel
+              isOpen={isLeftPanelOpen}
+              onToggleOpen={handleToggleLeftPanel}
+              width={leftPanelWidth}
+              onResize={handleResizeLeftPanel}
+              isDocked={!isFloating}
+              onToggleDock={() => handleMoveSlot('contextual', isFloating ? 'left' : 'floating')}
+              isMaximized={isLeftPanelMaximized}
+              onToggleMaximize={() => updateLayout((s) => ({ isLeftPanelMaximized: !s.isLeftPanelMaximized }))}
+              isFloatingContent={isFloating}
+              currentSlot={slot}
+              onMoveSlot={(s) => handleMoveSlot('contextual', s)}
+              onStartDrag={(e) => handleStartDragPanel('contextual', e)}
+              activeTab={activeLeftTab}
+              onSelectTab={setActiveLeftTab}
+              selectedContextTool={selectedContextTool}
+              messages={messages}
+              text={text}
+              setText={setText}
+              thinking={thinking}
+              onSendMessage={send}
+              suggestions={suggestions}
+              ready={ready}
+              label={label}
+              conf={conf}
+              activeScope={activeScope}
+              quantity={quantity}
+              engineeringContext={engineeringContext}
+              mfgData={mfgData}
+              isDirty={isDirty}
+              isRegenerating={isRegenerating}
+              onRegenerate={handleRegenerate}
+              analysis={activeReconstructionAnalysis}
+              features={features}
+              selectedFeatureId={selectedFeatureId}
+              hoveredFeatureId={hoveredFeatureId}
+              onSelectFeature={setSelectedFeatureId}
+              onHoverFeature={setHoveredFeatureId}
+              machineryState={machineryState}
+              setMachineryState={setMachineryState}
+              activeComponentId={activeComponentId}
+              setActiveComponentId={setActiveComponentId}
+            />
+          );
+
+          const renderManufacturingPanel = (slot, isFloating = false) => (
+            <ManufacturingDecisionPanel
+              isOpen={isMfgActive}
+              onClose={() => updateLayout({ isManufacturingActive: false })}
+              width={mfgPanelWidth}
+              onResize={handleResizeMfgPanel}
+              isDocked={!isFloating}
+              onToggleDock={() => handleMoveSlot('manufacturing', isFloating ? 'right' : 'floating')}
+              isMaximized={isMfgPanelMaximized}
+              onToggleMaximize={() => updateLayout((s) => ({ isMfgPanelMaximized: !s.isMfgPanelMaximized }))}
+              isFloatingContent={isFloating}
+              currentSlot={slot}
+              onMoveSlot={(s) => handleMoveSlot('manufacturing', s)}
+              onStartDrag={(e) => handleStartDragPanel('manufacturing', e)}
+              analysis={activeReconstructionAnalysis}
+              decisions={decisions}
+              onChangeDecision={updateDecision}
+              dependencies={decisionDependencies}
+              quantity={quantity}
+              onChangeQuantity={setQuantity}
+            />
+          );
+
+          const renderCostPanel = (slot, isFloating = false) => (
+            <CostEstimationPanel
+              isOpen={isMfgActive}
+              onClose={() => updateLayout({ isManufacturingActive: false })}
+              height={costPanelHeight}
+              onResize={handleResizeCostPanel}
+              isDocked={!isFloating}
+              onToggleDock={() => handleMoveSlot('cost', isFloating ? 'bottom' : 'floating')}
+              isMaximized={isCostPanelMaximized}
+              onToggleMaximize={() => updateLayout((s) => ({ isCostPanelMaximized: !s.isCostPanelMaximized }))}
+              isCollapsed={isCostPanelCollapsed}
+              onToggleCollapse={() => updateLayout((s) => ({ isCostPanelCollapsed: !s.isCostPanelCollapsed }))}
+              isFloatingContent={isFloating}
+              currentSlot={slot}
+              onMoveSlot={(s) => handleMoveSlot('cost', s)}
+              onStartDrag={(e) => handleStartDragPanel('cost', e)}
+              mfgData={mfgData}
+              quantity={quantity}
+              decisions={decisions}
+              dependenciesCount={decisionDependencies.length}
+              analysis={activeReconstructionAnalysis}
+            />
+          );
+
+          // Resolve active panels in docked slots
+          const isContextualDocked = isLeftPanelOpen && contextualPanelSlot !== 'floating';
+          const isMfgDocked = isMfgActive && mfgPanelSlot !== 'floating';
+          const isCostDocked = isMfgActive && costPanelSlot !== 'floating';
+
+          const leftSlotPanel = isContextualDocked && contextualPanelSlot === 'left' ? 'contextual'
+            : isMfgDocked && mfgPanelSlot === 'left' ? 'manufacturing'
+              : isCostDocked && costPanelSlot === 'left' ? 'cost'
+                : null;
+
+          const rightSlotPanel = isMfgDocked && mfgPanelSlot === 'right' ? 'manufacturing'
+            : isContextualDocked && contextualPanelSlot === 'right' ? 'contextual'
+              : isCostDocked && costPanelSlot === 'right' ? 'cost'
+                : null;
+
+          const bottomSlotPanel = isCostDocked && costPanelSlot === 'bottom' ? 'cost'
+            : isContextualDocked && contextualPanelSlot === 'bottom' ? 'contextual'
+              : isMfgDocked && mfgPanelSlot === 'bottom' ? 'manufacturing'
+                : null;
+
+          const getPanelByKey = (key, slot) => {
+            if (key === 'contextual') return renderContextualPanel(slot, false);
+            if (key === 'manufacturing') return renderManufacturingPanel(slot, false);
+            if (key === 'cost') return renderCostPanel(slot, false);
+            return null;
+          };
+
+          return (
+            <div className="workspace-middle-row">
+              {/* Drag Event Blocker Shield during active resize or panel drag */}
+              {(isResizingDivider || draggedPanel) && (
+                <div className="workspace-drag-shield" />
+              )}
+
+              {/* Visual Dock Drop Overlay when dragging a panel to reposition */}
+              {draggedPanel && (
+                <DockDropOverlay
+                  activeDockZone={hoveredDockZone}
+                  draggedPanelTitle={
+                    draggedPanel === 'contextual' ? 'Copilot & Context'
+                      : draggedPanel === 'manufacturing' ? 'Manufacturing Decisions'
+                        : 'Cost Estimation & TCO'
+                  }
+                  dragPos={dragMousePos}
+                />
+              )}
+
+              {/* 1. Left Dock Slot */}
+              {!isWorkspaceMaximized && leftSlotPanel && (
+                getPanelByKey(leftSlotPanel, 'left')
+              )}
+
+              {/* Left Vertical Divider */}
+              {!isWorkspaceMaximized && leftSlotPanel && (
+                <div
+                  className="workspace-col-divider left-divider"
+                  onMouseDown={handleMouseDownLeftResizer}
+                  title="Drag to resize left panel column"
+                />
+              )}
+
+              {/* 2. Center Column: Workspace (Top) + Bottom Dock Slot */}
+              <div className={`workspace-center-column ${isWorkspaceMaximized ? 'workspace-maximized-full' : ''}`}>
+                {!pipVisible ? (
+                  <>
+                    <section className="workspace-main-area">
+                      <section className="viewport">
+                        <div className="cad viewport-status" aria-live="polite">
+                          {ready
+                            ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                            : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
+                        </div>
+
+                        {!analysis ? (
+                          <div className="viewport-hint">
+                            <Icon>view_in_ar</Icon>
+                            <p>No component analysis yet.<br />Run synthesis from the upload page or load a sample part.</p>
+                            <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                              <button className="secondary" onClick={() => setPage('upload')}>
+                                <Icon>upload</Icon> Upload Component
+                              </button>
+                              <button className="primary" onClick={loadSampleGear}>
+                                <Icon>model_training</Icon> Load Sample Gear
+                              </button>
+                            </div>
+                          </div>
+                        ) : !ready ? (
+                          <div className="viewport-hint">
+                            <Icon>precision_manufacturing</Icon>
+                            <p>Generating reconstruction…</p>
+                            <ProgressStepper index={stageIndex} />
+                          </div>
+                        ) : (
+                          <MultiViewportGrid
+                            viewMode={viewMode}
+                            setViewMode={setViewMode}
+                            machineryState={machineryState}
+                            activeComponentId={activeComponentId}
+                            setActiveComponentId={setActiveComponentId}
+                            selectedComponentIds={selectedComponentIds}
+                            setSelectedComponentIds={setSelectedComponentIds}
+                            wire={wire}
+                            grid={grid}
+                            stress={stress}
+                            autoRotate={autoRotate}
+                            resetKey={resetKey}
+                            selectedFeatureId={selectedFeatureId}
+                            hoveredFeatureId={hoveredFeatureId}
+                            ready={ready}
+                            onOpenImageManager={() => {
+                              setSelectedContextTool('components');
+                              setActiveLeftTab('components');
+                              handleToggleLeftPanel(true);
+                            }}
+                          />
+                        )}
+
+                        {ready && dims && (
+                          <div className="dims-overlay" aria-label="Component dimensions">
+                            {dimensionList(activeReconstructionAnalysis).map(d => (
+                              <div className="dims-row" key={d.label}>
+                                <span className="dims-label">{d.label}</span>
+                                <span className="dims-value">{d.value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Floating PiP Toggle Button */}
+                        {ready && (
+                          <div className="viewport-pip-toggle-floating">
+                            <button
+                              className="floating-tool-pill"
+                              onClick={() => setPipVisible(true)}
+                              title="Switch to Picture-in-Picture mode (moves 3D viewport into floating window)"
+                            >
+                              <Icon>picture_in_picture_alt</Icon> PiP Viewer
+                            </button>
+                          </div>
+                        )}
+                      </section>
+                    </section>
+
+                    {/* Horizontal Resize Divider between Viewport and Bottom Dock Slot */}
+                    {!isWorkspaceMaximized && bottomSlotPanel && !isCostPanelCollapsed && (
+                      <div
+                        className="center-col-divider"
+                        onMouseDown={handleMouseDownCostResizer}
+                        title="Drag to resize bottom docked panel"
+                      />
+                    )}
+
+                    {/* Bottom Dock Slot */}
+                    {!isWorkspaceMaximized && bottomSlotPanel && (
+                      <div className="workspace-bottom-dock-slot">
+                        {getPanelByKey(bottomSlotPanel, 'bottom')}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  /* PiP MODE: 3D Workspace is popped out into floating PipWorkbench */
+                  /* Bottom Panel takes over the full center area! */
+                  bottomSlotPanel ? (
+                    <div className="workspace-center-pip-takeover">
+                      {getPanelByKey(bottomSlotPanel, 'bottom')}
+                    </div>
+                  ) : (
+                    <div className="workspace-center-pip-placeholder">
+                      <Icon className="pip-placeholder-icon">picture_in_picture_alt</Icon>
+                      <h3>3D VIEWPORT ACTIVE IN PICTURE-IN-PICTURE</h3>
+                      <p>The interactive 3D model is active in the floating PiP window. Other panels occupy this space.</p>
+                      <button className="primary" onClick={() => setPipVisible(false)}>
+                        <Icon>open_in_full</Icon> Restore Viewport to Workspace
+                      </button>
+                    </div>
+                  )
                 )}
-              </button>
-            ))}
-          </nav>
-
-          {!sidebarCollapsed && ready && (
-            <div className="sidebar-footer-card">
-              <div className="sidebar-footer-row">
-                <span className="sidebar-footer-dot"></span>
-                <strong className="sidebar-footer-name">{label}</strong>
-              </div>
-              <span className="sidebar-footer-meta">{conf != null ? `${conf}% CONFIDENCE` : 'AI RECONSTRUCTED'}</span>
-            </div>
-          )}
-        </aside>
-
-        {/* Center Main Workspace Area */}
-        <section className="workspace-main-area">
-          {activeTab === 'workbench' && (
-            <section className="viewport">
-              <div className="cad viewport-status" aria-live="polite">
-                {ready
-                  ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
-                  : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
               </div>
 
-              {!analysis ? (
-                <div className="viewport-hint">
-                  <Icon>view_in_ar</Icon>
-                  <p>No component analysis yet.<br />Run synthesis from the upload page or load a sample part.</p>
-                  <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
-                    <button className="secondary" onClick={() => setPage('upload')}>
-                      <Icon>upload</Icon> Upload Component
-                    </button>
-                    <button className="primary" onClick={loadSampleGear}>
-                      <Icon>model_training</Icon> Load Sample Gear
-                    </button>
-                  </div>
-                </div>
-              ) : !ready ? (
-                <div className="viewport-hint">
-                  <Icon>precision_manufacturing</Icon>
-                  <p>Generating reconstruction…</p>
-                  <ProgressStepper index={stageIndex} />
-                </div>
-              ) : (
-                <MultiViewportGrid
-                  viewMode={viewMode}
-                  setViewMode={setViewMode}
+              {/* Right Vertical Divider */}
+              {!isWorkspaceMaximized && rightSlotPanel && (
+                <div
+                  className="workspace-col-divider right-divider"
+                  onMouseDown={handleMouseDownRightResizer}
+                  title="Drag to resize right panel column"
+                />
+              )}
+
+              {/* 3. Right Dock Slot */}
+              {!isWorkspaceMaximized && rightSlotPanel && (
+                getPanelByKey(rightSlotPanel, 'right')
+              )}
+
+              {/* 4. Undocked Floating Panels */}
+              {isLeftPanelOpen && contextualPanelSlot === 'floating' && (
+                <FloatingPanelWrapper
+                  title="COPILOT & CONTEXT"
+                  icon="smart_toy"
+                  pos={leftPanelFloatingPos}
+                  onMove={(pos) => updateLayout({ leftPanelFloatingPos: pos })}
+                  size={{ width: leftPanelWidth, height: 600 }}
+                  onResize={(sz) => updateLayout({ leftPanelWidth: sz.width })}
+                  isMaximized={isLeftPanelMaximized}
+                  onToggleMaximize={() => updateLayout((s) => ({ isLeftPanelMaximized: !s.isLeftPanelMaximized }))}
+                  onDockToSlot={(s) => handleMoveSlot('contextual', s)}
+                  onDock={() => handleMoveSlot('contextual', 'left')}
+                  onClose={() => updateLayout({ isLeftPanelOpen: false })}
+                >
+                  {renderContextualPanel('floating', true)}
+                </FloatingPanelWrapper>
+              )}
+
+              {isMfgActive && mfgPanelSlot === 'floating' && (
+                <FloatingPanelWrapper
+                  title="MANUFACTURING DECISION SPECIFICATION"
+                  icon="factory"
+                  pos={mfgPanelFloatingPos}
+                  onMove={(pos) => updateLayout({ mfgPanelFloatingPos: pos })}
+                  size={{ width: mfgPanelWidth, height: 620 }}
+                  onResize={(sz) => updateLayout({ mfgPanelWidth: sz.width })}
+                  isMaximized={isMfgPanelMaximized}
+                  onToggleMaximize={() => updateLayout((s) => ({ isMfgPanelMaximized: !s.isMfgPanelMaximized }))}
+                  onDockToSlot={(s) => handleMoveSlot('manufacturing', s)}
+                  onDock={() => handleMoveSlot('manufacturing', 'right')}
+                  onClose={() => updateLayout({ isManufacturingActive: false })}
+                >
+                  {renderManufacturingPanel('floating', true)}
+                </FloatingPanelWrapper>
+              )}
+
+              {isMfgActive && costPanelSlot === 'floating' && (
+                <FloatingPanelWrapper
+                  title="LIVE MANUFACTURING COST ESTIMATION"
+                  icon="payments"
+                  pos={costPanelFloatingPos}
+                  onMove={(pos) => updateLayout({ costPanelFloatingPos: pos })}
+                  size={{ width: 720, height: costPanelHeight }}
+                  onResize={(sz) => updateLayout({ costPanelHeight: sz.height })}
+                  isMaximized={isCostPanelMaximized}
+                  onToggleMaximize={() => updateLayout((s) => ({ isCostPanelMaximized: !s.isCostPanelMaximized }))}
+                  onDockToSlot={(s) => handleMoveSlot('cost', s)}
+                  onDock={() => handleMoveSlot('cost', 'bottom')}
+                  onClose={() => updateLayout({ isCostPanelCollapsed: true })}
+                >
+                  {renderCostPanel('floating', true)}
+                </FloatingPanelWrapper>
+              )}
+
+              {/* Movable, Resizable, Dockable PiP 3D Viewer */}
+              {pipVisible && ready && (
+                <PipWorkbench
+                  analysis={activeReconstructionAnalysis}
                   machineryState={machineryState}
-                  activeComponentId={activeComponentId}
-                  setActiveComponentId={setActiveComponentId}
-                  selectedComponentIds={selectedComponentIds}
-                  setSelectedComponentIds={setSelectedComponentIds}
+                  ready={ready}
                   wire={wire}
+                  setWire={setWire}
                   grid={grid}
+                  setGrid={setGrid}
                   stress={stress}
+                  setStress={setStress}
+                  dims={dims}
+                  setDims={setDims}
                   autoRotate={autoRotate}
+                  setAutoRotate={setAutoRotate}
                   resetKey={resetKey}
+                  setResetKey={setResetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
-                  ready={ready}
-                  onOpenImageManager={() => setCopilotTab('components')}
+                  label={label}
+                  conf={conf}
+                  onDockToMain={() => setPipVisible(false)}
+                  onClose={() => setPipVisible(false)}
+                  dimensionList={dimensionList}
+                  ReconstructedViewport={ReconstructedViewport}
                 />
               )}
-
-              {ready && dims && (
-                <div className="dims-overlay" aria-label="Component dimensions">
-                  {dimensionList(activeReconstructionAnalysis).map(d => (
-                    <div className="dims-row" key={d.label}><span className="dims-label">{d.label}</span><span className="dims-value">{d.value}</span></div>
-                  ))}
-                </div>
-              )}
-
-              {/* Detected Features Overlay */}
-              {ready && showFeatures && (
-                <div className="viewport-overlay-panels">
-                  <FeatureIdentificationPanel
-                    features={features}
-                    selectedFeatureId={selectedFeatureId}
-                    hoveredFeatureId={hoveredFeatureId}
-                    onSelectFeature={setSelectedFeatureId}
-                    onHoverFeature={setHoveredFeatureId}
-                  />
-                </div>
-              )}
-
-              {/* Right Vertical Viewport Controls Panel */}
-              <div className="viewport-controls-vertical" aria-label="Viewport Controls">
-                <button
-                  aria-label="Toggle automatic rotation"
-                  title="Auto-rotate"
-                  className={autoRotate ? 'active' : ''}
-                  disabled={!ready}
-                  onClick={() => setAutoRotate(value => !value)}
-                >
-                  <Icon>360</Icon>
-                </button>
-                <button
-                  aria-label="Toggle wireframe"
-                  title="Wireframe"
-                  className={wire ? 'active' : ''}
-                  disabled={!ready}
-                  onClick={() => setWire(value => !value)}
-                >
-                  <Icon>grid_on</Icon>
-                </button>
-                <button
-                  aria-label="Toggle FEA stress heatmap"
-                  title="Stress Heatmap"
-                  className={stress ? 'active' : ''}
-                  disabled={!ready}
-                  onClick={() => setStress(s => !s)}
-                >
-                  <Icon>local_fire_department</Icon>
-                </button>
-                <button
-                  aria-label="Toggle grid"
-                  title="Grid"
-                  className={grid ? 'active' : ''}
-                  disabled={!ready}
-                  onClick={() => setGrid(value => !value)}
-                >
-                  <Icon>grid_3x3</Icon>
-                </button>
-                <button
-                  aria-label="Toggle dimensions"
-                  title="Dimensions"
-                  className={dims ? 'active' : ''}
-                  disabled={!ready}
-                  onClick={() => setDims(d => !d)}
-                >
-                  <Icon>straighten</Icon>
-                </button>
-                <button
-                  aria-label="Toggle detected features"
-                  title="Detected Features"
-                  className={showFeatures ? 'active' : ''}
-                  disabled={!ready}
-                  onClick={() => setShowFeatures(v => !v)}
-                >
-                  <Icon>center_focus_strong</Icon>
-                </button>
-                <button
-                  aria-label="Reset viewport"
-                  title="Reset View"
-                  disabled={!ready}
-                  onClick={() => setResetKey(value => value + 1)}
-                >
-                  <Icon>restart_alt</Icon>
-                </button>
-              </div>
-
-              <div className="viewport-empty">
-                <Icon>view_in_ar</Icon>
-                <span>{ready ? 'DRAG TO ROTATE · SCROLL TO ZOOM · RIGHT-DRAG TO PAN' : 'RE:FORGE RENDERER'}</span>
-              </div>
-            </section>
-          )}
-
-          {activeTab === 'mfg' && (
-            <div className="work-window mfg-work-window">
-              <div className="work-window-topbar">
-                <div className="work-window-title-group">
-                  <Icon>receipt_long</Icon>
-                  <h2>MANUFACTURING INTELLIGENCE WORK WINDOW</h2>
-                  <span className="work-window-badge">Cost &amp; Process Synthesis</span>
-                </div>
-              </div>
-              <div className="work-window-body">
-                <ManufacturingPanel
-                  analysis={analysis}
-                  onData={setMfgData}
-                  quantity={quantity}
-                  setQuantity={setQuantity}
-                />
-              </div>
             </div>
-          )}
+          );
+        })()}
+      </main>
 
-          {activeTab === 'materials' && (
-            <div className="work-window materials-work-window">
-              <div className="work-window-topbar">
-                <div className="work-window-title-group">
-                  <Icon>layers</Icon>
-                  <h2>MATERIAL OPTIONS WORK WINDOW</h2>
-                  <span className="work-window-badge">Alloy Trade-off Matrix</span>
+      {/* Engineering Report Editor Dialog Modal */}
+      {isReportDialogOpen && (
+        <ReportEditorDialog
+          isOpen={isReportDialogOpen}
+          onClose={() => setIsReportDialogOpen(false)}
+          analysis={activeReconstructionAnalysis}
+          decisions={decisions}
+          quantity={quantity}
+          mfgData={mfgData}
+          images={images}
+        />
+      )}
+
+      {/* Report Incomplete Guidance Notice Modal */}
+      {reportNoticeOpen && (
+        <div
+          className="report-dialog-backdrop"
+          onClick={() => setReportNoticeOpen(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="report-notice-modal" onClick={e => e.stopPropagation()}>
+            <div className="report-notice-header">
+              <Icon className="notice-icon">info</Icon>
+              <h3>MANUFACTURING SPECIFICATION REQUIRED</h3>
+            </div>
+            <p className="report-notice-message">
+              Complete the manufacturing specification first to access the Engineering Report.
+            </p>
+            <p className="report-notice-sub">
+              Engineering specification documents require confirmed alloy metallurgy, tolerance standards, and heat treatment parameters.
+            </p>
+            <div className="report-notice-actions">
+              <button
+                className="primary"
+                onClick={() => {
+                  setReportNoticeOpen(false);
+                  setIsManufacturingActive(true);
+                }}
+              >
+                <Icon>precision_manufacturing</Icon> Open Manufacture Workspace
+              </button>
+              <button
+                className="secondary"
+                onClick={() => setReportNoticeOpen(false)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* What-If Simulator Modal when toggled */}
+      {activeTab === 'whatif' && (
+        <div
+          className="report-dialog-backdrop"
+          onClick={() => setActiveTab('workbench')}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Engineering What-If Simulator"
+        >
+          <div className="report-editor-card" onClick={e => e.stopPropagation()}>
+            <div className="report-editor-topbar">
+              <div className="report-editor-title-group">
+                <Icon>tune</Icon>
+                <div>
+                  <h2 className="editor-modal-title">ENGINEERING WHAT-IF SIMULATOR</h2>
+                  <span className="editor-modal-sub">Parametric Stress, Mass &amp; Envelope Verification</span>
                 </div>
               </div>
-              <div className="work-window-body">
-                <MaterialComparisonPanel
-                  analysis={analysis}
-                  manufacturingIntelligence={mfgData}
-                />
-              </div>
+              <button className="secondary" onClick={() => setActiveTab('workbench')}>
+                <Icon>close</Icon>
+              </button>
             </div>
-          )}
-
-          {activeTab === 'report' && (
-            <div className="work-window report-work-window">
-              <EngineeringReportModal
+            <div className="report-editor-body">
+              <WhatIfSimulator
                 analysis={analysis}
                 scenarioParams={scenarioParams}
+                setScenarioParams={setScenarioParams}
                 isGeometryValid={isGeometryValid}
                 geometryError={geometryError}
                 warnings={warnings}
                 impactStatus={impactStatus}
                 materialVolumeImpact={materialVolumeImpact}
-                images={images}
-                isWorkWindow={true}
-                onClose={() => setActiveTab('workbench')}
+                ready={ready}
+                onOpenReport={() => {
+                  setActiveTab('workbench');
+                  setIsReportDialogOpen(true);
+                }}
               />
             </div>
-          )}
+          </div>
+        </div>
+      )}
 
-          {activeTab === 'drawing' && (
-            <div className="work-window drawing-work-window">
-              <EngineeringDrawingModal
-                analysis={analysis}
-                manufacturingIntelligence={mfgData}
-                isWorkWindow={true}
-                onClose={() => setActiveTab('workbench')}
-              />
-            </div>
-          )}
-
-          {activeTab === 'whatif' && (
-            <div className="work-window whatif-work-window">
-              <div className="work-window-topbar">
-                <div className="work-window-title-group">
-                  <Icon>tune</Icon>
-                  <h2>ENGINEERING WHAT-IF SIMULATOR WORK WINDOW</h2>
-                  <span className="work-window-badge">Parametric Stress &amp; Volume Estimation</span>
-                </div>
-              </div>
-              <div className="work-window-body">
-                <WhatIfSimulator
-                  analysis={analysis}
-                  scenarioParams={scenarioParams}
-                  setScenarioParams={setScenarioParams}
-                  isGeometryValid={isGeometryValid}
-                  geometryError={geometryError}
-                  warnings={warnings}
-                  impactStatus={impactStatus}
-                  materialVolumeImpact={materialVolumeImpact}
-                  ready={ready}
-                  onOpenReport={() => setActiveTab('report')}
-                />
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'export' && (
-            <ExportWorkWindow analysis={activeReconstructionAnalysis} mfgData={mfgData} />
-          )}
-
-          {/* Picture-in-Picture Floating 3D Workbench when in other work windows */}
-          {activeTab !== 'workbench' && pipVisible && (
-            <PipWorkbench
-              analysis={activeReconstructionAnalysis}
-              machineryState={machineryState}
-              ready={ready}
-              wire={wire}
-              setWire={setWire}
-              grid={grid}
-              setGrid={setGrid}
-              stress={stress}
-              setStress={setStress}
-              dims={dims}
-              setDims={setDims}
-              autoRotate={autoRotate}
-              setAutoRotate={setAutoRotate}
-              resetKey={resetKey}
-              setResetKey={setResetKey}
-              selectedFeatureId={selectedFeatureId}
-              hoveredFeatureId={hoveredFeatureId}
-              label={label}
-              conf={conf}
-              onDockToMain={() => setActiveTab('workbench')}
-              onClose={() => setPipVisible(false)}
-              dimensionList={dimensionList}
-              ReconstructedViewport={ReconstructedViewport}
-            />
-          )}
-
-          {/* Floating reopen button if PiP was closed */}
-          {activeTab !== 'workbench' && !pipVisible && (
-            <button
-              className="reopen-pip-btn"
-              onClick={() => setPipVisible(true)}
-              title="Open Floating 3D Viewport"
-              aria-label="Open Floating 3D Viewport"
-            >
-              <Icon>view_in_ar</Icon> 3D VIEW
-            </button>
-          )}
-        </section>
-
-        {/* Right Collapsible Copilot Engineering Chat */}
-        <aside className={`chat ${open ? '' : 'closed'}`}>
-          <button className="door" aria-expanded={open} onClick={() => setOpen(o => !o)}>
-            {open ? 'CLOSE COPILOT' : 'OPEN COPILOT'} <Icon>{open ? 'keyboard_double_arrow_right' : 'keyboard_double_arrow_left'}</Icon>
-          </button>
-          {open && (
-            <>
-              <header className="chat-head">
+      {/* Export Window Modal when toggled */}
+      {activeTab === 'export' && (
+        <div
+          className="report-dialog-backdrop"
+          onClick={() => setActiveTab('workbench')}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Engineering Exporters"
+        >
+          <div className="report-editor-card" onClick={e => e.stopPropagation()}>
+            <div className="report-editor-topbar">
+              <div className="report-editor-title-group">
+                <Icon>download</Icon>
                 <div>
-                  <h2><Icon>smart_toy</Icon> ENGINEERING COPILOT</h2>
-                  <div className="chat-conn-status">
-                    {ready ? (
-                      <><span className="chat-status-dot active"></span> Connected to current model</>
-                    ) : (
-                      <><span className="chat-status-dot"></span> Awaiting component analysis</>
-                    )}
-                  </div>
-                  <span>
-                    {ready
-                      ? `CONTEXT: ${activeScope.toUpperCase()} · ${label}${conf != null ? ` · ${conf}% CONF` : ''}`
-                      : 'AWAITING COMPONENT ANALYSIS'}
-                  </span>
+                  <h2 className="editor-modal-title">EXPORT ENGINEERING WORK WINDOW</h2>
+                  <span className="editor-modal-sub">CAD Formats, 3D Meshes, FEA Simulation Decks, CNC G-Code</span>
                 </div>
-              </header>
-
-              {/* Copilot Navigation Tab Switcher: Chat vs Manage Components */}
-              <div className="copilot-tab-bar">
-                <button
-                  className={`copilot-tab-btn ${copilotTab === 'chat' ? 'active' : ''}`}
-                  onClick={() => setCopilotTab('chat')}
-                >
-                  <Icon>chat</Icon> Chat
-                </button>
-                <button
-                  className={`copilot-tab-btn ${copilotTab === 'components' ? 'active' : ''}`}
-                  onClick={() => setCopilotTab('components')}
-                >
-                  <Icon>category</Icon> Manage Components
-                  {isDirty && <span className="dirty-indicator" title="New visual context staged" />}
-                </button>
               </div>
+              <button className="secondary" onClick={() => setActiveTab('workbench')}>
+                <Icon>close</Icon>
+              </button>
+            </div>
+            <div className="report-editor-body">
+              <ExportWorkWindow analysis={activeReconstructionAnalysis} mfgData={mfgData} />
+            </div>
+          </div>
+        </div>
+      )}
 
-              {/* TAB 1: Manage Components */}
-              {copilotTab === 'components' && (
-                <ManageComponentsTab
-                  machineryState={machineryState}
-                  setMachineryState={setMachineryState}
-                  onUpdateMachineryState={setMachineryState}
-                  onRegenerate={handleRegenerate}
-                  isRegenerating={isRegenerating}
-                  isDirty={isDirty}
-                  activeComponentId={activeComponentId}
-                  onSelectComponent={setActiveComponentId}
-                />
-              )}
-
-              {/* TAB 2: Chat */}
-              {copilotTab === 'chat' && (
-                <>
-                  {/* Regenerate Alert Notice Banner when new visual context is staged */}
-                  {isDirty && (
-                    <div className="regenerate-banner" style={{ margin: '8px 12px 4px 12px' }}>
-                      <div className="regenerate-banner-text">
-                        <Icon>auto_mode</Icon>
-                        <span>New visual context staged.</span>
-                      </div>
-                      <button
-                        className="regenerate-btn"
-                        onClick={handleRegenerate}
-                        disabled={isRegenerating}
-                      >
-                        {isRegenerating ? 'REGENERATING…' : 'REGENERATE'}
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Active Part Context Card */}
-                  {ready && engineeringContext && (
-                    <div className="chat-part-card">
-                      <div className="chat-part-title">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <strong>{engineeringContext.component.name}</strong>
-                          <span className={`role-tag ${activeScope === 'assembly' ? 'context' : activeScope === 'pair' ? 'companion' : 'primary'}`} style={{ fontSize: '8px', padding: '1px 5px' }}>
-                            {activeScope.toUpperCase()}
-                          </span>
-                        </div>
-                        <span className="chat-qty-tag">QTY {quantity}</span>
-                      </div>
-                      <div className="chat-part-meta">
-                        <span>{engineeringContext.material.label}</span>
-                        <span>{mfgData?.process?.recommended?.label || 'CNC Machining'}</span>
-                        {mfgData?.cost && <span>₹{formatINR(mfgData.cost.low)}–₹{formatINR(mfgData.cost.high)}/u</span>}
-                      </div>
-                      {activeScope === 'pair' && engineeringContext.machineryContext?.relations?.gearRatio && (
-                        <div className="chat-part-meta" style={{ marginTop: '4px', color: 'var(--primary)' }}>
-                          <span>Gear Ratio: {engineeringContext.machineryContext.relations.gearRatio}:1</span>
-                          <span>Center Dist: {engineeringContext.machineryContext.relations.centerDistanceMm} mm</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Suggested Question Chips */}
-                  {ready && suggestions.length > 0 && (
-                    <div className="chat-suggestions" aria-label="Suggested questions">
-                      <span className="chat-suggestions-label">SUGGESTED QUESTIONS</span>
-                      <div className="chat-chips-wrap">
-                        {suggestions.map((q, idx) => (
-                          <button
-                            key={idx}
-                            className="chat-chip-btn"
-                            disabled={thinking}
-                            onClick={() => send(null, q)}
-                          >
-                            {q}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="thread" ref={thread}>
-                    {!messages.length && (
-                      <div className="ai-message">
-                        <Icon>smart_toy</Icon>
-                        <p>I'm your engineering copilot, grounded in this component's geometry, dimensions, material, and manufacturing intelligence. Ask about process trade-offs, material alternatives, or hypothetical modifications.</p>
-                      </div>
-                    )}
-                    {messages.map((m, i) => (
-                      <div className={`${m.role}-message${m.error ? ' chat-error' : ''}`} key={i}><p>{m.text}</p></div>
-                    ))}
-                    {thinking && (
-                      <div className="ai-message thinking">
-                        <Icon>smart_toy</Icon>
-                        <p>Copilot is reasoning from component geometry & manufacturing data…</p>
-                      </div>
-                    )}
-                  </div>
-                  <form className="composer" onSubmit={send}>
-                    <label className="sr-only" htmlFor="question">Ask Engineering Copilot</label>
-                    <span>&gt;_</span>
-                    <input id="question" value={text} onChange={e => setText(e.target.value)} placeholder="Ask about this component or assembly…" />
-                    <button aria-label="Send message" disabled={!text.trim() || thinking}><Icon>send</Icon></button>
-                  </form>
-                </>
-              )}
-            </>
-          )}
-        </aside>
-        {!open && <button className="reopen" onClick={() => setOpen(true)} aria-label="Open Engineering Copilot" title="Open Engineering Copilot"><Icon>smart_toy</Icon></button>}
-      </main>
-
-      {/* Modals */}
+      {/* 2D Engineering Drawing Modal */}
       {ready && showDrawing && (
         <EngineeringDrawingModal
           analysis={analysis}
@@ -2789,6 +3213,7 @@ function Workbench() {
         />
       )}
 
+      {/* Classical Report Modal if triggered directly */}
       {showReport && (
         <EngineeringReportModal
           analysis={analysis}
@@ -2804,6 +3229,62 @@ function Workbench() {
       )}
     </>
   );
+}
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error('Reforge Interface Error caught by ErrorBoundary:', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          padding: '40px',
+          color: '#DE822B',
+          background: '#0c0805',
+          fontFamily: "'JetBrains Mono', monospace",
+          minHeight: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '16px',
+        }}>
+          <h2 style={{ letterSpacing: '0.08em', margin: 0 }}>SYSTEM NOTICE // REFORGE WORKSPACE RECOVERY</h2>
+          <p style={{ color: '#ff8585', maxWidth: '640px', textAlign: 'center', lineHeight: '1.6', fontSize: '13px' }}>
+            {this.state.error?.message || 'A render interruption occurred.'}
+          </p>
+          <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+            <button
+              className="primary"
+              style={{ padding: '8px 16px', cursor: 'pointer' }}
+              onClick={() => {
+                resetWorkspaceLayout();
+                window.location.reload();
+              }}
+            >
+              Reset Layout & Reload
+            </button>
+            <button
+              className="secondary"
+              style={{ padding: '8px 16px', cursor: 'pointer' }}
+              onClick={() => this.setState({ hasError: false, error: null })}
+            >
+              Retry Render
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function App() {
@@ -2912,10 +3393,16 @@ function App() {
   ]);
 
   return (
-    <AppContext.Provider value={value}>
-      {page === 'home' ? <Landing /> : page === 'upload' ? <Upload /> : <Workbench />}
-    </AppContext.Provider>
+    <ErrorBoundary>
+      <AppContext.Provider value={value}>
+        {page === 'home' ? <Landing /> : page === 'upload' ? <Upload /> : <Workbench />}
+      </AppContext.Provider>
+    </ErrorBoundary>
   );
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
