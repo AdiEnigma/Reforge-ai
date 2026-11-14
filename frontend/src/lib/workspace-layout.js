@@ -6,9 +6,13 @@
 
 export const STORAGE_KEY = 'reforge_workspace_layout_v3';
 
+const IS_BROWSER = typeof window !== 'undefined';
+const SCREEN_WIDTH = IS_BROWSER ? window.innerWidth : 1440;
+const DEFAULT_MFG_WIDTH = Math.round(SCREEN_WIDTH * 0.40); // 2/5th (~40%) of available screen width
+
 export const LAYOUT_BOUNDS = {
   leftPanelWidth: { min: 280, max: 700, default: 380 },
-  mfgPanelWidth: { min: 320, max: 800, default: 440 },
+  mfgPanelWidth: { min: 320, max: 1400, default: DEFAULT_MFG_WIDTH },
   costPanelHeight: { min: 160, max: 550, default: 260 },
   pipWidth: { min: 280, max: 900, default: 420 },
   pipHeight: { min: 200, max: 700, default: 300 },
@@ -17,7 +21,7 @@ export const LAYOUT_BOUNDS = {
 export const DEFAULT_WORKSPACE_LAYOUT = Object.freeze({
   // Dimensions
   leftPanelWidth: 380,
-  mfgPanelWidth: 440,
+  mfgPanelWidth: DEFAULT_MFG_WIDTH,
   costPanelHeight: 260,
 
   // Visibility / Active states
@@ -232,6 +236,9 @@ export function loadWorkspaceLayout(storage) {
     const parsed = JSON.parse(raw);
     const layout = sanitizeLayout(parsed);
     layout.isManufacturingActive = false; // Manufacture is never enabled by default
+    if (parsed && (parsed.mfgPanelWidth === 440 || !parsed.mfgPanelWidth)) {
+      layout.mfgPanelWidth = DEFAULT_MFG_WIDTH;
+    }
     return layout;
   } catch (err) {
     console.warn('Failed to parse workspace layout from storage, using defaults:', err);

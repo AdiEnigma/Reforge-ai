@@ -87,6 +87,7 @@ export function PipWorkbench({
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(false);
   const [pipMode, setPipMode] = useState(initialPipMode === 'assembly' ? 'assembly' : 'single');
   const [pipActiveCompId, setPipActiveCompId] = useState(machineryState?.primaryGear?.id || 'comp-primary-gear');
 
@@ -124,23 +125,42 @@ export function PipWorkbench({
     e.stopPropagation();
   };
 
+  const handleToggleMinimize = () => {
+    setIsMinimized((prev) => {
+      const next = !prev;
+      if (!next) {
+        // When restoring to full size, ensure it doesn't get pushed off the bottom or right of the screen
+        setPos((currPos) => ({
+          x: Math.max(6, Math.min(window.innerWidth - size.width - 6, currPos.x)),
+          y: Math.max(44, Math.min(window.innerHeight - size.height - 6, currPos.y)),
+        }));
+      }
+      return next;
+    });
+    if (isMaximized) setIsMaximized(false);
+  };
+
   const handleMouseMove = useCallback(
     (e) => {
       if (isDragging) {
         const dx = e.clientX - dragStartRef.current.mouseX;
         const dy = e.clientY - dragStartRef.current.mouseY;
-        const newX = Math.max(10, Math.min(window.innerWidth - size.width - 20, dragStartRef.current.posX + dx));
-        const newY = Math.max(10, Math.min(window.innerHeight - size.height - 20, dragStartRef.current.posY + dy));
+        const currentW = isMinimized ? 260 : size.width;
+        const currentH = isMinimized ? 34 : size.height;
+        const newX = Math.max(6, Math.min(window.innerWidth - currentW - 6, dragStartRef.current.posX + dx));
+        const newY = Math.max(44, Math.min(window.innerHeight - currentH - 6, dragStartRef.current.posY + dy));
         setPos({ x: newX, y: newY });
       } else if (isResizing) {
         const dx = e.clientX - resizeStartRef.current.mouseX;
         const dy = e.clientY - resizeStartRef.current.mouseY;
-        const newW = Math.max(300, Math.min(800, resizeStartRef.current.width + dx));
-        const newH = Math.max(220, Math.min(600, resizeStartRef.current.height + dy));
+        const maxW = Math.max(800, window.innerWidth - 40);
+        const maxH = Math.max(600, window.innerHeight - 60);
+        const newW = Math.max(260, Math.min(maxW, resizeStartRef.current.width + dx));
+        const newH = Math.max(180, Math.min(maxH, resizeStartRef.current.height + dy));
         setSize({ width: newW, height: newH });
       }
     },
-    [isDragging, isResizing, size.width, size.height]
+    [isDragging, isResizing, size.width, size.height, isMinimized]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -162,7 +182,7 @@ export function PipWorkbench({
   return (
     <div
       ref={pipRef}
-      className={`pip-workbench ${isDragging ? 'dragging' : ''} ${isResizing ? 'resizing' : ''} ${isMaximized ? 'maximized' : ''}`}
+      className={`pip-workbench ${isDragging ? 'dragging' : ''} ${isResizing ? 'resizing' : ''} ${isMaximized ? 'maximized' : ''} ${isMinimized ? 'minimized' : ''}`}
       style={
         isMaximized
           ? {
@@ -173,19 +193,31 @@ export function PipWorkbench({
             height: 'calc(100vh - 48px)',
             zIndex: 95,
           }
-          : {
-            left: `${pos.x}px`,
-            top: `${pos.y}px`,
-            width: `${size.width}px`,
-            height: `${size.height}px`,
-          }
+          : isMinimized
+            ? {
+              left: `${pos.x}px`,
+              top: `${pos.y}px`,
+              width: '260px',
+              height: '34px',
+            }
+            : {
+              left: `${pos.x}px`,
+              top: `${pos.y}px`,
+              width: `${size.width}px`,
+              height: `${size.height}px`,
+            }
       }
       aria-label="Picture-in-Picture 3D Workbench"
     >
-      {/* Draggable Header */}
-      <div className="pip-header" onMouseDown={handleMouseDownHeader}>
+      {/* Draggable Title Bar: Window Actions ALWAYS pinned and accessible */}
+      <div
+        className="pip-header"
+        onMouseDown={handleMouseDownHeader}
+        onDoubleClick={handleToggleMinimize}
+        title={isMinimized ? "Double-click to expand PiP window" : "Drag to move or double-click to minimize"}
+      >
         <div className="pip-title-wrap">
-          <span className="pip-drag-handle" title="Drag to move workbench">
+          <span className="pip-drag-handle" title="Drag to reposition PiP window">
             <Icon>drag_indicator</Icon>
           </span>
           <span className="pip-live-dot active"></span>
@@ -197,7 +229,49 @@ export function PipWorkbench({
           </strong>
         </div>
 
-        <div className="pip-header-controls">
+        {/* Window Action Buttons: Always visible & right-pinned at all resize widths */}
+        <div className="pip-actions">
+          <button
+            className={`pip-action-btn ${isMinimized ? 'active' : ''}`}
+            onClick={handleToggleMinimize}
+            title={isMinimized ? "Restore PiP Window" : "Minimize PiP Window"}
+            aria-label={isMinimized ? "Restore PiP" : "Minimize PiP"}
+          >
+            <Icon>{isMinimized ? 'keyboard_arrow_down' : 'remove'}</Icon>
+          </button>
+          <button
+            className="pip-action-btn"
+            onClick={() => {
+              if (isMinimized) setIsMinimized(false);
+              setIsMaximized((m) => !m);
+            }}
+            title={isMaximized ? "Restore PiP Size" : "Maximize PiP Window"}
+            aria-label={isMaximized ? "Restore PiP" : "Maximize PiP"}
+          >
+            <Icon>{isMaximized ? 'fullscreen_exit' : 'fullscreen'}</Icon>
+          </button>
+          <button
+            className="pip-action-btn"
+            onClick={onDockToMain}
+            title="Restore Viewport to Center Workspace"
+            aria-label="Restore Viewport to Workspace"
+          >
+            <Icon>open_in_full</Icon>
+          </button>
+          <button
+            className="pip-action-btn pip-close-btn"
+            onClick={onClose}
+            title="Close PiP Viewport"
+            aria-label="Close Picture-in-Picture Viewport"
+          >
+            <Icon>close</Icon>
+          </button>
+        </div>
+      </div>
+
+      {/* Sub-Toolbar: Component Selection & Single/Assembly Toggle (Hidden when minimized) */}
+      {!isMinimized && (
+        <div className="pip-sub-toolbar">
           {/* Gear Selection Dropdown */}
           <div className="pip-gear-select-wrap">
             <select
@@ -246,140 +320,66 @@ export function PipWorkbench({
               Assembly
             </button>
           </div>
-
-          <div className="pip-actions">
-            <button
-              className="pip-action-btn"
-              onClick={() => setIsMaximized(m => !m)}
-              title={isMaximized ? "Restore PiP Size" : "Maximize PiP Window"}
-              aria-label={isMaximized ? "Restore PiP" : "Maximize PiP"}
-            >
-              <Icon>{isMaximized ? 'fullscreen_exit' : 'fullscreen'}</Icon>
-            </button>
-            <button
-              className="pip-action-btn"
-              onClick={onDockToMain}
-              title="Expand to Full Workbench"
-              aria-label="Expand to Full Workbench"
-            >
-              <Icon>open_in_full</Icon>
-            </button>
-            <button
-              className="pip-action-btn pip-close-btn"
-              onClick={onClose}
-              title="Close PiP Viewport"
-              aria-label="Close Picture-in-Picture Viewport"
-            >
-              <Icon>close</Icon>
-            </button>
-          </div>
         </div>
-      </div>
+      )}
 
-      {/* Interactive 3D Canvas Area */}
-      <div className="pip-canvas-area">
-        {ready ? (
-          <div className={`model ${wire ? 'wire' : ''}`}>
-            {pipMode === 'assembly' ? (
-              <PipAssemblyCanvas
-                machineryState={machineryState}
-                wire={wire}
-                grid={grid}
-                stress={stress}
-                autoRotate={autoRotate}
-                resetKey={resetKey}
-              />
-            ) : (
-              <ReconstructedViewport
-                analysis={currentAnalysis}
-                wire={wire}
-                grid={grid}
-                stress={stress}
-                autoRotate={autoRotate}
-                resetKey={resetKey}
-                selectedFeatureId={selectedFeatureId}
-                hoveredFeatureId={hoveredFeatureId}
-              />
-            )}
-          </div>
-        ) : (
-          <div className="pip-loading">
-            <Icon>view_in_ar</Icon>
-            <span>Awaiting 3D Synthesis…</span>
-          </div>
-        )}
+      {/* Interactive 3D Canvas Area (Hidden when minimized) */}
+      {!isMinimized && (
+        <div className="pip-canvas-area">
+          {ready ? (
+            <div className={`model ${wire ? 'wire' : ''}`}>
+              {pipMode === 'assembly' ? (
+                <PipAssemblyCanvas
+                  machineryState={machineryState}
+                  wire={wire}
+                  grid={grid}
+                  stress={stress}
+                  autoRotate={autoRotate}
+                  resetKey={resetKey}
+                />
+              ) : (
+                <ReconstructedViewport
+                  analysis={currentAnalysis}
+                  wire={wire}
+                  grid={grid}
+                  stress={stress}
+                  autoRotate={autoRotate}
+                  resetKey={resetKey}
+                  selectedFeatureId={selectedFeatureId}
+                  hoveredFeatureId={hoveredFeatureId}
+                />
+              )}
+            </div>
+          ) : (
+            <div className="pip-loading">
+              <Icon>view_in_ar</Icon>
+              <span>Awaiting 3D Synthesis…</span>
+            </div>
+          )}
 
-        {/* Dimension Overlay inside PiP */}
-        {ready && dims && currentAnalysis && pipMode === 'single' && (
-          <div className="pip-dims-overlay">
-            <div className="pip-dim-gear-title">{activeComp?.name || 'Primary Gear'}</div>
-            {dimensionList(currentAnalysis).map((d) => (
-              <div key={d.label} className="pip-dim-row">
-                <span>{d.label}</span>
-                <strong>{d.value}</strong>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Floating Mini Viewport Controls */}
-        <div className="pip-controls-toolbar">
-          <button
-            className={autoRotate ? 'active' : ''}
-            onClick={() => setAutoRotate((r) => !r)}
-            title="Auto-Rotate"
-            aria-label="Toggle Auto-Rotate"
-          >
-            <Icon>360</Icon>
-          </button>
-          <button
-            className={wire ? 'active' : ''}
-            onClick={() => setWire((w) => !w)}
-            title="Wireframe"
-            aria-label="Toggle Wireframe"
-          >
-            <Icon>grid_on</Icon>
-          </button>
-          <button
-            className={stress ? 'active' : ''}
-            onClick={() => setStress((s) => !s)}
-            title="FEA Stress Heatmap"
-            aria-label="Toggle Stress Heatmap"
-          >
-            <Icon>local_fire_department</Icon>
-          </button>
-          <button
-            className={grid ? 'active' : ''}
-            onClick={() => setGrid((g) => !g)}
-            title="Grid"
-            aria-label="Toggle Grid"
-          >
-            <Icon>grid_3x3</Icon>
-          </button>
-          <button
-            className={dims ? 'active' : ''}
-            onClick={() => setDims((d) => !d)}
-            title="Dimensions"
-            aria-label="Toggle Dimensions"
-          >
-            <Icon>straighten</Icon>
-          </button>
-          <button
-            onClick={() => setResetKey((k) => k + 1)}
-            title="Reset Viewport"
-            aria-label="Reset Viewport"
-          >
-            <Icon>restart_alt</Icon>
-          </button>
+          {/* Dimension Overlay inside PiP */}
+          {ready && dims && currentAnalysis && pipMode === 'single' && (
+            <div className="pip-dims-overlay">
+              <div className="pip-dim-gear-title">{activeComp?.name || 'Primary Gear'}</div>
+              {dimensionList(currentAnalysis).map((d) => (
+                <div key={d.label} className="pip-dim-row">
+                  <span>{d.label}</span>
+                  <strong>{d.value}</strong>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
-      {/* Resize Grip Handle */}
-      <div className="pip-resizer" onMouseDown={handleMouseDownResizer} title="Drag to resize viewport">
-        <svg width="10" height="10" viewBox="0 0 10 10" className="pip-resizer-icon">
-          <path d="M9 1 L1 9 M9 5 L5 9 M9 9 L9 9" stroke="var(--primary)" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-      </div>
+      {/* Resize Grip Handle (Hidden when minimized or maximized) */}
+      {!isMinimized && !isMaximized && (
+        <div className="pip-resizer" onMouseDown={handleMouseDownResizer} title="Drag to resize viewport">
+          <svg width="10" height="10" viewBox="0 0 10 10" className="pip-resizer-icon">
+            <path d="M9 1 L1 9 M9 5 L5 9 M9 9 L9 9" stroke="var(--primary)" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </div>
+      )}
     </div>
   );
 }

@@ -41,6 +41,11 @@ import { LeftContextualPanel } from './components/LeftContextualPanel.jsx';
 import { ManufacturingDecisionPanel } from './components/ManufacturingDecisionPanel.jsx';
 import { CostEstimationPanel } from './components/CostEstimationPanel.jsx';
 import { ReportEditorDialog } from './components/ReportEditorDialog.jsx';
+import {
+  evaluateTechnicalDependencies,
+  computeConfiguratorStatuses,
+  loadManufacturingState,
+} from './lib/manufacturing-config.js';
 
 const AppContext = createContext();
 const useApp = () => useContext(AppContext);
@@ -2243,6 +2248,15 @@ function Workbench() {
     };
   });
 
+  // Manufacturing Confirmed Categories State (synced across panels)
+  const [confirmedCategories, setConfirmedCategories] = useState(() => {
+    const loaded = loadManufacturingState();
+    return loaded.confirmedCategories || {};
+  });
+
+  // Active Draft selection being previewed in configurator before confirmation
+  const [activeDraftSelection, setActiveDraftSelection] = useState(null);
+
   const updateDecision = useCallback((key, value) => {
     setDecisions(prev => {
       const next = { ...prev, [key]: value };
@@ -2378,8 +2392,11 @@ function Workbench() {
   }, [decisions]);
 
   const isManufacturingComplete = useMemo(() => {
-    return Boolean(decisions.material && decisions.tolerances && decisions.heatTreatment && decisions.process);
-  }, [decisions]);
+    const { confirmedCategories } = loadManufacturingState();
+    const deps = evaluateTechnicalDependencies(decisions, quantity, confirmedCategories);
+    const { isAllConfirmed } = computeConfiguratorStatuses(decisions, confirmedCategories, null, deps);
+    return Boolean(isAllConfirmed);
+  }, [decisions, quantity]);
 
   useEffect(() => {
     if (thread.current) {
@@ -2694,7 +2711,16 @@ function Workbench() {
           isManufacturingActive={isMfgActive}
           onToggleManufacture={() => {
             if (!ready) return;
-            updateLayout((s) => ({ isManufacturingActive: !s.isManufacturingActive }));
+            updateLayout((s) => {
+              const willBeActive = !s.isManufacturingActive;
+              const target2FifthWidth = typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.40) : 576;
+              return {
+                isManufacturingActive: willBeActive,
+                mfgPanelWidth: willBeActive && (!s.mfgPanelWidth || s.mfgPanelWidth === 440 || s.mfgPanelWidth < target2FifthWidth * 0.85)
+                  ? target2FifthWidth
+                  : s.mfgPanelWidth,
+              };
+            });
           }}
           onOpenReport={() => setIsReportDialogOpen(true)}
           isManufacturingComplete={isManufacturingComplete}
@@ -2771,6 +2797,10 @@ function Workbench() {
               dependencies={decisionDependencies}
               quantity={quantity}
               onChangeQuantity={setQuantity}
+              onOpenReport={() => setIsReportDialogOpen(true)}
+              confirmedCategories={confirmedCategories}
+              onConfirmedCategoriesChange={setConfirmedCategories}
+              onDraftSelect={setActiveDraftSelection}
             />
           );
 
@@ -2793,6 +2823,8 @@ function Workbench() {
               mfgData={mfgData}
               quantity={quantity}
               decisions={decisions}
+              confirmedCategories={confirmedCategories}
+              activeDraftSelection={activeDraftSelection}
               dependenciesCount={decisionDependencies.length}
               analysis={activeReconstructionAnalysis}
             />
