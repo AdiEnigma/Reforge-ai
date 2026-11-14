@@ -247,14 +247,24 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
 }
 
 function Nav() {
-  const { setPage } = useApp();
+  const { setPage, theme, toggleTheme } = useApp();
   return (
     <nav>
       <button className="brand" onClick={() => setPage('home')}>ReForge AI</button>
       <div className="navlinks">
         <button onClick={() => setPage('workbench')}>Workbench</button>
       </div>
-      <button className="navcta" onClick={() => setPage('upload')}>Upload Component</button>
+      <div className="nav-actions">
+        <button
+          className="theme-toggle-btn icon-only"
+          onClick={toggleTheme}
+          title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Theme`}
+          aria-label={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Theme`}
+        >
+          <Icon>{theme === 'light' ? 'dark_mode' : 'light_mode'}</Icon>
+        </button>
+        <button className="navcta" onClick={() => setPage('upload')}>Upload Component</button>
+      </div>
     </nav>
   );
 }
@@ -2013,6 +2023,8 @@ function Workbench() {
     isRegenerating,
     isDirty,
     setLastAnalyzedSnapshot,
+    theme,
+    toggleTheme,
   } = useApp();
 
   const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
@@ -2725,6 +2737,8 @@ function Workbench() {
           onOpenReport={() => setIsReportDialogOpen(true)}
           isManufacturingComplete={isManufacturingComplete}
           onShowReportNotice={() => setReportNoticeOpen(true)}
+          theme={theme}
+          onToggleTheme={toggleTheme}
           ready={ready}
           label={label}
         />
@@ -3239,6 +3253,39 @@ class ErrorBoundary extends React.Component {
 }
 
 function App() {
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem('reforge_theme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch (e) {}
+    return 'dark';
+  });
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => {
+      const next = prev === 'light' ? 'dark' : 'light';
+      try {
+        localStorage.setItem('reforge_theme', next);
+      } catch (e) {}
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    if (theme === 'light') {
+      document.documentElement.classList.add('theme-light');
+      document.documentElement.classList.remove('theme-dark');
+      document.body?.classList?.add('theme-light');
+      document.body?.classList?.remove('theme-dark');
+    } else {
+      document.documentElement.classList.add('theme-dark');
+      document.documentElement.classList.remove('theme-light');
+      document.body?.classList?.add('theme-dark');
+      document.body?.classList?.remove('theme-light');
+    }
+  }, [theme]);
+
   const [page, setPage] = useState('home');
   const [images, setImages] = useState([]);
   const [analysis, setAnalysis] = useState(null);
@@ -3337,10 +3384,13 @@ function App() {
     handleRegenerate,
     isRegenerating,
     isDirty,
+    theme,
+    toggleTheme,
   }), [
     page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
     machineryState, lastAnalyzedSnapshot, viewMode, activeComponentId,
-    selectedComponentIds, handleRegenerate, isRegenerating, isDirty
+    selectedComponentIds, handleRegenerate, isRegenerating, isDirty,
+    theme, toggleTheme
   ]);
 
   return (

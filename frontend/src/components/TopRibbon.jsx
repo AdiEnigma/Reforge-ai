@@ -48,6 +48,9 @@ export function TopRibbon({
   onOpenReport,
   isManufacturingComplete,
   onShowReportNotice,
+  // Theme Management
+  theme = 'dark',
+  onToggleTheme,
   // Navigation
   onNavigateHome,
   onNavigateUpload,
@@ -398,6 +401,17 @@ export function TopRibbon({
             >
               <Icon>restart_alt</Icon>
               {expanded && <span className="ribbon-label">Reset Layout</span>}
+            </button>
+          )}
+
+          {onToggleTheme && (
+            <button
+              className={`ribbon-item mini theme-toggle-btn icon-only ${theme === 'light' ? 'light-active' : ''}`}
+              onClick={onToggleTheme}
+              title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Theme`}
+              aria-label={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Theme`}
+            >
+              <Icon>{theme === 'light' ? 'dark_mode' : 'light_mode'}</Icon>
             </button>
           )}
 
