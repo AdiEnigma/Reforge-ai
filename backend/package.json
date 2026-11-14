@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "server": "node --env-file-if-exists=.env.local index.js",
-    "start": "node --env-file-if-exists=.env.local index.js"
+    "start": "node --env-file-if-exists=.env.local index.js",
+    "test": "node --test *.test.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
