@@ -2731,20 +2731,16 @@ function Workbench() {
 
         {/* Panel Render Helpers with slot-based docking */}
         {(() => {
-          const renderContextualPanel = (slot, isFloating = false) => (
+          const renderContextualPanel = (slot) => (
             <LeftContextualPanel
               isOpen={isLeftPanelOpen}
               onToggleOpen={handleToggleLeftPanel}
               width={leftPanelWidth}
               onResize={handleResizeLeftPanel}
-              isDocked={!isFloating}
-              onToggleDock={() => handleMoveSlot('contextual', isFloating ? 'left' : 'floating')}
+              isDocked={true}
               isMaximized={isLeftPanelMaximized}
               onToggleMaximize={() => updateLayout((s) => ({ isLeftPanelMaximized: !s.isLeftPanelMaximized }))}
-              isFloatingContent={isFloating}
               currentSlot={slot}
-              onMoveSlot={(s) => handleMoveSlot('contextual', s)}
-              onStartDrag={(e) => handleStartDragPanel('contextual', e)}
               activeTab={activeLeftTab}
               onSelectTab={setActiveLeftTab}
               selectedContextTool={selectedContextTool}
@@ -2777,20 +2773,16 @@ function Workbench() {
             />
           );
 
-          const renderManufacturingPanel = (slot, isFloating = false) => (
+          const renderManufacturingPanel = (slot) => (
             <ManufacturingDecisionPanel
               isOpen={isMfgActive}
               onClose={() => updateLayout({ isManufacturingActive: false })}
               width={mfgPanelWidth}
               onResize={handleResizeMfgPanel}
-              isDocked={!isFloating}
-              onToggleDock={() => handleMoveSlot('manufacturing', isFloating ? 'right' : 'floating')}
+              isDocked={true}
               isMaximized={isMfgPanelMaximized}
               onToggleMaximize={() => updateLayout((s) => ({ isMfgPanelMaximized: !s.isMfgPanelMaximized }))}
-              isFloatingContent={isFloating}
               currentSlot={slot}
-              onMoveSlot={(s) => handleMoveSlot('manufacturing', s)}
-              onStartDrag={(e) => handleStartDragPanel('manufacturing', e)}
               analysis={activeReconstructionAnalysis}
               decisions={decisions}
               onChangeDecision={updateDecision}
@@ -2804,22 +2796,18 @@ function Workbench() {
             />
           );
 
-          const renderCostPanel = (slot, isFloating = false) => (
+          const renderCostPanel = (slot) => (
             <CostEstimationPanel
               isOpen={isMfgActive}
               onClose={() => updateLayout({ isManufacturingActive: false })}
               height={costPanelHeight}
               onResize={handleResizeCostPanel}
-              isDocked={!isFloating}
-              onToggleDock={() => handleMoveSlot('cost', isFloating ? 'bottom' : 'floating')}
+              isDocked={true}
               isMaximized={isCostPanelMaximized}
               onToggleMaximize={() => updateLayout((s) => ({ isCostPanelMaximized: !s.isCostPanelMaximized }))}
               isCollapsed={isCostPanelCollapsed}
               onToggleCollapse={() => updateLayout((s) => ({ isCostPanelCollapsed: !s.isCostPanelCollapsed }))}
-              isFloatingContent={isFloating}
               currentSlot={slot}
-              onMoveSlot={(s) => handleMoveSlot('cost', s)}
-              onStartDrag={(e) => handleStartDragPanel('cost', e)}
               mfgData={mfgData}
               quantity={quantity}
               decisions={decisions}
@@ -2830,30 +2818,15 @@ function Workbench() {
             />
           );
 
-          // Resolve active panels in docked slots
-          const isContextualDocked = isLeftPanelOpen && contextualPanelSlot !== 'floating';
-          const isMfgDocked = isMfgActive && mfgPanelSlot !== 'floating';
-          const isCostDocked = isMfgActive && costPanelSlot !== 'floating';
-
-          const leftSlotPanel = isContextualDocked && contextualPanelSlot === 'left' ? 'contextual'
-            : isMfgDocked && mfgPanelSlot === 'left' ? 'manufacturing'
-              : isCostDocked && costPanelSlot === 'left' ? 'cost'
-                : null;
-
-          const rightSlotPanel = isMfgDocked && mfgPanelSlot === 'right' ? 'manufacturing'
-            : isContextualDocked && contextualPanelSlot === 'right' ? 'contextual'
-              : isCostDocked && costPanelSlot === 'right' ? 'cost'
-                : null;
-
-          const bottomSlotPanel = isCostDocked && costPanelSlot === 'bottom' ? 'cost'
-            : isContextualDocked && contextualPanelSlot === 'bottom' ? 'contextual'
-              : isMfgDocked && mfgPanelSlot === 'bottom' ? 'manufacturing'
-                : null;
+          // Strictly docked slots: Left is Copilot, Right is Manufacturing, Bottom is Cost
+          const leftSlotPanel = isLeftPanelOpen ? 'contextual' : null;
+          const rightSlotPanel = isMfgActive ? 'manufacturing' : null;
+          const bottomSlotPanel = isMfgActive ? 'cost' : null;
 
           const getPanelByKey = (key, slot) => {
-            if (key === 'contextual') return renderContextualPanel(slot, false);
-            if (key === 'manufacturing') return renderManufacturingPanel(slot, false);
-            if (key === 'cost') return renderCostPanel(slot, false);
+            if (key === 'contextual') return renderContextualPanel(slot);
+            if (key === 'manufacturing') return renderManufacturingPanel(slot);
+            if (key === 'cost') return renderCostPanel(slot);
             return null;
           };
 
@@ -3023,61 +2996,6 @@ function Workbench() {
                 getPanelByKey(rightSlotPanel, 'right')
               )}
 
-              {/* 4. Undocked Floating Panels */}
-              {isLeftPanelOpen && contextualPanelSlot === 'floating' && (
-                <FloatingPanelWrapper
-                  title="COPILOT & CONTEXT"
-                  icon="smart_toy"
-                  pos={leftPanelFloatingPos}
-                  onMove={(pos) => updateLayout({ leftPanelFloatingPos: pos })}
-                  size={{ width: leftPanelWidth, height: 600 }}
-                  onResize={(sz) => updateLayout({ leftPanelWidth: sz.width })}
-                  isMaximized={isLeftPanelMaximized}
-                  onToggleMaximize={() => updateLayout((s) => ({ isLeftPanelMaximized: !s.isLeftPanelMaximized }))}
-                  onDockToSlot={(s) => handleMoveSlot('contextual', s)}
-                  onDock={() => handleMoveSlot('contextual', 'left')}
-                  onClose={() => updateLayout({ isLeftPanelOpen: false })}
-                >
-                  {renderContextualPanel('floating', true)}
-                </FloatingPanelWrapper>
-              )}
-
-              {isMfgActive && mfgPanelSlot === 'floating' && (
-                <FloatingPanelWrapper
-                  title="MANUFACTURING DECISION SPECIFICATION"
-                  icon="factory"
-                  pos={mfgPanelFloatingPos}
-                  onMove={(pos) => updateLayout({ mfgPanelFloatingPos: pos })}
-                  size={{ width: mfgPanelWidth, height: 620 }}
-                  onResize={(sz) => updateLayout({ mfgPanelWidth: sz.width })}
-                  isMaximized={isMfgPanelMaximized}
-                  onToggleMaximize={() => updateLayout((s) => ({ isMfgPanelMaximized: !s.isMfgPanelMaximized }))}
-                  onDockToSlot={(s) => handleMoveSlot('manufacturing', s)}
-                  onDock={() => handleMoveSlot('manufacturing', 'right')}
-                  onClose={() => updateLayout({ isManufacturingActive: false })}
-                >
-                  {renderManufacturingPanel('floating', true)}
-                </FloatingPanelWrapper>
-              )}
-
-              {isMfgActive && costPanelSlot === 'floating' && (
-                <FloatingPanelWrapper
-                  title="LIVE MANUFACTURING COST ESTIMATION"
-                  icon="payments"
-                  pos={costPanelFloatingPos}
-                  onMove={(pos) => updateLayout({ costPanelFloatingPos: pos })}
-                  size={{ width: 720, height: costPanelHeight }}
-                  onResize={(sz) => updateLayout({ costPanelHeight: sz.height })}
-                  isMaximized={isCostPanelMaximized}
-                  onToggleMaximize={() => updateLayout((s) => ({ isCostPanelMaximized: !s.isCostPanelMaximized }))}
-                  onDockToSlot={(s) => handleMoveSlot('cost', s)}
-                  onDock={() => handleMoveSlot('cost', 'bottom')}
-                  onClose={() => updateLayout({ isCostPanelCollapsed: true })}
-                >
-                  {renderCostPanel('floating', true)}
-                </FloatingPanelWrapper>
-              )}
-
               {/* Movable, Resizable, Dockable PiP 3D Viewer */}
               {pipVisible && ready && (
                 <PipWorkbench
@@ -3118,6 +3036,7 @@ function Workbench() {
           onClose={() => setIsReportDialogOpen(false)}
           analysis={activeReconstructionAnalysis}
           decisions={decisions}
+          confirmedCategories={confirmedCategories}
           quantity={quantity}
           mfgData={mfgData}
           images={images}

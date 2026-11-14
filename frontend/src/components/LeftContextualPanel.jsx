@@ -156,19 +156,8 @@ export function LeftContextualPanel({
           )}
         </div>
 
-        {/* Panel Header Actions: Dock/Undock, Maximize/Restore, Collapse */}
+        {/* Panel Header Actions: Maximize/Restore, Collapse */}
         <div className="panel-header-actions">
-          {onToggleDock && (
-            <button
-              className="panel-action-btn"
-              onClick={onToggleDock}
-              title={isDocked ? "Undock to floating window" : "Dock into workspace layout"}
-              aria-label={isDocked ? "Undock Left Panel" : "Dock Left Panel"}
-            >
-              <Icon>{isDocked ? 'open_in_new' : 'dock_to_left'}</Icon>
-            </button>
-          )}
-
           {onToggleMaximize && (
             <button
               className="panel-action-btn"

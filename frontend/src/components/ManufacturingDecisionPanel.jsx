@@ -169,7 +169,11 @@ export function ManufacturingDecisionPanel({
 
   // Live estimated cost and lead time
   const liveSummary = useMemo(() => {
-    return calculateLiveManufacturingSummary(confirmedDecisions, confirmedCategories, propQuantity);
+    return calculateLiveManufacturingSummary(confirmedDecisions, confirmedCategories, propQuantity) || {
+      unitCostInr: 21606,
+      totalBatchCostInr: 21606 * (propQuantity || 1),
+      leadDays: 22,
+    };
   }, [confirmedDecisions, confirmedCategories, propQuantity]);
 
   // Persist state safely to storage on changes
@@ -398,17 +402,6 @@ export function ManufacturingDecisionPanel({
         </div>
 
         <div className="panel-header-actions">
-          {onToggleDock && (
-            <button
-              className="panel-action-btn"
-              onClick={onToggleDock}
-              title={isDocked ? "Undock to floating window" : "Dock into right rail"}
-              aria-label={isDocked ? "Undock Manufacturing Panel" : "Dock Manufacturing Panel"}
-            >
-              <Icon>{isDocked ? 'open_in_new' : 'dock_to_right'}</Icon>
-            </button>
-          )}
-
           {onToggleMaximize && (
             <button
               className="panel-action-btn"

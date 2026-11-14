@@ -79,18 +79,18 @@ export function CostEstimationPanel({
   }, [decisions, confirmedCategories, quantity, activeDraftSelection, analysis]);
 
   const {
-    unitCostInr,
-    confirmedUnitCost,
-    confirmedBatchCost,
-    fullSpecUnitCost,
-    hasAnyConfirmed,
-    confirmedCount,
-    isAllConfirmed,
-    itemizedBreakdown,
-    costImpactExplanation,
-    lifecycleTco,
-    breakdown,
-  } = syncedCost;
+    unitCostInr = 0,
+    confirmedUnitCost = 0,
+    confirmedBatchCost = 0,
+    fullSpecUnitCost = 0,
+    hasAnyConfirmed = false,
+    confirmedCount = 0,
+    isAllConfirmed = false,
+    itemizedBreakdown = [],
+    costImpactExplanation = null,
+    lifecycleTco = { expectedLifeYears: 4, replacementFrequency: '0.25', downtimeRisk: 'Minimal', tenYearTcoINR: 0 },
+    breakdown = {},
+  } = syncedCost || {};
 
   if (!isOpen) return null;
 
@@ -211,17 +211,6 @@ ASSUMPTIONS & ENGINEERING CONTEXT:
               aria-label={isCollapsed ? "Expand Cost Panel" : "Collapse Cost Panel"}
             >
               <Icon>{isCollapsed ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}</Icon>
-            </button>
-          )}
-
-          {onToggleDock && (
-            <button
-              className="cost-panel-action-btn"
-              onClick={onToggleDock}
-              title={isDocked ? "Undock to floating window" : "Dock under workspace"}
-              aria-label={isDocked ? "Undock Cost Panel" : "Dock Cost Panel"}
-            >
-              <Icon>{isDocked ? 'open_in_new' : 'dock_to_bottom'}</Icon>
             </button>
           )}
 
