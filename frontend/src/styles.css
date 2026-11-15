@@ -5951,20 +5951,46 @@ body,
 .panel-action-btn {
   width: 26px;
   height: 26px;
-  background: transparent;
+  min-width: 26px;
+  min-height: 26px;
+  background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: 3px;
   color: var(--muted);
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   overflow: hidden;
   flex-shrink: 0;
+  transition: all 0.15s ease;
 }
 
 .panel-action-btn:hover {
+  color: var(--text);
+  border-color: var(--primary);
+  background: rgba(222, 130, 43, 0.1);
+}
+
+.panel-action-btn .icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.panel-action-btn.panel-drag-handle {
+  cursor: grab;
+}
+
+.panel-action-btn.panel-drag-handle:active {
+  cursor: grabbing;
+  background: rgba(222, 130, 43, 0.2);
   color: var(--primary);
-  border-color: var(--primary)
+}
+
+.panel-action-btn.close-btn:hover {
+  color: #ff8585;
+  border-color: rgba(255, 133, 133, 0.5);
+  background: rgba(255, 133, 133, 0.12);
 }
 
 .contextual-subtabs-row {
@@ -7454,12 +7480,16 @@ body,
 }
 
 .cost-download-btn {
+  height: 26px;
   min-height: 26px;
-  padding: 3px 8px;
-  font: 700 9.5px 'JetBrains Mono', -apple-system, BlinkMacSystemFont, sans-serif;
+  max-height: 26px;
+  padding: 0 8px;
+  font: 700 9.5px/24px 'JetBrains Mono', -apple-system, BlinkMacSystemFont, sans-serif;
   gap: 4px;
   white-space: nowrap;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
 }
 
 .cost-panel-close {
@@ -7542,15 +7572,26 @@ body,
 .cost-panel-body.cost-layout-vertical {
   display: flex;
   flex-direction: column;
+  gap: 14px;
+}
+
+.cost-panel-body.cost-layout-vertical .cost-col-headline-compact,
+.cost-panel-body.cost-layout-vertical .cost-col-breakdown,
+.cost-panel-body.cost-layout-vertical .cost-col-lifecycle {
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  width: 100% !important;
 }
 
 .cost-panel-body.cost-layout-horizontal {
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  gap: 14px;
+  gap: 16px;
   overflow-x: auto;
   overflow-y: auto;
+  flex-wrap: nowrap;
 }
 
 /* ─── Column Sizing & Non-Collapsing Layout ──────────────────────────────── */
@@ -7564,7 +7605,7 @@ body,
 }
 
 .cost-col-breakdown {
-  flex: 1 0 460px;
+  flex: 1 1 520px;
   min-width: 440px;
   display: flex;
   flex-direction: column;
@@ -7572,9 +7613,9 @@ body,
 }
 
 .cost-col-lifecycle {
-  flex: 0 0 260px;
-  min-width: 240px;
-  max-width: 290px;
+  flex: 0 0 270px;
+  min-width: 250px;
+  max-width: 300px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -8645,8 +8686,13 @@ body,
 }
 
 @keyframes rotateGear {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .iso-gear-ring {
@@ -9617,6 +9663,111 @@ body,
 .center-col-divider:active {
   background: var(--primary);
   box-shadow: 0 0 10px rgba(201, 248, 141, 0.4);
+}
+
+/* ─── 3D Workspace Window Header & Controls ─────────────────────────────────── */
+.workspace-viewport-window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.workspace-window-header {
+  height: 40px;
+  min-height: 40px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  flex-shrink: 0;
+  gap: 8px;
+  z-index: 10;
+}
+
+.workspace-window-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.workspace-hdr-icon {
+  font-size: 17px;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.workspace-window-title {
+  font: 700 11px 'JetBrains Mono', monospace;
+  color: var(--primary);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.workspace-window-badge {
+  font: 600 9.5px 'JetBrains Mono', monospace;
+  color: var(--lime);
+  background: rgba(201, 248, 141, 0.08);
+  border: 1px solid rgba(201, 248, 141, 0.2);
+  border-radius: 2px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-closed-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.workspace-closed-placeholder .icon {
+  font-size: 36px;
+  color: var(--primary);
+  opacity: 0.6;
+}
+
+.workspace-closed-placeholder h4 {
+  margin: 0;
+  font: 700 13px 'JetBrains Mono';
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+
+.workspace-closed-placeholder p {
+  margin: 0;
+  font: 400 11px 'JetBrains Mono';
+  max-width: 320px;
+  line-height: 1.5;
+}
+
+.workspace-maximized-panel-wrap {
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  position: relative;
+  z-index: 20;
 }
 
 /* PiP takeover of workspace center column */
@@ -11024,4 +11175,47 @@ body.theme-light {
 
 [data-theme="light"] *::-webkit-scrollbar-thumb:hover {
   background: #b5a999;
+}
+
+[data-theme="light"] .workspace-window-header {
+  background: #f6f3ee;
+  border-bottom-color: #dfd7cc;
+}
+
+[data-theme="light"] .workspace-window-badge {
+  background: rgba(46, 125, 50, 0.08);
+  border-color: rgba(46, 125, 50, 0.25);
+  color: #1e6b24;
+}
+
+[data-theme="light"] .workspace-closed-placeholder {
+  background: #fdfcf9;
+  color: #71685e;
+}
+
+[data-theme="light"] .workspace-closed-placeholder h4 {
+  color: #1f1b16;
+}
+
+[data-theme="light"] .panel-action-btn {
+  background: #fdfcf9;
+  border-color: #dfd7cc;
+  color: #71685e;
+}
+
+[data-theme="light"] .panel-action-btn:hover {
+  background: #f3ede2;
+  border-color: #c76a16;
+  color: #1f1b16;
+}
+
+[data-theme="light"] .panel-action-btn.panel-drag-handle:active {
+  background: rgba(199, 106, 22, 0.15);
+  color: #c76a16;
+}
+
+[data-theme="light"] .panel-action-btn.close-btn:hover {
+  color: #c5221f;
+  border-color: rgba(197, 34, 31, 0.4);
+  background: rgba(197, 34, 31, 0.1);
 }

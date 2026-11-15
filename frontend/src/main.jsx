@@ -2094,16 +2094,18 @@ function Workbench() {
     costPanelFloatingPos,
     ribbonExpanded,
     contextualPanelSlot = 'left',
+    workspaceSlot = 'center',
     mfgPanelSlot = 'right',
     costPanelSlot = 'bottom',
+    isWorkspaceClosed = false,
   } = layoutState;
 
   const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(analysis);
   const isMfgActive = Boolean(ready && isManufacturingActive);
 
   // Drag and Drop Panel Repositioning State
-  const [draggedPanel, setDraggedPanel] = useState(null); // 'contextual' | 'manufacturing' | 'cost' | null
-  const [hoveredDockZone, setHoveredDockZone] = useState(null); // 'left' | 'right' | 'bottom' | 'floating' | null
+  const [draggedPanel, setDraggedPanel] = useState(null); // 'contextual' | 'manufacturing' | 'cost' | 'workspace' | null
+  const [hoveredDockZone, setHoveredDockZone] = useState(null); // 'left' | 'right' | 'bottom' | 'center' | null
   const [dragMousePos, setDragMousePos] = useState(null);
   const [isResizingDivider, setIsResizingDivider] = useState(false);
 
@@ -2143,7 +2145,7 @@ function Workbench() {
       } else if (y > h * 0.65) {
         setHoveredDockZone('bottom');
       } else {
-        setHoveredDockZone('floating');
+        setHoveredDockZone('center');
       }
     };
 
@@ -2153,7 +2155,7 @@ function Workbench() {
       const w = window.innerWidth;
       const h = window.innerHeight;
 
-      let finalZone = 'floating';
+      let finalZone = 'center';
       if (x < w * 0.28) {
         finalZone = 'left';
       } else if (x > w * 0.72) {
@@ -2163,15 +2165,7 @@ function Workbench() {
       }
 
       updateLayout((s) => {
-        const next = repositionPanelSlot(s, panelKey, finalZone);
-        if (finalZone === 'floating') {
-          const posKey = panelKey === 'contextual' ? 'leftPanelFloatingPos' : panelKey === 'manufacturing' ? 'mfgPanelFloatingPos' : 'costPanelFloatingPos';
-          next[posKey] = {
-            x: Math.max(10, Math.min(w - 420, x - 180)),
-            y: Math.max(50, Math.min(h - 220, y - 30)),
-          };
-        }
-        return next;
+        return repositionPanelSlot(s, panelKey, finalZone);
       });
 
       setDraggedPanel(null);
@@ -2749,11 +2743,13 @@ function Workbench() {
             <LeftContextualPanel
               isOpen={isLeftPanelOpen}
               onToggleOpen={handleToggleLeftPanel}
-              width={leftPanelWidth}
-              onResize={handleResizeLeftPanel}
+              width={slot === 'left' ? leftPanelWidth : slot === 'right' ? mfgPanelWidth : undefined}
+              onResize={slot === 'left' ? handleResizeLeftPanel : handleResizeMfgPanel}
               isDocked={true}
               isMaximized={isLeftPanelMaximized}
               onToggleMaximize={() => updateLayout((s) => ({ isLeftPanelMaximized: !s.isLeftPanelMaximized }))}
+              onStartDrag={(e) => handleStartDragPanel('contextual', e)}
+              onClose={() => handleToggleLeftPanel(false)}
               currentSlot={slot}
               activeTab={activeLeftTab}
               onSelectTab={setActiveLeftTab}
@@ -2791,11 +2787,12 @@ function Workbench() {
             <ManufacturingDecisionPanel
               isOpen={isMfgActive}
               onClose={() => updateLayout({ isManufacturingActive: false })}
-              width={mfgPanelWidth}
-              onResize={handleResizeMfgPanel}
+              width={slot === 'right' ? mfgPanelWidth : slot === 'left' ? leftPanelWidth : undefined}
+              onResize={slot === 'right' ? handleResizeMfgPanel : handleResizeLeftPanel}
               isDocked={true}
               isMaximized={isMfgPanelMaximized}
               onToggleMaximize={() => updateLayout((s) => ({ isMfgPanelMaximized: !s.isMfgPanelMaximized }))}
+              onStartDrag={(e) => handleStartDragPanel('manufacturing', e)}
               currentSlot={slot}
               analysis={activeReconstructionAnalysis}
               decisions={decisions}
@@ -2813,12 +2810,13 @@ function Workbench() {
           const renderCostPanel = (slot) => (
             <CostEstimationPanel
               isOpen={isMfgActive}
-              onClose={() => updateLayout({ isManufacturingActive: false })}
-              height={costPanelHeight}
+              onClose={() => updateLayout({ isCostPanelCollapsed: true })}
+              height={slot === 'bottom' ? costPanelHeight : undefined}
               onResize={handleResizeCostPanel}
               isDocked={true}
               isMaximized={isCostPanelMaximized}
               onToggleMaximize={() => updateLayout((s) => ({ isCostPanelMaximized: !s.isCostPanelMaximized }))}
+              onStartDrag={(e) => handleStartDragPanel('cost', e)}
               isCollapsed={isCostPanelCollapsed}
               onToggleCollapse={() => updateLayout((s) => ({ isCostPanelCollapsed: !s.isCostPanelCollapsed }))}
               currentSlot={slot}
@@ -2832,17 +2830,208 @@ function Workbench() {
             />
           );
 
-          // Strictly docked slots: Left is Copilot, Right is Manufacturing, Bottom is Cost
-          const leftSlotPanel = isLeftPanelOpen ? 'contextual' : null;
-          const rightSlotPanel = isMfgActive ? 'manufacturing' : null;
-          const bottomSlotPanel = isMfgActive ? 'cost' : null;
+          const renderWorkspacePanel = (slot) => (
+            <div className={`workspace-viewport-window ${isWorkspaceMaximized ? 'workspace-maximized-full' : ''} in-slot-${slot}`}>
+              <section className="viewport">
+                {/* 3D Workspace Top Header with 3 Window Controls */}
+                <div className="workspace-window-header">
+                  <div className="workspace-window-title-group">
+                    <Icon className="workspace-hdr-icon">view_in_ar</Icon>
+                    <span className="workspace-window-title">3D WORKSPACE</span>
+                    {ready && <span className="workspace-window-badge">● {label}</span>}
+                  </div>
+
+                  <div className="panel-header-actions">
+                    <button
+                      type="button"
+                      className="panel-action-btn panel-drag-handle"
+                      onMouseDown={(e) => handleStartDragPanel('workspace', e)}
+                      title="Dock button: Drag and drop 3D Workspace into any panel area (Left, Center, Right, Bottom)"
+                      aria-label="Dock and drag 3D Workspace"
+                    >
+                      <Icon>drag_indicator</Icon>
+                    </button>
+                    <button
+                      type="button"
+                      className="panel-action-btn"
+                      onClick={() => updateLayout((s) => ({ isWorkspaceMaximized: !s.isWorkspaceMaximized, isWorkspaceClosed: false }))}
+                      title={isWorkspaceMaximized ? "Restore workspace size" : "Maximize workspace"}
+                      aria-label={isWorkspaceMaximized ? "Restore Workspace" : "Maximize Workspace"}
+                    >
+                      <Icon>{isWorkspaceMaximized ? 'fullscreen_exit' : 'fullscreen'}</Icon>
+                    </button>
+                    <button
+                      type="button"
+                      className="panel-action-btn close-btn"
+                      onClick={() => updateLayout({ isWorkspaceClosed: true })}
+                      title="Close 3D Workspace"
+                      aria-label="Close 3D Workspace"
+                    >
+                      <Icon>close</Icon>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="cad viewport-status" aria-live="polite">
+                  {ready
+                    ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                    : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
+                </div>
+
+                {!analysis ? (
+                  <div className="viewport-hint">
+                    <Icon>view_in_ar</Icon>
+                    <p>No component analysis yet.<br />Run synthesis from the upload page or load a sample part.</p>
+                    <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                      <button className="secondary" onClick={() => setPage('upload')}>
+                        <Icon>upload</Icon> Upload Component
+                      </button>
+                      <button className="primary" onClick={loadSampleGear}>
+                        <Icon>model_training</Icon> Load Sample Gear
+                      </button>
+                    </div>
+                  </div>
+                ) : !ready ? (
+                  <div className="viewport-hint">
+                    <Icon>precision_manufacturing</Icon>
+                    <p>Generating reconstruction…</p>
+                    <ProgressStepper index={stageIndex} />
+                  </div>
+                ) : (
+                  <MultiViewportGrid
+                    viewMode={viewMode}
+                    setViewMode={setViewMode}
+                    machineryState={machineryState}
+                    activeComponentId={activeComponentId}
+                    setActiveComponentId={setActiveComponentId}
+                    selectedComponentIds={selectedComponentIds}
+                    setSelectedComponentIds={setSelectedComponentIds}
+                    wire={wire}
+                    grid={grid}
+                    stress={stress}
+                    autoRotate={autoRotate}
+                    resetKey={resetKey}
+                    selectedFeatureId={selectedFeatureId}
+                    hoveredFeatureId={hoveredFeatureId}
+                    ready={ready}
+                    onOpenImageManager={() => {
+                      setSelectedContextTool('components');
+                      setActiveLeftTab('components');
+                      handleToggleLeftPanel(true);
+                    }}
+                  />
+                )}
+
+                {ready && dims && (
+                  <div className="dims-overlay" aria-label="Component dimensions">
+                    {dimensionList(activeReconstructionAnalysis).map(d => (
+                      <div className="dims-row" key={d.label}>
+                        <span className="dims-label">{d.label}</span>
+                        <span className="dims-value">{d.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Floating PiP Toggle Button */}
+                {ready && (
+                  <div className="viewport-pip-toggle-floating">
+                    <button
+                      className="floating-tool-pill"
+                      onClick={() => setPipVisible(true)}
+                      title="Switch to Picture-in-Picture mode (moves 3D viewport into floating window)"
+                    >
+                      <Icon>picture_in_picture_alt</Icon> PiP Viewer
+                    </button>
+                  </div>
+                )}
+              </section>
+            </div>
+          );
+
+          // Dynamic slot resolver
+          const slotMap = {
+            left: null,
+            right: null,
+            bottom: null,
+            center: null,
+          };
+
+          const panelActive = {
+            contextual: Boolean(isLeftPanelOpen),
+            manufacturing: Boolean(isMfgActive),
+            cost: Boolean(isMfgActive && !isCostPanelCollapsed),
+            workspace: Boolean(!isWorkspaceClosed),
+          };
+
+          const panelTargetSlots = {
+            contextual: contextualPanelSlot || 'left',
+            manufacturing: mfgPanelSlot || 'right',
+            cost: costPanelSlot || 'bottom',
+            workspace: workspaceSlot || 'center',
+          };
+
+          Object.entries(panelTargetSlots).forEach(([panelKey, slot]) => {
+            if (panelActive[panelKey] && slot && slot !== 'floating') {
+              slotMap[slot] = panelKey;
+            }
+          });
+
+          // Ensure workspace is in center if center is unassigned and workspace is active
+          if (!slotMap.center && panelActive.workspace) {
+            slotMap.center = 'workspace';
+          }
+
+          const leftSlotPanel = slotMap.left;
+          const rightSlotPanel = slotMap.right;
+          const bottomSlotPanel = slotMap.bottom;
+          const centerSlotPanel = slotMap.center;
 
           const getPanelByKey = (key, slot) => {
             if (key === 'contextual') return renderContextualPanel(slot);
             if (key === 'manufacturing') return renderManufacturingPanel(slot);
             if (key === 'cost') return renderCostPanel(slot);
+            if (key === 'workspace') return renderWorkspacePanel(slot);
             return null;
           };
+
+          // Fullscreen Maximize Handling for any of the 4 panels
+          if (isLeftPanelMaximized && leftSlotPanel) {
+            return (
+              <div className="workspace-middle-row">
+                <div className="workspace-maximized-panel-wrap">
+                  {getPanelByKey(leftSlotPanel, 'left')}
+                </div>
+              </div>
+            );
+          }
+          if (isMfgPanelMaximized && rightSlotPanel) {
+            return (
+              <div className="workspace-middle-row">
+                <div className="workspace-maximized-panel-wrap">
+                  {getPanelByKey(rightSlotPanel, 'right')}
+                </div>
+              </div>
+            );
+          }
+          if (isCostPanelMaximized && bottomSlotPanel) {
+            return (
+              <div className="workspace-middle-row">
+                <div className="workspace-maximized-panel-wrap">
+                  {getPanelByKey(bottomSlotPanel, 'bottom')}
+                </div>
+              </div>
+            );
+          }
+          if (isWorkspaceMaximized) {
+            return (
+              <div className="workspace-middle-row">
+                <div className="workspace-maximized-panel-wrap">
+                  {renderWorkspacePanel('center')}
+                </div>
+              </div>
+            );
+          }
 
           return (
             <div className="workspace-middle-row">
@@ -2856,21 +3045,22 @@ function Workbench() {
                 <DockDropOverlay
                   activeDockZone={hoveredDockZone}
                   draggedPanelTitle={
-                    draggedPanel === 'contextual' ? 'Copilot & Context'
-                      : draggedPanel === 'manufacturing' ? 'Manufacturing Decisions'
-                        : 'Cost Estimation & TCO'
+                    draggedPanel === 'contextual' ? 'Left Contextual Panel'
+                      : draggedPanel === 'manufacturing' ? 'Manufacturing Decision Panel'
+                        : draggedPanel === 'cost' ? 'Cost Estimation Panel'
+                          : '3D Workspace'
                   }
                   dragPos={dragMousePos}
                 />
               )}
 
               {/* 1. Left Dock Slot */}
-              {!isWorkspaceMaximized && leftSlotPanel && (
+              {leftSlotPanel && (
                 getPanelByKey(leftSlotPanel, 'left')
               )}
 
               {/* Left Vertical Divider */}
-              {!isWorkspaceMaximized && leftSlotPanel && (
+              {leftSlotPanel && (
                 <div
                   className="workspace-col-divider left-divider"
                   onMouseDown={handleMouseDownLeftResizer}
@@ -2878,90 +3068,27 @@ function Workbench() {
                 />
               )}
 
-              {/* 2. Center Column: Workspace (Top) + Bottom Dock Slot */}
-              <div className={`workspace-center-column ${isWorkspaceMaximized ? 'workspace-maximized-full' : ''}`}>
+              {/* 2. Center Column: Center Panel (Top) + Bottom Dock Slot */}
+              <div className="workspace-center-column">
                 {!pipVisible ? (
                   <>
                     <section className="workspace-main-area">
-                      <section className="viewport">
-                        <div className="cad viewport-status" aria-live="polite">
-                          {ready
-                            ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
-                            : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
+                      {centerSlotPanel ? (
+                        getPanelByKey(centerSlotPanel, 'center')
+                      ) : (
+                        <div className="workspace-closed-placeholder">
+                          <Icon className="closed-icon">view_in_ar</Icon>
+                          <h3>3D WORKSPACE WINDOW CLOSED</h3>
+                          <p>The interactive 3D model viewport has been closed. You can restore it anytime.</p>
+                          <button className="primary" onClick={() => updateLayout({ isWorkspaceClosed: false })}>
+                            <Icon>visibility</Icon> Restore 3D Workspace
+                          </button>
                         </div>
-
-                        {!analysis ? (
-                          <div className="viewport-hint">
-                            <Icon>view_in_ar</Icon>
-                            <p>No component analysis yet.<br />Run synthesis from the upload page or load a sample part.</p>
-                            <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
-                              <button className="secondary" onClick={() => setPage('upload')}>
-                                <Icon>upload</Icon> Upload Component
-                              </button>
-                              <button className="primary" onClick={loadSampleGear}>
-                                <Icon>model_training</Icon> Load Sample Gear
-                              </button>
-                            </div>
-                          </div>
-                        ) : !ready ? (
-                          <div className="viewport-hint">
-                            <Icon>precision_manufacturing</Icon>
-                            <p>Generating reconstruction…</p>
-                            <ProgressStepper index={stageIndex} />
-                          </div>
-                        ) : (
-                          <MultiViewportGrid
-                            viewMode={viewMode}
-                            setViewMode={setViewMode}
-                            machineryState={machineryState}
-                            activeComponentId={activeComponentId}
-                            setActiveComponentId={setActiveComponentId}
-                            selectedComponentIds={selectedComponentIds}
-                            setSelectedComponentIds={setSelectedComponentIds}
-                            wire={wire}
-                            grid={grid}
-                            stress={stress}
-                            autoRotate={autoRotate}
-                            resetKey={resetKey}
-                            selectedFeatureId={selectedFeatureId}
-                            hoveredFeatureId={hoveredFeatureId}
-                            ready={ready}
-                            onOpenImageManager={() => {
-                              setSelectedContextTool('components');
-                              setActiveLeftTab('components');
-                              handleToggleLeftPanel(true);
-                            }}
-                          />
-                        )}
-
-                        {ready && dims && (
-                          <div className="dims-overlay" aria-label="Component dimensions">
-                            {dimensionList(activeReconstructionAnalysis).map(d => (
-                              <div className="dims-row" key={d.label}>
-                                <span className="dims-label">{d.label}</span>
-                                <span className="dims-value">{d.value}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Floating PiP Toggle Button */}
-                        {ready && (
-                          <div className="viewport-pip-toggle-floating">
-                            <button
-                              className="floating-tool-pill"
-                              onClick={() => setPipVisible(true)}
-                              title="Switch to Picture-in-Picture mode (moves 3D viewport into floating window)"
-                            >
-                              <Icon>picture_in_picture_alt</Icon> PiP Viewer
-                            </button>
-                          </div>
-                        )}
-                      </section>
+                      )}
                     </section>
 
                     {/* Horizontal Resize Divider between Viewport and Bottom Dock Slot */}
-                    {!isWorkspaceMaximized && bottomSlotPanel && !isCostPanelCollapsed && (
+                    {bottomSlotPanel && (
                       <div
                         className="center-col-divider"
                         onMouseDown={handleMouseDownCostResizer}
@@ -2970,15 +3097,14 @@ function Workbench() {
                     )}
 
                     {/* Bottom Dock Slot */}
-                    {!isWorkspaceMaximized && bottomSlotPanel && (
-                      <div className="workspace-bottom-dock-slot">
+                    {bottomSlotPanel && (
+                      <div className="workspace-bottom-dock-slot" style={costPanelHeight ? { height: `${costPanelHeight}px` } : undefined}>
                         {getPanelByKey(bottomSlotPanel, 'bottom')}
                       </div>
                     )}
                   </>
                 ) : (
                   /* PiP MODE: 3D Workspace is popped out into floating PipWorkbench */
-                  /* Bottom Panel takes over the full center area! */
                   bottomSlotPanel ? (
                     <div className="workspace-center-pip-takeover">
                       {getPanelByKey(bottomSlotPanel, 'bottom')}
@@ -2997,7 +3123,7 @@ function Workbench() {
               </div>
 
               {/* Right Vertical Divider */}
-              {!isWorkspaceMaximized && rightSlotPanel && (
+              {rightSlotPanel && (
                 <div
                   className="workspace-col-divider right-divider"
                   onMouseDown={handleMouseDownRightResizer}
@@ -3006,7 +3132,7 @@ function Workbench() {
               )}
 
               {/* 3. Right Dock Slot */}
-              {!isWorkspaceMaximized && rightSlotPanel && (
+              {rightSlotPanel && (
                 getPanelByKey(rightSlotPanel, 'right')
               )}
 
@@ -3257,7 +3383,7 @@ function App() {
     try {
       const saved = localStorage.getItem('reforge_theme');
       if (saved === 'light' || saved === 'dark') return saved;
-    } catch (e) {}
+    } catch (e) { }
     return 'dark';
   });
 
@@ -3266,7 +3392,7 @@ function App() {
       const next = prev === 'light' ? 'dark' : 'light';
       try {
         localStorage.setItem('reforge_theme', next);
-      } catch (e) {}
+      } catch (e) { }
       return next;
     });
   }, []);

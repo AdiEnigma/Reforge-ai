@@ -29,8 +29,9 @@ export const DEFAULT_WORKSPACE_LAYOUT = Object.freeze({
   isManufacturingActive: false,
   isCostPanelCollapsed: false,
 
-  // Docking slots ('left' | 'right' | 'bottom' | 'floating')
+  // Docking slots ('left' | 'right' | 'bottom' | 'center' | 'floating')
   contextualPanelSlot: 'left',
+  workspaceSlot: 'center',
   mfgPanelSlot: 'right',
   costPanelSlot: 'bottom',
 
@@ -76,7 +77,7 @@ export function sanitizeLayout(raw) {
     return { ...DEFAULT_WORKSPACE_LAYOUT };
   }
 
-  const validSlots = ['left', 'right', 'bottom', 'floating'];
+  const validSlots = ['left', 'right', 'bottom', 'center', 'floating'];
 
   return {
     leftPanelWidth: clamp(
@@ -105,12 +106,16 @@ export function sanitizeLayout(raw) {
     contextualPanelSlot: validSlots.includes(raw.contextualPanelSlot)
       ? raw.contextualPanelSlot
       : DEFAULT_WORKSPACE_LAYOUT.contextualPanelSlot,
+    workspaceSlot: validSlots.includes(raw.workspaceSlot)
+      ? raw.workspaceSlot
+      : DEFAULT_WORKSPACE_LAYOUT.workspaceSlot,
     mfgPanelSlot: validSlots.includes(raw.mfgPanelSlot)
       ? raw.mfgPanelSlot
       : DEFAULT_WORKSPACE_LAYOUT.mfgPanelSlot,
     costPanelSlot: validSlots.includes(raw.costPanelSlot)
       ? raw.costPanelSlot
       : DEFAULT_WORKSPACE_LAYOUT.costPanelSlot,
+    isWorkspaceClosed: typeof raw.isWorkspaceClosed === 'boolean' ? raw.isWorkspaceClosed : DEFAULT_WORKSPACE_LAYOUT.isWorkspaceClosed,
 
     isLeftPanelDocked: typeof raw.isLeftPanelDocked === 'boolean' ? raw.isLeftPanelDocked : DEFAULT_WORKSPACE_LAYOUT.isLeftPanelDocked,
     isMfgPanelDocked: typeof raw.isMfgPanelDocked === 'boolean' ? raw.isMfgPanelDocked : DEFAULT_WORKSPACE_LAYOUT.isMfgPanelDocked,
@@ -143,19 +148,27 @@ export function sanitizeLayout(raw) {
 export function repositionPanelSlot(currentLayout, panelKey, targetSlot) {
   if (!currentLayout || !panelKey || !targetSlot) return currentLayout;
 
-  const validSlots = ['left', 'right', 'bottom', 'floating'];
+  const validSlots = ['left', 'right', 'bottom', 'center', 'floating'];
   if (!validSlots.includes(targetSlot)) return currentLayout;
 
   const panelSlotKeyMap = {
     contextual: 'contextualPanelSlot',
     manufacturing: 'mfgPanelSlot',
     cost: 'costPanelSlot',
+    workspace: 'workspaceSlot',
+  };
+
+  const defaultSlotMap = {
+    contextual: 'left',
+    manufacturing: 'right',
+    cost: 'bottom',
+    workspace: 'center',
   };
 
   const mySlotKey = panelSlotKeyMap[panelKey];
   if (!mySlotKey) return currentLayout;
 
-  const currentSlot = currentLayout[mySlotKey] || (panelKey === 'contextual' ? 'left' : panelKey === 'manufacturing' ? 'right' : 'bottom');
+  const currentSlot = currentLayout[mySlotKey] || defaultSlotMap[panelKey] || 'floating';
   if (currentSlot === targetSlot) return currentLayout;
 
   const nextLayout = { ...currentLayout };
@@ -167,10 +180,10 @@ export function repositionPanelSlot(currentLayout, panelKey, targetSlot) {
   }
 
   // If docking into a shared slot, swap with whoever is currently occupying it
-  const otherPanels = ['contextual', 'manufacturing', 'cost'].filter((p) => p !== panelKey);
+  const otherPanels = ['contextual', 'manufacturing', 'cost', 'workspace'].filter((p) => p !== panelKey);
   const occupyingPanel = otherPanels.find((p) => {
     const sKey = panelSlotKeyMap[p];
-    const sVal = currentLayout[sKey] || (p === 'contextual' ? 'left' : p === 'manufacturing' ? 'right' : 'bottom');
+    const sVal = currentLayout[sKey] || defaultSlotMap[p];
     return sVal === targetSlot;
   });
 

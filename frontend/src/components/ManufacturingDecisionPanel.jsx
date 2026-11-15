@@ -169,11 +169,20 @@ export function ManufacturingDecisionPanel({
 
   // Live estimated cost and lead time
   const liveSummary = useMemo(() => {
-    return calculateLiveManufacturingSummary(confirmedDecisions, confirmedCategories, propQuantity) || {
-      unitCostInr: 21606,
-      totalBatchCostInr: 21606 * (propQuantity || 1),
-      leadDays: 22,
-    };
+    try {
+      return calculateLiveManufacturingSummary(confirmedDecisions, confirmedCategories, propQuantity) || {
+        unitCostInr: 21606,
+        totalBatchCostInr: 21606 * (propQuantity || 1),
+        leadDays: 22,
+      };
+    } catch (err) {
+      console.warn('Error in liveSummary calculation:', err);
+      return {
+        unitCostInr: 21606,
+        totalBatchCostInr: 21606 * (propQuantity || 1),
+        leadDays: 22,
+      };
+    }
   }, [confirmedDecisions, confirmedCategories, propQuantity]);
 
   // Persist state safely to storage on changes
@@ -402,8 +411,21 @@ export function ManufacturingDecisionPanel({
         </div>
 
         <div className="panel-header-actions">
+          {onStartDrag && (
+            <button
+              type="button"
+              className="panel-action-btn panel-drag-handle"
+              onMouseDown={onStartDrag}
+              title="Dock button: Drag and drop into any panel area (Left, Center, Right, Bottom)"
+              aria-label="Dock and drag Manufacturing Panel"
+            >
+              <Icon>drag_indicator</Icon>
+            </button>
+          )}
+
           {onToggleMaximize && (
             <button
+              type="button"
               className="panel-action-btn"
               onClick={onToggleMaximize}
               title={isMaximized ? "Restore panel size" : "Maximize panel"}
@@ -414,7 +436,8 @@ export function ManufacturingDecisionPanel({
           )}
 
           <button
-            className="mfg-decision-close"
+            type="button"
+            className="panel-action-btn close-btn"
             onClick={onClose}
             title="Close Manufacturing Panel"
             aria-label="Close Manufacturing Panel"
@@ -448,8 +471,8 @@ export function ManufacturingDecisionPanel({
 
           <div className="mfg-live-cost-badge">
             <span className="cost-label">EST. UNIT COST</span>
-            <strong className="cost-value">₹{formatINR(liveSummary.unitCostInr)}</strong>
-            <span className="lead-tag">~{liveSummary.leadDays}d</span>
+            <strong className="cost-value">₹{formatINR(liveSummary?.unitCostInr ?? 21606)}</strong>
+            <span className="lead-tag">~{liveSummary?.leadDays ?? 22}d</span>
           </div>
         </div>
 
@@ -1136,17 +1159,17 @@ export function ManufacturingDecisionPanel({
               <div className="completed-cost-grid">
                 <div className="completed-cost-cell">
                   <span className="cost-cell-label">TOTAL BATCH PRICE</span>
-                  <strong className="cost-cell-val">₹{formatINR(liveSummary.totalBatchCostInr)}</strong>
+                  <strong className="cost-cell-val">₹{formatINR(liveSummary?.totalBatchCostInr ?? (21606 * (propQuantity || 1)))}</strong>
                   <span className="cost-cell-sub">for {propQuantity} unit{propQuantity === 1 ? '' : 's'}</span>
                 </div>
                 <div className="completed-cost-cell">
                   <span className="cost-cell-label">PER-UNIT PRICE</span>
-                  <strong className="cost-cell-val">₹{formatINR(liveSummary.unitCostInr)}</strong>
+                  <strong className="cost-cell-val">₹{formatINR(liveSummary?.unitCostInr ?? 21606)}</strong>
                   <span className="cost-cell-sub">ex-works</span>
                 </div>
                 <div className="completed-cost-cell">
                   <span className="cost-cell-label">EST. LEAD TIME</span>
-                  <strong className="cost-cell-val">~{liveSummary.leadDays} days</strong>
+                  <strong className="cost-cell-val">~{liveSummary?.leadDays ?? 22} days</strong>
                   <span className="cost-cell-sub">dispatch ready</span>
                 </div>
               </div>

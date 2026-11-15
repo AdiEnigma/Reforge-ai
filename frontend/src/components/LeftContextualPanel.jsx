@@ -25,6 +25,7 @@ export function LeftContextualPanel({
   currentSlot = 'left',
   onMoveSlot,
   onStartDrag,
+  onClose,
   // Active Tab & Tool selection
   activeTab, // 'chat' | 'inspection' | 'health' | 'components'
   onSelectTab,
@@ -156,10 +157,23 @@ export function LeftContextualPanel({
           )}
         </div>
 
-        {/* Panel Header Actions: Maximize/Restore, Collapse */}
+        {/* Panel Header Actions: Dock/Drag, Maximize/Restore, Close */}
         <div className="panel-header-actions">
+          {onStartDrag && (
+            <button
+              type="button"
+              className="panel-action-btn panel-drag-handle"
+              onMouseDown={onStartDrag}
+              title="Dock button: Drag and drop into any panel area (Left, Center, Right, Bottom)"
+              aria-label="Dock and drag Left Panel"
+            >
+              <Icon>drag_indicator</Icon>
+            </button>
+          )}
+
           {onToggleMaximize && (
             <button
+              type="button"
               className="panel-action-btn"
               onClick={onToggleMaximize}
               title={isMaximized ? "Restore panel size" : "Maximize panel"}
@@ -169,16 +183,15 @@ export function LeftContextualPanel({
             </button>
           )}
 
-          {onToggleOpen && (
-            <button
-              className="panel-action-btn"
-              onClick={() => onToggleOpen(false)}
-              title="Collapse Left Panel"
-              aria-label="Collapse Left Panel"
-            >
-              <Icon>keyboard_double_arrow_left</Icon>
-            </button>
-          )}
+          <button
+            type="button"
+            className="panel-action-btn close-btn"
+            onClick={onClose || (() => onToggleOpen?.(false))}
+            title="Close Left Panel"
+            aria-label="Close Left Panel"
+          >
+            <Icon>close</Icon>
+          </button>
         </div>
       </div>
 

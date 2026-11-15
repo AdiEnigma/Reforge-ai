@@ -120,16 +120,16 @@ Batch Quantity: ${quantity} units
 SYNCHRONIZED ITEMIZED COST BREAKDOWN (PER UNIT):
 --------------------------------------------------------------------------------
 ${itemizedBreakdown
-  .map((item) => {
-    const statusText = item.isConfirmed ? 'CONFIRMED' : item.isPreview ? 'PREVIEW' : 'PENDING';
-    const rateText = item.isConfirmed
-      ? `₹ ${formatINR(item.cost)}`
-      : item.isPreview
-      ? `(₹ ${formatINR(item.cost)}) [Preview]`
-      : '— [Pending Step 0' + item.num + ']';
-    return `${item.num}. ${item.name.padEnd(28, ' ')} : ${rateText.padEnd(16, ' ')} [${statusText}] - ${item.driver}`;
-  })
-  .join('\n')}
+        .map((item) => {
+          const statusText = item.isConfirmed ? 'CONFIRMED' : item.isPreview ? 'PREVIEW' : 'PENDING';
+          const rateText = item.isConfirmed
+            ? `₹ ${formatINR(item.cost)}`
+            : item.isPreview
+              ? `(₹ ${formatINR(item.cost)}) [Preview]`
+              : '— [Pending Step 0' + item.num + ']';
+          return `${item.num}. ${item.name.padEnd(28, ' ')} : ${rateText.padEnd(16, ' ')} [${statusText}] - ${item.driver}`;
+        })
+        .join('\n')}
 --------------------------------------------------------------------------------
 Shop Overhead & Consumables (15%): ₹ ${formatINR(breakdown.overhead)}
 Applicable GST / Taxes (18%):       ₹ ${formatINR(breakdown.taxes)}
@@ -191,40 +191,6 @@ ASSUMPTIONS & ENGINEERING CONTEXT:
         </div>
 
         <div className="cost-panel-actions">
-          {onStartDrag && (
-            <button
-              type="button"
-              className="panel-drag-reposition-handle"
-              onMouseDown={onStartDrag}
-              title="Drag to reposition panel to another dock slot"
-              aria-label="Drag to reposition panel"
-            >
-              <Icon>drag_indicator</Icon>
-            </button>
-          )}
-
-          {onToggleCollapse && (
-            <button
-              className="cost-panel-action-btn"
-              onClick={onToggleCollapse}
-              title={isCollapsed ? "Expand Cost Estimation Panel" : "Collapse Cost Estimation Panel"}
-              aria-label={isCollapsed ? "Expand Cost Panel" : "Collapse Cost Panel"}
-            >
-              <Icon>{isCollapsed ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}</Icon>
-            </button>
-          )}
-
-          {onToggleMaximize && (
-            <button
-              className="cost-panel-action-btn"
-              onClick={onToggleMaximize}
-              title={isMaximized ? "Restore panel size" : "Maximize panel"}
-              aria-label={isMaximized ? "Restore Cost Panel" : "Maximize Cost Panel"}
-            >
-              <Icon>{isMaximized ? 'fullscreen_exit' : 'fullscreen'}</Icon>
-            </button>
-          )}
-
           <button
             className="secondary cost-download-btn"
             onClick={handleDownloadEstimate}
@@ -234,8 +200,44 @@ ASSUMPTIONS & ENGINEERING CONTEXT:
             <Icon>download</Icon> Pro Forma (.txt)
           </button>
 
+          {onToggleCollapse && (
+            <button
+              className="panel-action-btn"
+              onClick={onToggleCollapse}
+              title={isCollapsed ? "Expand Cost Estimation Panel" : "Collapse Cost Estimation Panel"}
+              aria-label={isCollapsed ? "Expand Cost Panel" : "Collapse Cost Panel"}
+            >
+              <Icon>{isCollapsed ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}</Icon>
+            </button>
+          )}
+
+          {onStartDrag && (
+            <button
+              type="button"
+              className="panel-action-btn panel-drag-handle"
+              onMouseDown={onStartDrag}
+              title="Dock button: Drag and drop into any panel area (Left, Center, Right, Bottom)"
+              aria-label="Dock and drag Cost Panel"
+            >
+              <Icon>drag_indicator</Icon>
+            </button>
+          )}
+
+          {onToggleMaximize && (
+            <button
+              type="button"
+              className="panel-action-btn"
+              onClick={onToggleMaximize}
+              title={isMaximized ? "Restore panel size" : "Maximize panel"}
+              aria-label={isMaximized ? "Restore Cost Panel" : "Maximize Cost Panel"}
+            >
+              <Icon>{isMaximized ? 'fullscreen_exit' : 'fullscreen'}</Icon>
+            </button>
+          )}
+
           <button
-            className="cost-panel-close"
+            type="button"
+            className="panel-action-btn close-btn"
             onClick={onClose}
             title="Close Cost Panel"
             aria-label="Close Cost Panel"

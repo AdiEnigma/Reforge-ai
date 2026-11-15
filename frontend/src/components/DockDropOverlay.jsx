@@ -20,13 +20,13 @@ export function DockDropOverlay({
         </div>
       </div>
 
-      {/* 2. Center Column: Float Target (Top) + Bottom Dock Target */}
+      {/* 2. Center Column: Center Target (Top) + Bottom Dock Target */}
       <div className="dock-drop-center-col">
-        <div className={`dock-drop-zone center-float ${activeDockZone === 'floating' ? 'hovered' : ''}`}>
+        <div className={`dock-drop-zone center-float ${activeDockZone === 'center' || activeDockZone === 'floating' ? 'hovered' : ''}`}>
           <div className="dock-zone-content">
-            <Icon className="dock-zone-icon">open_in_new</Icon>
-            <span className="dock-zone-title">FLOAT WINDOW</span>
-            <span className="dock-zone-hint">Release in center to detach into freely movable window</span>
+            <Icon className="dock-zone-icon">view_in_ar</Icon>
+            <span className="dock-zone-title">DOCK TO CENTER AREA</span>
+            <span className="dock-zone-hint">Release in center to place in main center stage</span>
           </div>
         </div>
 
