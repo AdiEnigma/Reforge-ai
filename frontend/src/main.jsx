@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import './styles.css';
-import { ApiError, analyzeComponent, analyzeComponentDetailed, buildCad, fetchCadMesh, runAnalysisJob, sendChatMessage } from './lib/api.js';
+import { ApiError, analyzeComponent, analyzeComponentDetailed, buildCad, fetchCadMesh, runAnalysisJob, reconstructComponent, sendChatMessage } from './lib/api.js';
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
 import { normalizeFeatures } from './lib/features.js';
@@ -120,6 +120,9 @@ const REFERENCE_FIELDS = [
   { key: 'innerDiameter', label: 'Inner Ø (bore)', unit: 'mm' },
   { key: 'height', label: 'Height / Length', unit: 'mm' },
   { key: 'thickness', label: 'Thickness / Width', unit: 'mm' },
+  { key: 'boltCircleDiameter', label: 'Bolt circle Ø', unit: 'mm' },
+  { key: 'holeDiameter', label: 'Hole Ø', unit: 'mm' },
+  { key: 'holeCount', label: 'Hole count', unit: 'count' },
   { key: 'teeth', label: 'Teeth', unit: 'count' },
   { key: 'module', label: 'Module', unit: 'mm' },
   { key: 'helixAngle', label: 'Helix angle', unit: 'deg' },
@@ -958,9 +961,40 @@ function Upload() {
     setStage('analysing');
     try {
       const primaryRef = buildReference(reference);
+
+      // Phase 5: multi-photo reconstruction (COLMAP + SciPy solver) for 2+ images.
+      // Solver output supplies measured dimensions that feed into CAD build.
+      let solverDimensions = {};
+      let solverStatus = null;
+      if (pImages.length >= 2) {
+        setStage('reconstructing');
+        try {
+          const reconResult = await reconstructComponent({
+            images: pImages,
+            reference: primaryRef,
+            componentType: primary?.type || 'other',
+          });
+          solverStatus = reconResult?.solver?.status;
+          const scaleClass = reconResult?.solver?.scale_classification;
+          const params = reconResult?.solver?.parameters || {};
+          if (scaleClass === 'metric' && solverStatus === 'success') {
+            for (const [name, param] of Object.entries(params)) {
+              if (param && param.classification === 'MEASURED' && typeof param.value === 'number' && Number.isFinite(param.value) && param.value > 0) {
+                solverDimensions[name] = param.value;
+              }
+            }
+          }
+        } catch (reconError) {
+          // Fail-open: reconstruction is optional. Continue with Gemini-only analysis.
+          console.warn('Multi-photo reconstruction unavailable (continuing without solver):', reconError?.message);
+          solverStatus = 'unavailable';
+        }
+      }
+
+      const mergedReference = { ...primaryRef, ...solverDimensions };
       let job = null;
       try {
-        job = await runAnalysisJob(pImages, primaryRef);
+        job = await runAnalysisJob(pImages, mergedReference);
       } catch (jobError) {
         if (!(jobError instanceof ApiError) || ![0, 404, 405, 501].includes(jobError.status)) {
           throw jobError;
@@ -973,7 +1007,7 @@ function Upload() {
       }
       const pAnalysis = job?.analysis
         ? job.analysis
-        : (await analyzeComponentDetailed(pImages, primaryRef)).analysis;
+        : (await analyzeComponentDetailed(pImages, mergedReference)).analysis;
 
       let cAnalysis = null;
       if (companion?.images?.length) {
@@ -985,7 +1019,8 @@ function Upload() {
         primaryGear: {
           ...machineryState.primaryGear,
           analysis: pAnalysis,
-          reference: primaryRef,
+          reference: mergedReference,
+          solverStatus,
         },
         companionGear: machineryState.companionGear
           ? {
@@ -1005,7 +1040,7 @@ function Upload() {
       if (job) {
         await adoptCadBuildFromJob(job, pAnalysis);
       } else {
-        requestCadBuild(pAnalysis, primaryRef);
+        requestCadBuild(pAnalysis, mergedReference);
       }
     } catch (err) {
       setError(err.message || 'Analysis failed. Please try again.');
@@ -1086,8 +1121,8 @@ function Upload() {
               />
             </div>
             <aside className="input-panel">
-              <span className="cad">PRIMARY GEAR SPECS</span>
-              <p>Include top, side, and tooth engagement angles.</p>
+              <span className="cad">KNOWN DIMENSIONS</span>
+              <p>Enter any known measurements to calibrate the reconstructed model.</p>
               <div className="ref-block">
                 <span className="cad">
                   KNOWN DIMENSIONS <small className="ref-optional">(OPTIONAL)</small>
@@ -1550,7 +1585,7 @@ function EngineeringReportModal({
           </div>
           <div className="report-title-row">
             <h2>{label}</h2>
-            {conf != null && <span className="report-conf-badge">CONFIDENCE: {conf}%</span>}
+            {conf != null && <span className="report-conf-badge">CLASSIFICATION CONFIDENCE: {conf}%</span>}
           </div>
         </header>
 
@@ -2170,6 +2205,15 @@ function Workbench() {
 
   const usingCad = cadBuild.status === 'ready' && Boolean(cadBuild.mesh);
   const cadResult = cadBuild.status === 'ready' ? cadBuild.result?.result || null : null;
+  const measurement = cadResult?.measurement || null;
+  const isMeasurementCad = Boolean(measurement || cadResult?.cadMode === 'measurement');
+  const photoMeasurementRejected = Boolean(cadBuild.result?.photoMeasurementRejected);
+  const dimensionalScore =
+    cadResult?.validation?.dimensionalScore ?? measurement?.featureFit?.score ?? null;
+  const dimensionalStatus =
+    cadResult?.validation?.dimensionalStatus ?? measurement?.featureFit?.status ?? null;
+  const readiness = measurement?.validationStatuses?.manufacturing_readiness || null;
+  const exportBlockReason = (measurement?.exportBlockReasons || []).join(', ');
   const cadDimensionSource =
     Array.isArray(cadResult?.dimensions) && cadResult.dimensions.length
       ? { dimensionsDetail: cadResult.dimensions }
@@ -2257,7 +2301,13 @@ function Workbench() {
                 <span className="sidebar-footer-dot"></span>
                 <strong className="sidebar-footer-name">{label}</strong>
               </div>
-              <span className="sidebar-footer-meta">{conf != null ? `${conf}% CONFIDENCE` : 'AI RECONSTRUCTED'}</span>
+              <span className="sidebar-footer-meta">
+                {isMeasurementCad && dimensionalScore != null
+                  ? `DIMENSIONAL ${Math.round(dimensionalScore * 100)}%`
+                  : conf != null
+                    ? `CLASSIFICATION ${conf}%`
+                    : 'AI RECONSTRUCTED'}
+              </span>
             </div>
           )}
         </aside>
@@ -2268,7 +2318,7 @@ function Workbench() {
             <section className="viewport">
               <div className="cad viewport-status" aria-live="polite">
                 {ready
-                  ? <>● {label}{usingCad ? ' · PARAMETRIC CAD' : ' · APPROXIMATE PREVIEW'}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>{usingCad ? 'SOLID GENERATED BY PYTHON-ENGINE' : 'AI RECONSTRUCTED'} FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                  ? <>● {label}{usingCad ? ' · PARAMETRIC CAD' : ' · APPROXIMATE PREVIEW'}{isMeasurementCad && dimensionalScore != null ? ` · DIMENSIONAL ${Math.round(dimensionalScore * 100)}%` : conf != null ? ` · CLASSIFICATION ${conf}%` : ''}<br /><span>{usingCad ? 'SOLID GENERATED BY PYTHON-ENGINE' : 'AI RECONSTRUCTED'} FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{measurement?.manufacturingReady ? ' · MANUFACTURING READY' : isMeasurementCad ? ' · PREVIEW ONLY' : ''}{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
                   : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
               </div>
 
@@ -2322,9 +2372,11 @@ function Workbench() {
                   {cadBuild.status === 'ready' && !cadBuild.result?.result?.exportBlocked && (
                     <>
                       <span className="cad-export-status cad-export-ready">
-                        PARAMETRIC CAD{typeof cadBuild.result?.result?.validation?.fitScore === 'number'
-                          ? ` · FIT ${(cadBuild.result.result.validation.fitScore * 100).toFixed(0)}%`
-                          : ''}
+                        PARAMETRIC CAD{isMeasurementCad && dimensionalScore != null
+                          ? ` · DIMENSIONAL ${(dimensionalScore * 100).toFixed(0)}%${dimensionalStatus ? ` (${dimensionalStatus.toUpperCase()})` : ''}`
+                          : typeof cadBuild.result?.result?.validation?.fitScore === 'number'
+                            ? ` · DECLARED-EXPECTATION FIT ${(cadBuild.result.result.validation.fitScore * 100).toFixed(0)}%`
+                            : ''}
                       </span>
                       {cadBuild.result?.result?.stepUrl && (
                         <a href={cadBuild.result.result.stepUrl} download>STEP</a>
@@ -2335,8 +2387,14 @@ function Workbench() {
                     </>
                   )}
                   {cadBuild.status === 'ready' && cadBuild.result?.result?.exportBlocked && (
-                    <span className="cad-export-status cad-export-blocked">
-                      RELATIVE PREVIEW · ENTER ONE MEASUREMENT TO ENABLE EXPORT
+                    <span className="cad-export-status cad-export-blocked" title={exportBlockReason || cadBuild.result?.result?.exportBlockedReason || ''}>
+                      {photoMeasurementRejected
+                        ? `PREVIEW ONLY · PHOTO MEASUREMENTS NOT CONFIDENT${exportBlockReason || cadBuild.result?.result?.exportBlockedReason ? ` · ${(exportBlockReason || cadBuild.result?.result?.exportBlockedReason).replace(/_/g, ' ')}` : ''}`
+                        : isMeasurementCad
+                          ? readiness?.status === 'blocked'
+                            ? `PREVIEW ONLY · EXPORT BLOCKED${exportBlockReason ? ` · ${exportBlockReason.replace(/_/g, ' ')}` : ''}`
+                            : 'PREVIEW ONLY · MANUFACTURING EXPORT NOT READY'
+                          : 'RELATIVE PREVIEW · ENTER ONE MEASUREMENT TO ENABLE EXPORT'}
                     </span>
                   )}
                   {cadBuild.status === 'needs_input' && (
@@ -2861,7 +2919,7 @@ function App() {
 
   const requestCadBuild = useCallback(async (targetAnalysis, reference) => {
     const requestId = ++cadRequestRef.current;
-    if (!targetAnalysis?.geometryRecipe) {
+    if (!targetAnalysis?.geometryRecipe && !targetAnalysis?.featureMeasurements) {
       setCadBuild({ status: 'idle', analysis: null, result: null, mesh: null, error: null });
       return;
     }
@@ -2873,7 +2931,7 @@ function App() {
       error: null,
     });
     try {
-      const job = await buildCad({ analysis: targetAnalysis, reference });
+      const job = await buildCad({ analysis: targetAnalysis, reference, userDimensions: reference });
       if (requestId !== cadRequestRef.current) return;
       if (['unavailable', 'failed', 'needs_input'].includes(job?.state)) {
         setCadBuild({

@@ -31,6 +31,12 @@ from cad.advanced_recipe_adapter import (
 )
 from cad.feature_modeller import FeatureModellingError
 from cad.advanced_cad_validator import validate_feature_geometry
+from cad.feature_recipe_validator import validate_feature_recipe
+from cad.measurement_to_features import (
+    MeasurementSynthesisError,
+    synthesize_feature_recipe,
+)
+from cad.feature_fit import assess_measurement_build, compare_features
 from cad.fit_loop import run_image_fit, ImageFitError
 from cad import advanced_preview
 from cad import integration_contract
@@ -643,7 +649,6 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
         validation_report["image_fit"] = image_fit
         validation_report["fit_score_image"] = image_fit.get("fit_score")
 
-    # 4. Export STEP + STL.
     target_dir = payload.output_dir
     if not target_dir:
         target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "exports"))
@@ -698,6 +703,268 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
         "step_path": exported_step_path,
         "stl_path": exported_stl_path,
         "mesh_path": exported_mesh_path,
+        "previews": previews,
+    }
+
+
+class MeasurementCadGenerateRequest(BaseModel):
+    job_id: str = Field(default="cad_measure_001")
+    measurements: Dict[str, Any] = Field(
+        ...,
+        description="Fused 'feature_measurements' v1.0 document produced by the "
+                    "vision engine. All geometric values are normalised ratios.",
+    )
+    user_dimensions: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Explicit user dimensions in millimetres. User values always "
+                    "take precedence over measured ratios.",
+    )
+    calibration: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional scale anchor, e.g. {'anchor_parameter': "
+                    "'outer_diameter', 'anchor_value_mm': 120}.",
+    )
+    hints: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional non-authoritative hints (part label, material). "
+                    "Hints never override measurements.",
+    )
+    output_dir: Optional[str] = None
+    strict: bool = False
+    generate_previews: bool = False
+    fit_evidence: Optional[Dict[str, Any]] = None
+    allow_assumed_exports: Optional[bool] = Field(
+        default=None,
+        description="Explicitly allow manufacturing exports when critical "
+                    "dimensions are assumed. None falls back to the "
+                    "ALLOW_ASSUMED_EXPORTS environment flag (default false).",
+    )
+    export_override: bool = Field(
+        default=False,
+        description="User explicitly requested an export despite the readiness "
+                    "gate. Recorded in the response.",
+    )
+
+
+@app.post("/cad/generate-from-measurements")
+def generate_cad_from_measurements_endpoint(payload: MeasurementCadGenerateRequest):
+    """Synthesise and model a part directly from vision measurements.
+
+    The synthesis step is topology-driven (circular / polygonal outline, side
+    profile, concentric radii, radial arrays) and never branches on a part
+    name. Assumed dimensions are reported explicitly and mark the result as
+    preview-only; they are never presented as measured.
+    """
+    try:
+        synthesis = synthesize_feature_recipe(
+            payload.measurements,
+            user_dimensions=payload.user_dimensions,
+            calibration=payload.calibration,
+            hints=payload.hints,
+        )
+    except MeasurementSynthesisError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "status": "error",
+                "stage": "measurement_synthesis",
+                "error": str(exc),
+                "job_id": payload.job_id,
+            },
+        )
+
+    if synthesis["status"] == "error":
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "status": "error",
+                "stage": "measurement_synthesis",
+                "error": "Measurements describe geometrically inconsistent features.",
+                "job_id": payload.job_id,
+                "sanity_errors": synthesis["sanity_errors"],
+                "needs_input": synthesis["needs_input"],
+                "provenance": synthesis["provenance"],
+                "scale": synthesis["scale"],
+            },
+        )
+
+    recipe = synthesis["recipe"]
+    validation = validate_feature_recipe(recipe)
+    if validation.status == "rejected":
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "status": "error",
+                "stage": "feature_recipe_validation",
+                "error": "Synthesised feature recipe failed validation.",
+                "job_id": payload.job_id,
+                "details": validation.to_dict(),
+                "needs_input": synthesis["needs_input"],
+                "scale": synthesis["scale"],
+            },
+        )
+
+    try:
+        workplane, history = generate_cad_from_recipe(recipe, strict=payload.strict)
+    except FeatureModellingError as fme:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "status": "error",
+                "stage": "feature_modelling",
+                "error": fme.message,
+                "feature_id": fme.feature_id,
+                "details": fme.details,
+                "job_id": payload.job_id,
+                "needs_input": synthesis["needs_input"],
+                "scale": synthesis["scale"],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Measurement CAD modelling failed unexpectedly")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "feature_modelling",
+                "error": f"Feature modelling failed unexpectedly: {exc}",
+                "job_id": payload.job_id,
+            },
+        )
+
+    try:
+        validation_report = validate_feature_geometry(workplane, recipe, history)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Measurement CAD validation failed unexpectedly")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "cad_validation",
+                "error": f"Feature validation failed unexpectedly: {exc}",
+                "job_id": payload.job_id,
+                "feature_history": history,
+            },
+        )
+
+    if not validation_report.get("valid", False):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "status": "error",
+                "stage": "cad_validation",
+                "error": "Measurement-modelled CAD geometry failed validation.",
+                "job_id": payload.job_id,
+                "feature_history": history,
+                "validation_report": validation_report,
+                "needs_input": synthesis["needs_input"],
+                "scale": synthesis["scale"],
+            },
+        )
+
+    image_fit = _run_fit_evidence(workplane, payload.fit_evidence)
+    if image_fit is not None:
+        validation_report["image_fit"] = image_fit
+        validation_report["fit_score_image"] = image_fit.get("fit_score")
+
+    feature_fit = compare_features(workplane, recipe, synthesis["scale"])
+    allow_assumed = (
+        payload.allow_assumed_exports
+        if payload.allow_assumed_exports is not None
+        else os.getenv("ALLOW_ASSUMED_EXPORTS", "false").strip().lower() == "true"
+    )
+    assessment = assess_measurement_build(
+        synthesis,
+        validation_report,
+        feature_fit,
+        payload.measurements,
+        allow_assumed_exports=allow_assumed,
+        export_override=payload.export_override,
+    )
+    validation_report["feature_fit"] = feature_fit
+    validation_report["validation_statuses"] = assessment["statuses"]
+
+    target_dir = payload.output_dir
+    if not target_dir:
+        target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "exports"))
+    os.makedirs(target_dir, exist_ok=True)
+
+    uid = uuid.uuid4().hex[:8]
+    base_name = f"{payload.job_id}_{uid}"
+    step_path = os.path.join(target_dir, f"{base_name}.step")
+    stl_path = os.path.join(target_dir, f"{base_name}.stl")
+    mesh_path = os.path.join(target_dir, f"{base_name}.mesh.json")
+
+    try:
+        exported_step_path = export_step(workplane, step_path)
+        exported_stl_path = export_stl(workplane, stl_path)
+    except (StepExportError, MeshExportError) as exc:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": "error",
+                "stage": "export",
+                "error": str(exc),
+                "job_id": payload.job_id,
+                "feature_history": history,
+                "validation_report": validation_report,
+                "needs_input": synthesis["needs_input"],
+            },
+        )
+
+    exported_mesh_path = None
+    try:
+        exported_mesh_path = export_mesh_preview(workplane, mesh_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Mesh preview export failed (non-fatal): %s", exc)
+
+    previews = None
+    if payload.generate_previews:
+        try:
+            preview_dir = os.path.join(target_dir, f"{base_name}_previews")
+            previews = advanced_preview.generate_preview_bundle(
+                workplane, preview_dir, payload.job_id, include_section=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Preview generation failed: %s", exc)
+            previews = {"error": str(exc)}
+
+    export_allowed = bool(assessment["export_allowed"])
+    readiness = assessment["statuses"]["manufacturing_readiness"]
+    preview_only = bool(assessment["preview_only"])
+
+    return {
+        "status": "success",
+        "job_id": payload.job_id,
+        "mode": "measurement",
+        "measurement_status": synthesis["status"],
+        "preview_only": preview_only,
+        "manufacturing_ready": readiness["status"] == "ready",
+        "export_allowed": export_allowed,
+        "export_override_used": readiness["override_used"],
+        "export_block_reasons": readiness["block_reasons"],
+        "feature_recipe": recipe,
+        "feature_history": history,
+        "validation_report": validation_report,
+        "validation_statuses": assessment["statuses"],
+        "feature_fit": feature_fit,
+        "critical_unknowns": assessment["critical_unknowns"],
+        "assumed_dimensions": assessment["assumed_dimensions"],
+        "image_fit": image_fit,
+        "scale": synthesis["scale"],
+        "provenance": synthesis["provenance"],
+        "confidence": synthesis["confidence"],
+        "needs_input": synthesis["needs_input"],
+        "synthesis_warnings": synthesis["warnings"],
+        "sanity_errors": synthesis["sanity_errors"],
+        "topology": synthesis["topology"],
+        # Manufacturing exports are only exposed when the readiness gate
+        # allows them. The preview paths always exist for the viewer.
+        "step_path": exported_step_path if export_allowed else None,
+        "stl_path": exported_stl_path if export_allowed else None,
+        "mesh_path": exported_mesh_path,
+        "preview_step_path": exported_step_path,
+        "preview_stl_path": exported_stl_path,
+        "preview_mesh_path": exported_mesh_path,
         "previews": previews,
     }
 

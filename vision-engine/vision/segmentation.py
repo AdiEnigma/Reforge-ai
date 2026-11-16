@@ -235,6 +235,7 @@ class SAM2Segmentor:
         seg_mask = best.get("segmentation")
         bbox_area_ratio = None
         bbox_xyxy = None
+        clean_mask = None
         if seg_mask is not None:
             import cv2  # type: ignore
             mask_uint8 = np.asarray(seg_mask).astype(np.uint8)
@@ -278,4 +279,8 @@ class SAM2Segmentor:
             "score": best_score,
             "needs_user_selection": needs_selection,
             "warnings": warnings_out,
+            # The silhouette itself, so callers can measure inside the real part
+            # instead of substituting a bounding box. Internal use only; the
+            # API response model never serialises it.
+            "mask": clean_mask,
         }

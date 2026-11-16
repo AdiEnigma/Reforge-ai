@@ -31,6 +31,7 @@ from schemas import (
 from vision.image_io import decode_and_validate_image
 from vision.quality import compute_quality
 from vision.opencv_features import extract_features
+from vision.feature_measurements import measure_image, fuse_measurements
 from vision.model_registry import registry
 
 logger = logging.getLogger(__name__)
@@ -359,7 +360,11 @@ def _derive_segmentation_hint(rgb: np.ndarray) -> Optional[dict]:
         return None
 
 
-def _process_single_image(image_input: ImageInput, reference: Optional[dict]) -> ImageResult:
+def _process_single_image(
+    image_input: ImageInput,
+    reference: Optional[dict],
+    view_override: Optional[str] = None,
+) -> ImageResult:
     """Process a single image end-to-end synchronously."""
     warnings: List[str] = []
 
@@ -407,15 +412,43 @@ def _process_single_image(image_input: ImageInput, reference: Optional[dict]) ->
                 raise
 
     # --- opencv features ---
+    # Measure inside SAM2's actual silhouette.  A bounding-box rectangle is not
+    # the part: using it made the "outer" a box, so every radius / distance
+    # ratio, the view classification and the bore position were measured against
+    # a rectangle instead of the body.  The rectangle is only a fallback for
+    # when segmentation is unavailable.
     mask: Optional[np.ndarray] = None
-    bbox = seg_dict.get("bbox_xyxy_px")
-    if bbox and len(bbox) == 4:
-        x1, y1, x2, y2 = (int(v) for v in bbox)
-        h, w = rgb.shape[:2]
-        mask = np.zeros((h, w), dtype=np.uint8)
-        mask[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 255
+    h, w = rgb.shape[:2]
+    seg_mask = seg_dict.get("mask")
+    if seg_mask is not None:
+        import cv2  # type: ignore
+
+        mask = np.asarray(seg_mask, dtype=np.uint8)
+        if mask.shape[:2] != (h, w):
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+        mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+    else:
+        bbox = seg_dict.get("bbox_xyxy_px")
+        if bbox and len(bbox) == 4:
+            x1, y1, x2, y2 = (int(v) for v in bbox)
+            mask = np.zeros((h, w), dtype=np.uint8)
+            mask[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 255
 
     cv_dict = extract_features(rgb, mask=mask, image_index=image_input.image_index)
+
+    # --- normalised geometric measurements (ratios only, never mm) ---
+    measurement_dict: Optional[dict] = None
+    try:
+        measurement_dict = measure_image(
+            cv_dict,
+            image_index=image_input.image_index,
+            view_override=view_override,
+        )
+    except Exception as exc:
+        if config.VISION_FAIL_OPEN:
+            warnings.append(f"Measurement error (fail-open): {exc}")
+        else:
+            raise
 
     # --- depth ---
     depth_dict = {
@@ -447,6 +480,7 @@ def _process_single_image(image_input: ImageInput, reference: Optional[dict]) ->
         opencv=_build_opencv_result(cv_dict),
         depth=_build_depth_result(depth_dict),
         calibration=cal_result,
+        feature_measurements=measurement_dict,
         warnings=warnings,
     )
 
@@ -475,6 +509,7 @@ def _make_error_result(image_index: int, error_msg: str) -> ImageResult:
 async def process_images(
     images: List[ImageInput],
     reference: Optional[dict] = None,
+    view_overrides: Optional[dict] = None,
 ) -> ProcessResponse:
     """
     Orchestrate processing for all images in the request.
@@ -485,12 +520,16 @@ async def process_images(
     sem = _get_semaphore()
     warnings: List[str] = []
     loop = asyncio.get_running_loop()
+    overrides = view_overrides if isinstance(view_overrides, dict) else {}
 
     async def _run_one(img_input: ImageInput) -> ImageResult:
+        override = overrides.get(str(img_input.image_index))
         async with sem:
             try:
                 return await asyncio.wait_for(
-                    loop.run_in_executor(None, _process_single_image, img_input, reference),
+                    loop.run_in_executor(
+                        None, _process_single_image, img_input, reference, override
+                    ),
                     timeout=config.VISION_REQUEST_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
@@ -517,6 +556,17 @@ async def process_images(
 
     image_results.sort(key=lambda r: r.image_index)
 
+    fused_measurements = None
+    try:
+        fused_measurements = fuse_measurements(
+            [img.feature_measurements for img in image_results if img.feature_measurements]
+        )
+    except Exception as exc:
+        if config.VISION_FAIL_OPEN:
+            warnings.append(f"Measurement fusion error (fail-open): {exc}")
+        else:
+            raise
+
     overall_status = "ok"
     if any(img.segmentation.status in ("ambiguous", "needs_user_selection") or img.segmentation.needs_user_selection for img in image_results):
         overall_status = "needs_review"
@@ -535,5 +585,6 @@ async def process_images(
             depth_loaded=registry.depth_loaded,
         ),
         images=image_results,
+        feature_measurements=fused_measurements,
         warnings=warnings,
     )

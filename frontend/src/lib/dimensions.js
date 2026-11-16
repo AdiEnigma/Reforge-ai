@@ -30,8 +30,12 @@ const FALLBACK_SOURCE_KEYS = {
 };
 
 export function dimensionSourceLabel(source) {
-  if (source === 'user') return 'USER';
-  if (source === 'measured') return 'MEASURED';
+  if (!source) return 'ESTIMATED';
+  const s = String(source).toLowerCase();
+  if (s === 'user' || s === 'user_provided') return 'USER';
+  if (s === 'measured') return 'MEASURED';
+  if (s === 'vision_estimated') return 'VISION-ESTIMATED';
+  if (s === 'assumed') return 'ASSUMED';
   return 'ESTIMATED';
 }
 

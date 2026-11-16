@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { callCadService, isCadEnabled, chooseCadRoute } from "./cad-adapter.js";
+import {
+  callCadService,
+  isCadEnabled,
+  chooseCadRoute,
+  chooseMeasurementRoute,
+} from "./cad-adapter.js";
 
 async function withServer(handler, run) {
   const server = http.createServer(handler);
@@ -97,6 +102,24 @@ test("chooseCadRoute sends non-gear styles to advanced when enabled", () => {
     }
     assert.equal(chooseCadRoute({ style: "gear" }).mode, "legacy");
     assert.equal(chooseCadRoute(null).mode, "legacy");
+  } finally {
+    delete process.env.CAD_ADVANCED_ENABLED;
+  }
+});
+
+test("chooseCadRoute prefers measurements and exposes the measurement route", () => {
+  process.env.CAD_ADVANCED_ENABLED = "true";
+  try {
+    const measurements = { schema_version: 1, agreement_score: 0.9 };
+    assert.deepEqual(chooseMeasurementRoute(), {
+      path: "/cad/generate-from-measurements",
+      mode: "measurement",
+    });
+    assert.deepEqual(chooseCadRoute({ style: "revolved" }, null, measurements), {
+      path: "/cad/generate-from-measurements",
+      mode: "measurement",
+    });
+    assert.equal(chooseCadRoute({ style: "gear" }, null, null).mode, "legacy");
   } finally {
     delete process.env.CAD_ADVANCED_ENABLED;
   }

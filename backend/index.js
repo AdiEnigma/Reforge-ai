@@ -18,7 +18,12 @@ import {
   reconstructionImageRoot,
 } from './reconstruction-photos.js';
 import { deriveAssumptions, deriveUserDimensions } from './assumptions.js';
-import { isCadEnabled, callCadService, chooseCadRoute } from './cad-adapter.js';
+import {
+  isCadEnabled,
+  callCadService,
+  chooseCadRoute,
+  chooseMeasurementRoute,
+} from './cad-adapter.js';
 import {
   newJobId,
   stageCadOutputs,
@@ -132,7 +137,22 @@ function validateImages(images) {
   return clean;
 }
 
-const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle"];
+const REFERENCE_KEYS = [
+  "outerDiameter",
+  "innerDiameter",
+  "height",
+  "length",
+  "thickness",
+  "width",
+  "teeth",
+  "module",
+  "helixAngle",
+  // A bore and a bolt pattern are what distinguish a flange from a blank disc.
+  // Stripping them here made those features unreachable from the UI.
+  "boltCircleDiameter",
+  "holeDiameter",
+  "holeCount",
+];
 
 function sanitizeReference(raw) {
   if (!raw || typeof raw !== "object") return {};
@@ -146,6 +166,8 @@ function sanitizeReference(raw) {
       if (value >= 0 && value <= 60) clean[key] = value;
     } else if (key === "module") {
       if (value > 0 && value <= 100) clean[key] = value;
+    } else if (key === "holeCount") {
+      if (value >= 1 && value <= 200) clean[key] = Math.round(value);
     } else if (value > 0 && value <= 100000) {
       clean[key] = value;
     }
@@ -157,24 +179,38 @@ async function analyzeFromImages(images, reference) {
   // Optional vision preprocessing — fail-open by default (null if disabled/offline/error)
   let visionEvidence = null;
   let visionObservations = null;
+  let featureMeasurements = null;
+  const stages = { vision: "skipped", gemini: "pending", measurement: "unavailable" };
   if (isVisionEnabled()) {
+    stages.vision = "executed";
     try {
       const visionResult = await callVisionService(images, reference);
       if (visionResult) {
         visionEvidence = buildVisionEvidenceSummary(visionResult);
         visionObservations = buildVisionObservations(visionResult);
+        featureMeasurements = visionEvidence?.feature_measurements || null;
+        stages.measurement = featureMeasurements
+          ? (featureMeasurements.status === "ok" ? "executed" : "partial")
+          : "unavailable";
+      } else {
+        stages.vision = "failed";
       }
     } catch (visionError) {
+      stages.vision = "failed";
       console.warn('[analyze-component] Unexpected vision error (continuing without vision):', visionError?.message);
     }
   }
 
   const rawAnalysis = await analyzeComponent({ images, reference, visionEvidence });
+  stages.gemini = "executed";
   const { analysis, hasEstimates, anchorDimension, anchorSource, scale } =
     deriveAssumptions(rawAnalysis, { reference, visionEvidence });
 
   if (visionObservations) {
     analysis.visionObservations = visionObservations;
+  }
+  if (featureMeasurements) {
+    analysis.featureMeasurements = featureMeasurements;
   }
 
   const responseBody = {
@@ -187,6 +223,9 @@ async function analyzeFromImages(images, reference) {
     anchorDimension,
     anchorSource,
     scale,
+    featureMeasurements,
+    stages,
+    gemini: analysis.meta || null,
   };
   if (visionEvidence) {
     responseBody.visionDiagnostics = {
@@ -593,6 +632,84 @@ function analysisFromDimensions(recipe, dimensions) {
   return analysis;
 }
 
+const MEASUREMENT_KEY_MAP = {
+  outerDiameter: "outer_diameter",
+  innerDiameter: "bore_diameter",
+  boreDiameter: "bore_diameter",
+  height: "height",
+  thickness: "thickness",
+  width: "width",
+  length: "length",
+  holeCount: "hole_count",
+  holeDiameter: "hole_diameter",
+  boltCircleDiameter: "bolt_circle_diameter",
+  boltCircleRadius: "bolt_circle_radius",
+};
+
+// True when the caller supplied dimensions that describe an interior feature.
+// The measurement engine prefers them over photo ratios, so they can carry a
+// build that the photograph alone cannot describe.
+function hasUserFeatureDimensions(dims) {
+  if (!dims || typeof dims !== "object") return false;
+  const hasBore = Number.isFinite(dims.bore_diameter) && dims.bore_diameter > 0;
+  const hasPattern =
+    Number.isFinite(dims.hole_count) &&
+    dims.hole_count > 0 &&
+    Number.isFinite(dims.bolt_circle_diameter) &&
+    dims.bolt_circle_diameter > 0 &&
+    Number.isFinite(dims.hole_diameter) &&
+    dims.hole_diameter > 0;
+  return hasBore || hasPattern;
+}
+
+function normalizeMeasurementUserDimensions(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const target = MEASUREMENT_KEY_MAP[key] || key;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
+    out[target] = value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function mapMeasurementNeedsInput(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (!item || typeof item !== "object") return null;
+      return item.question || item.reason || item.parameter || null;
+    })
+    .filter((item) => typeof item === "string" && item.length > 0);
+}
+
+function measurementConfidenceGate(featureMeasurements) {
+  if (!featureMeasurements || typeof featureMeasurements !== "object") {
+    return { pass: false, reason: "no_measurements" };
+  }
+  const gate = Number(process.env.MEASUREMENT_CONFIDENCE_GATE);
+  const threshold = Number.isFinite(gate) ? gate : 0.55;
+  const agreement = Number(featureMeasurements.agreement_score);
+  const viewConfidence = Number(featureMeasurements.view?.confidence);
+  const status = featureMeasurements.status;
+  if (status === "failed" || status === "unknown") {
+    return { pass: false, reason: "measurement_status_" + status, threshold };
+  }
+  if (!Number.isFinite(agreement) || agreement < threshold) {
+    return {
+      pass: false,
+      reason: "agreement_below_gate",
+      agreement: Number.isFinite(agreement) ? agreement : null,
+      threshold,
+    };
+  }
+  if (Number.isFinite(viewConfidence) && viewConfidence < 0.5) {
+    return { pass: false, reason: "view_confidence_below_gate", viewConfidence, threshold };
+  }
+  return { pass: true, agreement, viewConfidence, threshold };
+}
+
 function sanitizeCadBuildBody(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     const error = new Error("Request body must be an object.");
@@ -602,17 +719,36 @@ function sanitizeCadBuildBody(raw) {
   let analysis = raw.analysis;
   let recipeSource = raw.recipe;
   if (!analysis || typeof analysis !== "object" || Array.isArray(analysis)) {
-    if (recipeSource == null) {
-      const error = new Error("analysis or recipe must be provided.");
+    if (recipeSource == null && raw.feature_measurements == null) {
+      const error = new Error("analysis, recipe or feature_measurements must be provided.");
       error.status = 400;
       throw error;
     }
-    analysis = analysisFromDimensions(recipeSource, raw.dimensions);
+    analysis = recipeSource != null
+      ? analysisFromDimensions(recipeSource, raw.dimensions)
+      : {};
   }
   recipeSource = recipeSource ?? analysis.geometryRecipe;
-  if (!recipeSource || typeof recipeSource !== "object" || Array.isArray(recipeSource)) {
+
+  let featureMeasurements = raw.feature_measurements ?? analysis.featureMeasurements ?? null;
+  if (featureMeasurements != null) {
+    if (typeof featureMeasurements !== "object" || Array.isArray(featureMeasurements)) {
+      const error = new Error("feature_measurements must be an object.");
+      error.status = 400;
+      throw error;
+    }
+    if (JSON.stringify(featureMeasurements).length > 512 * 1024) {
+      const error = new Error("feature_measurements is too large.");
+      error.status = 413;
+      throw error;
+    }
+  }
+  if (
+    (!recipeSource || typeof recipeSource !== "object" || Array.isArray(recipeSource)) &&
+    !featureMeasurements
+  ) {
     const error = new Error(
-      "A geometry recipe is required before CAD can be built."
+      "A geometry recipe or feature_measurements document is required before CAD can be built."
     );
     error.status = 400;
     throw error;
@@ -658,6 +794,8 @@ function sanitizeCadBuildBody(raw) {
     extraUserDimensions: sanitizeReference(raw.user_dimensions),
     solverOutput,
     visionObservations,
+    featureMeasurements,
+    exportOverride: raw.export_override === true,
   };
 }
 
@@ -678,10 +816,40 @@ function cadProvenance(analysis) {
 
 async function buildCadFromBody(rawBody) {
   const body = sanitizeCadBuildBody(rawBody);
-  const { analysis, reference, extraUserDimensions, solverOutput, visionObservations } = body;
+  const {
+    analysis,
+    reference,
+    extraUserDimensions,
+    solverOutput,
+    visionObservations,
+    featureMeasurements,
+    exportOverride,
+  } = body;
   const { analysis: enriched } = deriveAssumptions(analysis, { reference });
-  const recipe = sanitizeRecipe(enriched.geometryRecipe ?? body.recipeSource);
-  if (!recipe || !recipe.style) {
+  const recipe = body.recipeSource
+    ? sanitizeRecipe(enriched.geometryRecipe ?? body.recipeSource)
+    : null;
+  const gate = measurementConfidenceGate(featureMeasurements);
+  // Weak photo agreement must not throw away measurements the user typed in.
+  // A photo can hide an interior feature entirely (a white-on-white bore, bolt
+  // holes lost in shadow); the recipe fallback cannot express those features at
+  // all, so honour the user's dimensions and let the measurement engine build
+  // from them.
+  const userFeatureDimensions = normalizeMeasurementUserDimensions(extraUserDimensions);
+  const userDimensionsOverrideGate =
+    Boolean(featureMeasurements) &&
+    !gate.pass &&
+    (gate.reason === "agreement_below_gate" ||
+      gate.reason === "view_confidence_below_gate") &&
+    hasUserFeatureDimensions(userFeatureDimensions);
+  const effectiveGate = userDimensionsOverrideGate
+    ? { ...gate, pass: true, rawPass: false, overriddenBy: "user_feature_dimensions" }
+    : gate;
+  const useMeasurements = Boolean(featureMeasurements) && effectiveGate.pass;
+  const photoMeasurementRejected =
+    Boolean(featureMeasurements) && !effectiveGate.pass && !userDimensionsOverrideGate;
+  let fellBackFromMeasurement = false;
+  if ((!recipe || !recipe.style) && !useMeasurements) {
     return ({
       jobId: null,
       state: "failed",
@@ -690,16 +858,25 @@ async function buildCadFromBody(rawBody) {
       warnings: [],
       needsInput: null,
       result: null,
-      error: "The geometry recipe is not supported. Adjust the dimensions and try again.",
+      stage: featureMeasurements ? "measurement_confidence_gate" : "geometry_recipe",
+      error: featureMeasurements
+        ? `Vision measurements were not confident enough to drive CAD (${gate.reason}).`
+        : "The geometry recipe is not supported. Adjust the dimensions and try again.",
+      measurementGate: effectiveGate,
+      photoMeasurementRejected: photoMeasurementRejected,
     });
   }
   const provenance = cadProvenance(enriched);
   const jobId = newJobId();
-  const allowAssumedExports = process.env.ALLOW_ASSUMED_EXPORTS !== "false";
-  const exportBlocked = !allowAssumedExports && !enriched.anchorDimension;
-  const exportBlockedReason = exportBlocked
+  // Assumed dimensions must never be exported by default. Opt in explicitly
+  // with ALLOW_ASSUMED_EXPORTS=true (and/or an export_override request).
+  const allowAssumedExports = process.env.ALLOW_ASSUMED_EXPORTS === "true";
+  const legacyExportBlocked = !allowAssumedExports && !enriched.anchorDimension;
+  const legacyExportBlockedReason = legacyExportBlocked
     ? "Add at least one user-provided or measured dimension to enable STEP/STL export."
     : null;
+  let exportBlocked = legacyExportBlocked;
+  let exportBlockedReason = legacyExportBlockedReason;
 
   if (!isCadEnabled()) {
     return ({
@@ -713,6 +890,7 @@ async function buildCadFromBody(rawBody) {
       error: "CAD generation is not enabled. Showing the approximate preview instead.",
       exportBlocked: true,
       exportBlockedReason,
+      photoMeasurementRejected,
       provenance,
     });
   }
@@ -721,37 +899,109 @@ async function buildCadFromBody(rawBody) {
     ...deriveUserDimensions(enriched),
     ...extraUserDimensions,
   };
+  const measurementUserDimensions = normalizeMeasurementUserDimensions({
+    ...userDimensions,
+    ...extraUserDimensions,
+  });
 
-  const cadRoute = chooseCadRoute(recipe, solverOutput);
-  const cadPayload = {
-    job_id: jobId,
-    recipe,
-    user_dimensions: Object.keys(userDimensions).length ? userDimensions : null,
-    solver_output: solverOutput,
-    opencv_observations: visionObservations,
-  };
-  if (cadRoute.mode === "advanced") {
-    cadPayload.strict = false;
+  let cadRoute = useMeasurements
+    ? chooseMeasurementRoute()
+    : chooseCadRoute(recipe, solverOutput);
+  let cadPayload;
+  if (cadRoute.mode === "measurement") {
+    cadPayload = {
+      job_id: jobId,
+      measurements: featureMeasurements,
+      user_dimensions: measurementUserDimensions,
+      hints: { part_type: enriched.componentType || null },
+      generate_previews: false,
+      allow_assumed_exports: allowAssumedExports,
+      export_override: exportOverride,
+    };
+  } else {
+    cadPayload = {
+      job_id: jobId,
+      recipe,
+      user_dimensions: Object.keys(userDimensions).length ? userDimensions : null,
+      solver_output: solverOutput,
+      opencv_observations: visionObservations,
+    };
+    if (cadRoute.mode === "advanced") {
+      cadPayload.strict = false;
+    }
   }
-  const result = await callCadService(cadPayload, cadRoute);
+  let result = await callCadService(cadPayload, cadRoute);
+  const routeAttempts = [{
+    mode: cadRoute.mode,
+    ok: Boolean(result.ok),
+    status: result.status,
+    stage: result.body?.stage || null,
+  }];
+  let measurementFailure = null;
+
+  if (!result.ok && cadRoute.mode === "measurement") {
+    measurementFailure = {
+      status: result.status,
+      stage: result.body?.stage || "measurement_cad",
+      error: result.error || result.body?.error || null,
+      details: result.body?.details ?? null,
+      featureId: result.body?.feature_id ?? null,
+      validationReport: result.body?.validation_report ?? null,
+      needsInput: mapMeasurementNeedsInput(result.body?.needs_input),
+      sanityErrors: result.body?.sanity_errors ?? null,
+    };
+    if (recipe && recipe.style) {
+      fellBackFromMeasurement = true;
+      cadRoute = chooseCadRoute(recipe, solverOutput);
+      cadPayload = {
+        job_id: jobId,
+        recipe,
+        user_dimensions: Object.keys(userDimensions).length ? userDimensions : null,
+        solver_output: solverOutput,
+        opencv_observations: visionObservations,
+      };
+      if (cadRoute.mode === "advanced") cadPayload.strict = false;
+      result = await callCadService(cadPayload, cadRoute);
+      routeAttempts.push({
+        mode: cadRoute.mode,
+        ok: Boolean(result.ok),
+        status: result.status,
+        stage: result.body?.stage || null,
+        fallbackFrom: "measurement",
+      });
+    }
+  }
 
   if (!result.ok) {
     const unavailable = [502, 503, 504].includes(result.status);
-    const needsInput = result.body?.status === "needs_input";
+    const bodyNeedsInput = result.body?.status === "needs_input";
+    const measurementNeedsInput = mapMeasurementNeedsInput(result.body?.needs_input);
+    const needsInput = bodyNeedsInput || measurementNeedsInput.length > 0;
+    const stage = result.body?.stage || measurementFailure?.stage || "cad_generation";
     return ({
       jobId: needsInput ? jobId : null,
       state: unavailable ? "unavailable" : needsInput ? "needs_input" : "failed",
       status: unavailable ? "unavailable" : needsInput ? "needs_input" : "failed",
       progress: 0,
       warnings: [],
-      needsInput: needsInput ? result.body?.missing ?? [] : null,
+      needsInput: needsInput
+        ? (result.body?.missing ?? measurementNeedsInput)
+        : null,
       result: null,
-      stage: result.body?.stage || "cad_generation",
+      stage,
       error: unavailable
         ? "CAD service is unavailable. Showing the approximate preview instead."
         : needsInput
           ? "Additional dimensions are required to build this model."
           : "CAD generation failed. Check the required dimensions and try again.",
+      details: result.body?.details ?? null,
+      featureId: result.body?.feature_id ?? null,
+      validationReport: result.body?.validation_report ?? null,
+      serviceError: result.error || result.body?.error || null,
+      measurementFailure,
+      routeAttempts,
+      measurementGate: effectiveGate,
+      photoMeasurementRejected: photoMeasurementRejected || fellBackFromMeasurement,
       exportBlocked: true,
       exportBlockedReason,
       provenance,
@@ -759,11 +1009,35 @@ async function buildCadFromBody(rawBody) {
   }
 
   const responseBody = result.body || {};
+  const isMeasurement = cadRoute.mode === "measurement";
+  const responseExportAllowed = isMeasurement
+    ? responseBody.export_allowed !== false
+    : !exportBlocked;
+  exportBlocked = !responseExportAllowed;
+  if (isMeasurement) {
+    const reasons = Array.isArray(responseBody.export_block_reasons)
+      ? responseBody.export_block_reasons
+      : [];
+    exportBlockedReason = exportBlocked
+      ? `Manufacturing export blocked: ${reasons.join(", ") || "unknown critical dimensions"}.`
+      : null;
+  }
+  // A recipe built only because photo measurements were rejected (or the
+  // measurement service failed) is an approximate preview, not a validated
+  // model: block STEP/STL export unless the caller explicitly opted in.
+  const recipeFallbackFromPhoto = photoMeasurementRejected || fellBackFromMeasurement;
+  if (recipeFallbackFromPhoto && !exportOverride && !isMeasurement) {
+    exportBlocked = true;
+    exportBlockedReason =
+      "Photo measurements were not confident enough to validate this model; enter dimensions to enable export.";
+  }
   const files = await stageCadOutputs({
     jobId,
     stepPath: responseBody.step_path,
     stlPath: responseBody.stl_path,
-    meshPath: responseBody.mesh_path,
+    meshPath: isMeasurement
+      ? (responseBody.mesh_path || responseBody.preview_mesh_path)
+      : responseBody.mesh_path,
     includeStep: !exportBlocked,
     includeStl: !exportBlocked,
     includeMesh: true,
@@ -774,6 +1048,31 @@ async function buildCadFromBody(rawBody) {
   const issues = Array.isArray(responseBody.validation_report?.issues)
     ? responseBody.validation_report.issues.slice(0, 20)
     : [];
+  const measurement = isMeasurement
+    ? {
+        status: responseBody.measurement_status || null,
+        previewOnly: Boolean(responseBody.preview_only),
+        manufacturingReady: Boolean(responseBody.manufacturing_ready),
+        exportAllowed: Boolean(responseBody.export_allowed),
+        exportBlockReasons: responseBody.export_block_reasons || [],
+        scale: responseBody.scale || null,
+        topology: responseBody.topology || null,
+        provenance: responseBody.provenance || {},
+        needsInput: responseBody.needs_input || [],
+        assumedDimensions: responseBody.assumed_dimensions || [],
+        criticalUnknowns: responseBody.critical_unknowns || [],
+        validationStatuses: responseBody.validation_statuses || {},
+        featureFit: responseBody.feature_fit || null,
+        confidence: typeof responseBody.confidence === "number" ? responseBody.confidence : null,
+        featureRecipe: responseBody.feature_recipe || null,
+      }
+    : null;
+  const dimensionalScore = measurement?.featureFit?.score ?? null;
+  const validationReport = {
+    ...(responseBody.validation_report || {}),
+    validation_statuses: responseBody.validation_statuses || undefined,
+    feature_fit: responseBody.feature_fit || undefined,
+  };
 
   return ({
     jobId,
@@ -788,15 +1087,22 @@ async function buildCadFromBody(rawBody) {
       stlUrl: files.stl || null,
       exportBlocked,
       exportBlockedReason,
-      validationReport: responseBody.validation_report || {},
+      validationReport,
       featureTree: responseBody.feature_tree || responseBody.feature_history || [],
       cadMode: cadRoute.mode,
       dimensions: provenance.dimensionsDetail,
       hasEstimates: provenance.hasEstimates,
-      confidence:
+      confidence: isMeasurement
+        ? (measurement?.confidence ?? null)
+        : (typeof enriched.overallConfidence === "number"
+            ? enriched.overallConfidence
+            : Number(enriched.confidence) || 0),
+      classificationConfidence:
         typeof enriched.overallConfidence === "number"
           ? enriched.overallConfidence
           : Number(enriched.confidence) || 0,
+      measurement,
+      gemini: enriched.meta || analysis.meta || null,
       model: {
         bbox,
         volumeMm3:
@@ -812,13 +1118,26 @@ async function buildCadFromBody(rawBody) {
           typeof responseBody.validation_report?.fit_score === "number"
             ? responseBody.validation_report.fit_score
             : null,
+        dimensionalScore,
+        dimensionalStatus: measurement?.featureFit?.status || null,
         issues,
+      },
+      stages: {
+        measurement: {
+          status: isMeasurement ? "executed" : (measurementFailure ? "failed" : "skipped"),
+          reason: gate.pass ? null : gate.reason,
+        },
+        cad: { status: "executed", mode: cadRoute.mode, path: cadRoute.path },
       },
     },
     error: null,
     exportBlocked,
     exportBlockedReason,
-    previewOnly: exportBlocked,
+    previewOnly: isMeasurement ? Boolean(responseBody.preview_only) : exportBlocked,
+    measurementFailure,
+    routeAttempts,
+    measurementGate: effectiveGate,
+    photoMeasurementRejected: recipeFallbackFromPhoto,
     provenance,
   });
 }
@@ -854,6 +1173,8 @@ async function processAnalysisJob(jobId, input) {
     const build = await buildCadFromBody({
       analysis: analysisResponse.analysis,
       reference: input.reference,
+      user_dimensions: input.reference,
+      feature_measurements: analysisResponse.featureMeasurements,
     });
     const state = build?.state || "failed";
     updateJob(jobId, {
@@ -869,9 +1190,19 @@ async function processAnalysisJob(jobId, input) {
       needsInput: build?.needsInput ?? null,
       result: build?.result ?? null,
       error: build?.error ?? null,
+      details: build?.details ?? null,
+      featureId: build?.featureId ?? null,
+      validationReport: build?.validationReport ?? null,
+      measurementFailure: build?.measurementFailure ?? null,
+      measurementGate: build?.measurementGate ?? null,
+      routeAttempts: build?.routeAttempts ?? null,
       exportBlocked: Boolean(build?.exportBlocked),
       exportBlockedReason: build?.exportBlockedReason || null,
       provenance: build?.provenance || null,
+      gemini: analysisResponse.gemini || null,
+      stages: build?.result?.stages
+        ? { ...analysisResponse.stages, ...build.result.stages }
+        : analysisResponse.stages,
       warnings: [
         ...(analysisResponse.visionDiagnostics?.warnings || []),
         ...(build?.warnings || []),

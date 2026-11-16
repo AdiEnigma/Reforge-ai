@@ -14,6 +14,10 @@ preview.
 
 - Photo analysis with Gemini, with optional local vision preprocessing
   (SAM 2 masks, OpenCV circles/contours/calibration, Depth Anything V2)
+- Measurement-driven CAD: fused photo ratios synthesize generic feature
+  recipes, are compared against the built solid, and gate manufacturing export
+  behind honest geometry/reconstruction/accuracy/readiness statuses
+  ([details](docs/MEASUREMENT_PIPELINE.md))
 - Editable dimensions with per-dimension provenance (`user`, `measured`,
   `assumed`, `estimated`) and an anchor dimension that gates export
 - Parametric CAD generation in Python (CadQuery) with legacy and feature-based
@@ -130,7 +134,7 @@ The Node API is the only process intended to be browser-facing in development.
 | `POST` | `/api/jobs` | Create an analysis + CAD job (returns `202` with a job id) |
 | `GET` | `/api/jobs/:id` | Poll job state, progress and result |
 | `POST` | `/api/jobs/:id/resume` | Supply dimensions for a `needs_input` job |
-| `POST` | `/api/cad/build` | Build CAD from an analysis/recipe (blocking) |
+| `POST` | `/api/cad/build` | Build CAD from measurements, an analysis or a recipe (blocking) |
 | `GET` | `/api/cad/files/:filename` | Download staged STEP/STL/mesh output |
 | `POST` | `/api/reconstruct` | COLMAP + SciPy reconstruction (accepts inline `photos[]`) |
 | `POST` | `/api/chat` | AI Engineer chat |
@@ -163,6 +167,9 @@ Set these in `backend/.env.local`.
 | `CAD_SERVICE_URL` | `http://127.0.0.1:8766` | Python engineering service URL |
 | `CAD_TIMEOUT_SECONDS` | `120` | CAD request timeout |
 | `CAD_ADVANCED_ENABLED` | `false` | Route non-gear recipes to the feature pipeline |
+| `MEASUREMENT_CONFIDENCE_GATE` | `0.55` | Minimum fused measurement agreement for the measurement CAD route |
+| `GEMINI_CONSENSUS_RUNS` | `1` | Gemini analysis passes (clamped 1-5; majority/median merge) |
+| `ALLOW_ASSUMED_EXPORTS` | `false` | Allow STEP/STL export when critical dimensions are assumed |
 | `CAD_STORE_DIR` | `backend/var/cad` | Staged CAD artefacts |
 | `CAD_JOB_TTL_HOURS` | `24` | Staged artefact retention |
 | `RECONSTRUCTION_ENABLED` | `false` | Enable COLMAP + SciPy reconstruction |

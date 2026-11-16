@@ -24,17 +24,34 @@ export function isCadEnabled() {
 
 const ADVANCED_LEGACY_STYLES = new Set(["revolved", "extruded", "combination"]);
 
+export const MEASUREMENT_ROUTE = "/cad/generate-from-measurements";
+
+/**
+ * Route for the measurement-driven synthesis endpoint. Callers decide whether
+ * the measurement confidence gate passed; this function only describes the
+ * endpoint.
+ * @returns {{ path: string, mode: "measurement" }}
+ */
+export function chooseMeasurementRoute() {
+  return { path: MEASUREMENT_ROUTE, mode: "measurement" };
+}
+
 /**
  * Pick the Python CAD endpoint for a recipe.
  *
- * Legacy `/cad/generate` remains the default for every style (including gears,
- * which the advanced adapter cannot convert). When `CAD_ADVANCED_ENABLED=true`,
- * non-gear revolved/extruded/combination recipes are routed through the
- * feature-based `/cad/generate-advanced` pipeline.
+ * When a fused `feature_measurements` document is supplied, the measurement
+ * route is used. Otherwise legacy `/cad/generate` remains the default for
+ * every style (including gears, which the advanced adapter cannot convert).
+ * When `CAD_ADVANCED_ENABLED=true`, non-gear revolved/extruded/combination
+ * recipes are routed through the feature-based `/cad/generate-advanced`
+ * pipeline.
  *
- * @returns {{ path: string, mode: "legacy" | "advanced" }}
+ * @returns {{ path: string, mode: "legacy" | "advanced" | "measurement" }}
  */
-export function chooseCadRoute(recipe, _solverOutput = null) {
+export function chooseCadRoute(recipe, _solverOutput = null, featureMeasurements = null) {
+  if (featureMeasurements && typeof featureMeasurements === "object") {
+    return chooseMeasurementRoute();
+  }
   const advancedEnabled = process.env.CAD_ADVANCED_ENABLED === "true";
   const style = recipe && typeof recipe === "object" ? recipe.style : null;
   if (advancedEnabled && ADVANCED_LEGACY_STYLES.has(style)) {

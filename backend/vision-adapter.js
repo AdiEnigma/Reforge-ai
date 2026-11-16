@@ -108,7 +108,137 @@ const OBSERVATION_LIMITS = {
   ellipses: 30,
   lines: 100,
   contours: 50,
+  concentric: 16,
+  patterns: 16,
+  holes: 64,
+  polygonPoints: 16,
+  profilePoints: 24,
+  images: 16,
 };
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function numberOrNull(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function compactPoint(point, keys) {
+  if (!point || typeof point !== 'object') return null;
+  const out = {};
+  for (const key of keys) out[key] = numberOrNull(point[key]);
+  return out;
+}
+
+/**
+ * Compact, pixel-free copy of a feature_measurements document.  Ratio values
+ * are proportions of the outer radius/diameter; they are never millimetres.
+ */
+export function compactFeatureMeasurements(measurement) {
+  if (!measurement || typeof measurement !== 'object' || Array.isArray(measurement)) {
+    return null;
+  }
+  const side = measurement.side_profile;
+  const polygon = measurement.polygon;
+  return {
+    schema_version: measurement.schema_version || null,
+    status: measurement.status || 'unknown',
+    view: measurement.view
+      ? {
+          label: measurement.view.label || 'unknown',
+          confidence: numberOrNull(measurement.view.confidence),
+          vote_agreement: numberOrNull(measurement.view.vote_agreement),
+        }
+      : null,
+    outer: measurement.outer
+      ? {
+          shape: measurement.outer.shape || 'unknown',
+          non_circular: Boolean(measurement.outer.non_circular),
+          confidence: numberOrNull(measurement.outer.confidence),
+        }
+      : null,
+    concentric: asArray(measurement.concentric)
+      .slice(0, OBSERVATION_LIMITS.concentric)
+      .map((item) => ({
+        radius_ratio: numberOrNull(item.radius_ratio),
+        confidence: numberOrNull(item.confidence),
+        image_count: numberOrNull(item.image_count),
+        agreement: numberOrNull(item.agreement),
+      }))
+      .filter((item) => item.radius_ratio != null),
+    radial_patterns: asArray(measurement.radial_patterns)
+      .slice(0, OBSERVATION_LIMITS.patterns)
+      .map((item) => ({
+        count: numberOrNull(item.count),
+        observed_count: numberOrNull(item.observed_count),
+        occluded_estimate: numberOrNull(item.occluded_estimate),
+        pattern_radius_ratio: numberOrNull(item.pattern_radius_ratio),
+        hole_radius_ratio: numberOrNull(item.hole_radius_ratio),
+        start_angle_deg: numberOrNull(item.start_angle_deg),
+        angular_residual_deg: numberOrNull(item.angular_residual_deg),
+        count_confidence: numberOrNull(item.count_confidence),
+        confidence: numberOrNull(item.confidence),
+        image_count: numberOrNull(item.image_count),
+      })),
+    holes: asArray(measurement.holes)
+      .slice(0, OBSERVATION_LIMITS.holes)
+      .map((item) => ({
+        x_ratio: numberOrNull(item.x_ratio),
+        y_ratio: numberOrNull(item.y_ratio),
+        radius_ratio: numberOrNull(item.radius_ratio),
+        confidence: numberOrNull(item.confidence),
+      }))
+      .filter((item) => item.x_ratio != null && item.y_ratio != null && item.radius_ratio != null),
+    side_profile: side
+      ? {
+          points: asArray(side.points)
+            .slice(0, OBSERVATION_LIMITS.profilePoints)
+            .map((point) => compactPoint(point, ['z_ratio', 'r_ratio']))
+            .filter(Boolean),
+          thickness_ratio: numberOrNull(side.thickness_ratio),
+          height_ratio: numberOrNull(side.height_ratio),
+          hub_height_ratio: numberOrNull(side.hub_height_ratio),
+          hub_radius_ratio: numberOrNull(side.hub_radius_ratio),
+          step_count: numberOrNull(side.step_count),
+          confidence: numberOrNull(side.confidence),
+        }
+      : null,
+    polygon: polygon
+      ? {
+          points: asArray(polygon.points)
+            .slice(0, OBSERVATION_LIMITS.polygonPoints)
+            .map((point) => compactPoint(point, ['x_ratio', 'y_ratio']))
+            .filter(Boolean),
+          point_count: numberOrNull(polygon.point_count),
+          confidence: numberOrNull(polygon.confidence),
+        }
+      : null,
+    agreement_score: numberOrNull(measurement.agreement_score),
+    conflicts: asArray(measurement.conflicts).filter((item) => typeof item === 'string'),
+    needs_input: asArray(measurement.needs_input)
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({
+        parameter: item.parameter || null,
+        question: item.question || null,
+        reason: item.reason || null,
+      })),
+    warnings: asArray(measurement.warnings).filter((item) => typeof item === 'string'),
+    image_count: asArray(measurement.images).length || numberOrNull(measurement.image_count) || 0,
+  };
+}
+
+function compactImagesMeasurements(images) {
+  return asArray(images)
+    .slice(0, OBSERVATION_LIMITS.images)
+    .map((img) => ({
+      image_index: img.image_index ?? null,
+      view: img.view ? img.view.label || 'unknown' : img.feature_measurements?.view?.label || 'unknown',
+      view_confidence: img.view
+        ? numberOrNull(img.view.confidence)
+        : numberOrNull(img.feature_measurements?.view?.confidence),
+    }));
+}
 
 function finiteOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -203,11 +333,14 @@ export function buildVisionObservations(visionResult) {
           confidence: finiteOrNull(contour.confidence),
         }));
 
+      const featureMeasurements = compactFeatureMeasurements(img.feature_measurements);
+
       return {
         image_index: img.image_index,
         width: img.width ?? null,
         height: img.height ?? null,
         calibration: img.calibration || null,
+        feature_measurements: featureMeasurements,
         segmentation: img.segmentation
           ? {
               status: img.segmentation.status,
@@ -226,6 +359,10 @@ export function buildVisionObservations(visionResult) {
         },
       };
     }),
+    feature_measurements: compactFeatureMeasurements(visionResult.feature_measurements),
+    feature_measurements_images: visionResult.feature_measurements
+      ? compactImagesMeasurements(visionResult.images)
+      : [],
     warnings: Array.isArray(visionResult.warnings) ? visionResult.warnings : [],
   };
 }
@@ -278,7 +415,10 @@ export function buildVisionEvidenceSummary(visionResult) {
           }
         : null,
       calibration: img.calibration,
+      feature_measurements: compactFeatureMeasurements(img.feature_measurements),
     })),
+    feature_measurements: compactFeatureMeasurements(visionResult.feature_measurements),
+    feature_measurement_images: compactImagesMeasurements(visionResult.images),
     warnings: visionResult.warnings,
   };
 }

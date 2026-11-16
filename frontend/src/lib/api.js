@@ -123,6 +123,19 @@ export async function runAnalysisJob(images, reference, options = {}) {
   return waitForJob(job.id, options);
 }
 
+export async function reconstructComponent({ images, reference, componentType, opencvObservations, constraints }) {
+  const payloads = await Promise.all((images || []).map(({ file }) => fileToPayload(file)));
+  const result = await postJson("/api/reconstruct", {
+    photos: payloads,
+    component_type: componentType,
+    user_dimensions: reference,
+    opencv_observations: opencvObservations,
+    constraints,
+  });
+  if (!result) throw new ApiError("Server returned no reconstruction result.", 502);
+  return result;
+}
+
 export async function fetchCadMesh(fileUrl, options) {
   const response = await fetch(fileUrl, options);
   if (!response.ok) {

@@ -322,19 +322,51 @@ def _nice_scale(model_size: float, target: float) -> float:
 
 
 def build_housing_drawing_spec(recipe: Dict[str, Any], measured: Dict[str, Any],
-                               section_shape: Optional[cq.Shape] = None) -> DrawingSpec:
+                               section_shape: Optional[cq.Shape] = None,
+                               workplane: Optional[Any] = None) -> DrawingSpec:
     """Assemble a :class:`DrawingSpec` for the housing from real data.
 
-    Every dimension comes from the recipe's documented ``metadata.dimensions``
-    or the measured bounding box.  Nothing is invented.
+    Every dimension comes from the modeled CadQuery solid when ``workplane`` is
+    supplied (CadQuery-accurate: cylindrical faces, circular edges, vertices),
+    falling back to the recipe's documented ``metadata.dimensions`` when it is
+    not.  The measured bounding box supplies overall sizes.  Nothing is invented.
 
     The view layout follows **first-angle** projection:
     ``RIGHT`` (right-side view) is placed to the *left* of ``FRONT`` and ``TOP``
     is placed *below* ``FRONT``.
     """
-    dims: Dict[str, float] = dict((recipe.get("metadata") or {}).get("dimensions") or {})
+    from cad.cadquery_dimensions import extract_dimensions, dimension_values
+
     bbox = measured.get("actual_bbox", {})
     volume = measured.get("actual_volume_mm3", 0.0)
+
+    # CadQuery-accurate dimensions from the actual modeled solid.
+    cqd_values: Dict[str, float] = {}
+    if workplane is not None:
+        try:
+            cqd = extract_dimensions(workplane)
+            cqd_values = dimension_values(cqd)
+        except Exception:  # fall back to recipe metadata on any extraction error
+            cqd_values = {}
+
+    # Recipe-documented dimensions (fallback when no CadQuery solid available).
+    recipe_dims: Dict[str, float] = dict(
+        (recipe.get("metadata") or {}).get("dimensions") or {})
+    dims: Dict[str, float] = dict(cqd_values)
+    for _k, _v in recipe_dims.items():
+        dims.setdefault(_k, _v)
+
+    def _dim_get(*keys: str, default: float = 0.0) -> float:
+        """Return the first found value among ``keys``.
+
+        CadQuery-derived keys are inserted into ``dims`` first, so they take
+        precedence over recipe-documented values.  This makes every dimension
+        callout reflect the actual modeled solid when a workplane is supplied.
+        """
+        for k in keys:
+            if k in dims and dims[k] is not None:
+                return float(dims[k])
+        return default
 
     xlen = float(bbox.get("xlen", 160.0))
     ylen = float(bbox.get("ylen", 160.0))
@@ -458,8 +490,20 @@ def build_housing_drawing_spec(recipe: Dict[str, Any], measured: Dict[str, Any],
 
     if dims:
         d = dims
-        r_flange = d.get("flange_outer_radius", 80.0)
-        r_body = d.get("body_outer_radius", 45.0)
+        # CadQuery-accurate radii: when a workplane was supplied, diameter keys
+        # exist (e.g. body_outer_diameter) and must be halved.  When falling
+        # back to recipe metadata, radius keys (flange_outer_radius,
+        # body_outer_radius) are already radii and must NOT be halved.
+        _flange_dia = d.get("body_outer_diameter")
+        if _flange_dia is not None:
+            r_flange = float(_flange_dia) / 2.0
+        else:
+            r_flange = float(d.get("flange_outer_radius", 80.0))
+        _body_dia = d.get("body_outer_diameter")
+        if _body_dia is not None:
+            r_body = float(_body_dia) / 2.0
+        else:
+            r_body = float(d.get("body_outer_radius", 45.0))
         # ---- FRONT feature callouts --------------------------------------
         # Every front-view feature leader is routed to the RIGHT in a single
         # monotonically-ordered fan: the vertical order of the label points
@@ -467,61 +511,82 @@ def build_housing_drawing_spec(recipe: Dict[str, Any], measured: Dict[str, Any],
         # lines cross.  (The front view's overall vertical dimension was moved
         # to the left to make room.)
         lx = max(xmax, r_flange) + 16.0          # label column (model mm)
-        add_leader("FRONT", d.get("chamfer_size", 1.5),
+        add_leader("FRONT", _dim_get("chamfer_size", default=1.5),
                    (r_body, zmax), (lx, zmax + 8.0),
-                   text=f"{d.get('chamfer_size', 1.5):g} CHAMFER", kind="chamfer")
-        add_diameter("FRONT", d.get("upper_cavity_diameter", 50.0),
-                     (d.get("upper_cavity_diameter", 50.0) / 2.0 * 0.95, zc + 22.0),
+                   text=f"{_dim_get('chamfer_size', default=1.5):g} CHAMFER", kind="chamfer")
+        _cav_dia = _dim_get("upper_cavity_diameter", default=50.0)
+        add_diameter("FRONT", _cav_dia,
+                     (_cav_dia / 2.0 * 0.95, zc + 22.0),
                      (lx, zc + 37.0))
         add_diameter("FRONT", 2 * r_body, (r_body * 0.9, zc + 18.0),
                      (lx, zc + 23.0))
-        cav_depth = d.get("upper_cavity_z_end", 92.0) - d.get("upper_cavity_z_start", 50.0)
-        add_depth("FRONT", cav_depth, (12.0, d.get("upper_cavity_z_start", 50.0)),
+        _cav_start = _dim_get("upper_cavity_z_start", default=50.0)
+        _cav_end = _dim_get("upper_cavity_z_end", default=92.0)
+        cav_depth = _cav_end - _cav_start
+        add_depth("FRONT", cav_depth, (12.0, _cav_start),
                   (lx, zc + 11.0), text=f"{cav_depth:g} CAVITY DEEP")
         add_diameter("FRONT", 2 * r_flange, (r_flange * 0.96, zc),
                      (lx, zc - 1.0))
-        add_diameter("FRONT", d.get("step_bore_diameter", 28.0),
-                     (d.get("step_bore_diameter", 28.0) / 2.0, zc - 6.0),
+        _step_dia = _dim_get("step_bore_diameter", "through_bore_diameter",
+                             default=28.0)
+        add_diameter("FRONT", _step_dia,
+                     (_step_dia / 2.0, zc - 6.0),
                      (lx, zc - 15.0))
-        step_depth = d.get("step_bore_z_end", 52.0) - d.get("step_bore_z_start", 35.0)
-        add_depth("FRONT", step_depth, (9.0, d.get("step_bore_z_start", 35.0)),
+        _step_start = _dim_get("step_bore_z_start", default=35.0)
+        _step_end = _dim_get("step_bore_z_end", default=52.0)
+        step_depth = _step_end - _step_start
+        add_depth("FRONT", step_depth, (9.0, _step_start),
                   (lx, zc - 25.0), text=f"{step_depth:g} STEP DEEP")
-        add_radius("FRONT", d.get("junction_fillet_radius", 3.0),
-                   (r_body, d.get("flange_thickness", 12.0)),
+        add_radius("FRONT", _dim_get("junction_fillet_radius", default=3.0),
+                   (r_body, _dim_get("flange_thickness", default=12.0)),
                    (lx, zmin + 12.0),
-                   text=f"R{d.get('junction_fillet_radius', 3.0):g} FILLET")
-        add_diameter("FRONT", d.get("through_bore_diameter", 14.0),
-                     (d.get("through_bore_diameter", 14.0) / 2.0, zmin + 8.0),
+                   text=f"R{_dim_get('junction_fillet_radius', default=3.0):g} FILLET")
+        _bore_dia = _dim_get("through_bore_diameter", default=14.0)
+        add_diameter("FRONT", _bore_dia,
+                     (_bore_dia / 2.0, zmin + 8.0),
                      (lx, zmin + 2.0))
-        tb_depth = d.get("through_bore_z_end", 37.0) - d.get("through_bore_z_start", -1.0)
-        add_depth("FRONT", tb_depth, (7.0, d.get("through_bore_z_start", -1.0)),
+        _tb_start = _dim_get("through_bore_z_start", default=-1.0)
+        _tb_end = _dim_get("through_bore_z_end", default=37.0)
+        tb_depth = _tb_end - _tb_start
+        add_depth("FRONT", tb_depth, (7.0, _tb_start),
                   (lx, zmin - 6.0), text=f"{tb_depth:g} THRU BORE")
         # ---- Flange thickness (right view, vertical linear at the bottom edge) ----
-        add_linear("RIGHT", "y", zmin, zmin + d.get("flange_thickness", 12.0),
-                   yc, -((ymax - yc) + 20.0), f"{d.get('flange_thickness', 12.0):g}")
+        _flange_thick = _dim_get("flange_thickness", default=12.0)
+        add_linear("RIGHT", "y", zmin, zmin + _flange_thick,
+                   yc, -((ymax - yc) + 20.0), f"{_flange_thick:g}")
         # ---- Boss height (right view, depth callout) ----
-        add_depth("RIGHT", d.get("boss_height", 16.0),
-                  (d.get("boss_start_radius", 44.0), d.get("port_z", 70.0)),
-                  (ymax + 22.0, d.get("port_z", 70.0)),
-                  text=f"{d.get('boss_height', 16.0):g} BOSS HT")
+        _boss_h = _dim_get("boss_height", default=16.0)
+        _boss_start_r = _dim_get("boss_start_radius", default=44.0)
+        _port_z = _dim_get("port_z", default=70.0)
+        add_depth("RIGHT", _boss_h,
+                  (_boss_start_r, _port_z),
+                  (ymax + 22.0, _port_z),
+                  text=f"{_boss_h:g} BOSS HT")
         # ---- Port height (right view, vertical linear) ----
-        add_linear("RIGHT", "y", zmin, d.get("port_z", 70.0), ymin + 6.0,
-                   -18.0, f"{d.get('port_z', 70.0):g}")
+        add_linear("RIGHT", "y", zmin, _port_z, ymin + 6.0,
+                   -18.0, f"{_port_z:g}")
         # ---- Bolt circle + hole (top view) ----
-        add_diameter("TOP", 2 * d.get("mounting_bolt_circle_radius", 62.0),
-                     (0.0, d.get("mounting_bolt_circle_radius", 62.0)),
+        _bcr = _dim_get("mounting_bolt_circle_radius", default=62.0)
+        _bcd = _dim_get("bolt_circle_diameter", default=None)
+        if _bcd is not None:
+            _bcr = _bcd / 2.0
+        add_diameter("TOP", 2 * _bcr,
+                     (0.0, _bcr),
                      (xmin * 0.62, ymax * 0.85),
-                     text=f"\u00d8{2 * d.get('mounting_bolt_circle_radius', 62.0):g} B.C.")
-        add_diameter("TOP", d.get("mounting_hole_diameter", 8.0),
-                     (d.get("mounting_bolt_circle_radius", 62.0), 0.0),
+                     text=f"\u00d8{2 * _bcr:g} B.C.")
+        _hole_dia = _dim_get("mounting_hole_diameter", default=8.0)
+        add_diameter("TOP", _hole_dia,
+                     (_bcr, 0.0),
                      (xmax * 0.85, ymax * 0.55))
         # ---- Port diameter + boss diameter + angle (top view) ----
-        add_diameter("TOP", d.get("port_diameter", 14.0),
+        _port_dia = _dim_get("port_diameter", default=14.0)
+        add_diameter("TOP", _port_dia,
                      (r_body, 0.0), (xmax * 0.7, ymax * 0.30))
-        add_diameter("TOP", 2 * d.get("boss_radius", 18.0),
-                     (d.get("boss_start_radius", 44.0) + d.get("boss_radius", 18.0), 0.0),
+        _boss_r = _dim_get("boss_radius", default=18.0)
+        add_diameter("TOP", 2 * _boss_r,
+                     (_boss_start_r + _boss_r, 0.0),
                      (xmax * 0.82, ymax * 0.12),
-                     text=f"\u00d8{2 * d.get('boss_radius', 18.0):g} BOSS")
+                     text=f"\u00d8{2 * _boss_r:g} BOSS")
         add_angle("TOP", 120.0, (0.0, 0.0), (1.0, 0.0),
                   (math.cos(math.radians(120.0)), math.sin(math.radians(120.0))),
                   30.0, "120\u00b0")
@@ -529,19 +594,22 @@ def build_housing_drawing_spec(recipe: Dict[str, Any], measured: Dict[str, Any],
         add_angle("TOP", 45.0, (0.0, 0.0), (1.0, 0.0),
                   (math.cos(math.radians(45.0)), math.sin(math.radians(45.0))),
                   54.0, "45\u00b0")
-        rib_mid = d.get("rib_start_radius", 44.0) + d.get("rib_length", 32.0) / 2.0
-        add_leader("TOP", d.get("rib_length", 32.0),
+        _rib_len = _dim_get("rib_length", default=32.0)
+        _rib_start_r = _dim_get("rib_start_radius", default=44.0)
+        rib_mid = _rib_start_r + _rib_len / 2.0
+        add_leader("TOP", _rib_len,
                    (rib_mid * math.cos(math.radians(45.0)),
                     rib_mid * math.sin(math.radians(45.0))),
                    (-xmax * 0.55, ymax * 0.62),
-                   text=f"RIB L={d.get('rib_length', 32.0):g}", kind="linear")
-        ry = d.get("rib_start_radius", 44.0) * math.sin(math.radians(45.0))
-        add_linear("TOP", "y", ry - d.get("rib_thickness", 8.0) / 2.0,
-                   ry + d.get("rib_thickness", 8.0) / 2.0, xmin * 0.5,
-                   -18.0, f"{d.get('rib_thickness', 8.0):g}")
+                   text=f"RIB L={_rib_len:g}", kind="linear")
+        ry = _rib_start_r * math.sin(math.radians(45.0))
+        _rib_thick = _dim_get("rib_thickness", default=8.0)
+        add_linear("TOP", "y", ry - _rib_thick / 2.0,
+                   ry + _rib_thick / 2.0, xmin * 0.5,
+                   -18.0, f"{_rib_thick:g}")
         # ---- Passage position (top view, offset from centre) ----
-        off = d.get("passage_offset", 20.0)
-        add_linear("TOP", "x", 0.0, off, off, -14.0, f"{off:g}")
+        _pass_off = _dim_get("passage_offset", default=20.0)
+        add_linear("TOP", "x", 0.0, _pass_off, _pass_off, -14.0, f"{_pass_off:g}")
 
     section_labels = [
         {"id": "A", "text": "SECTION A-A", "view": "SECTION A-A",
@@ -1226,7 +1294,9 @@ def generate_engineering_drawings(workplane: cq.Workplane, recipe: Dict[str, Any
         A manifest dict with the drawing paths, views, dimensions and layout.
     """
     os.makedirs(out_dir, exist_ok=True)
-    spec = build_housing_drawing_spec(recipe, measured, section_shape)
+    spec = build_housing_drawing_spec(recipe, measured,
+                                      section_shape=section_shape,
+                                      workplane=workplane)
 
     section_shape = section_shape if section_shape is not None else workplane.val()
 

@@ -46,6 +46,11 @@ class ProcessRequest(BaseModel):
     """Top-level request payload."""
     images: List[ImageInput] = Field(..., min_length=1, max_length=8)
     reference: Optional[dict[str, Any]] = None
+    view_overrides: Optional[dict[str, str]] = Field(
+        None,
+        description="Optional per-image view labels keyed by image index "
+                    "(axial_face | side_profile | oblique | unknown).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +181,11 @@ class ImageResult(BaseModel):
     opencv: OpenCVResult
     depth: DepthResult
     calibration: CalibrationResult = Field(default_factory=CalibrationResult)
+    feature_measurements: Optional[dict[str, Any]] = Field(
+        None,
+        description="Compact, normalised geometric measurements (schema 1.0). "
+                    "Ratios only; no pixel arrays and no millimetres.",
+    )
     warnings: List[str] = Field(default_factory=list)
 
     # Backwards-compatible aliases if callers request them
@@ -205,4 +215,9 @@ class ProcessResponse(BaseModel):
     status: str = Field(..., description="ok | partial | unavailable | needs_review")
     device: DeviceInfo
     images: List[ImageResult]
+    feature_measurements: Optional[dict[str, Any]] = Field(
+        None,
+        description="Fused, confidence-weighted measurements across all images "
+                    "(schema 1.0). Ratios only; no pixel arrays and no millimetres.",
+    )
     warnings: List[str] = Field(default_factory=list)

@@ -90,7 +90,11 @@ async def process(payload: ProcessRequest):
         )
 
     try:
-        response = await process_images(payload.images, payload.reference)
+        response = await process_images(
+            payload.images,
+            payload.reference,
+            payload.view_overrides,
+        )
         return response
     except ValueError as ve:
         raise HTTPException(

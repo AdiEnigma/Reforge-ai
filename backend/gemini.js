@@ -159,8 +159,8 @@ function model(client, modelName = null, systemInstruction = null) {
 function referenceBlock(reference) {
   if (!reference || typeof reference !== "object") {
     return [
-      "No physical reference scale was provided. Estimate realistic standard engineering dimensions in millimetres based on typical industrial parts of this type (e.g. standard shaft diameters, typical gear pitch/module, standard plate thicknesses, bolt hole diameters).",
-      "Crucially: all required dimensions for the chosen geometryRecipe MUST be populated with realistic positive numbers in millimetres so the parametric CAD solid can be constructed.",
+      "No physical reference scale was provided. Give RELATIVE PROPORTIONS ONLY; do not invent absolute millimetre sizes.",
+      "Set absolute dimension values to null when they cannot be determined from the photos and list every unknown in uncertainties. Measured vision ratios are not millimetres.",
     ].join("\n");
   }
   const rows = [];
@@ -204,6 +204,52 @@ function visionEvidenceBlock(visionEvidence) {
     `Inference device: ${visionEvidence.device?.actual ?? "unknown"}`,
     "",
   ];
+
+  const measured = visionEvidence.feature_measurements;
+  if (measured) {
+    const pct = (value) => (typeof value === "number" ? value.toFixed(3) : "unknown");
+    lines.push("MEASURED RATIOS (measured from the photos; proportions of the outer radius/diameter, NOT millimetres):");
+    lines.push(
+      `- Measurement status=${measured.status || "unknown"}, view=${measured.view?.label || "unknown"} ` +
+      `(confidence=${pct(measured.view?.confidence)}), agreement=${pct(measured.agreement_score)}`
+    );
+    if (measured.outer) {
+      lines.push(`- Outer shape: ${measured.outer.shape || "unknown"}${measured.outer.non_circular ? " (non-circular outline)" : ""}`);
+    }
+    for (const item of measured.concentric || []) {
+      lines.push(`- Concentric radius ratio=${pct(item.radius_ratio)} (confidence=${pct(item.confidence)})`);
+    }
+    for (const pattern of measured.radial_patterns || []) {
+      lines.push(
+        `- Radial pattern: count=${pattern.count ?? "unknown"}, pattern radius ratio=${pct(pattern.pattern_radius_ratio)}, ` +
+        `hole radius ratio=${pct(pattern.hole_radius_ratio)}, start angle=${pct(pattern.start_angle_deg)} deg, ` +
+        `count confidence=${pct(pattern.count_confidence)}`
+      );
+    }
+    for (const hole of measured.holes || []) {
+      lines.push(
+        `- Individual hole at (x ratio=${pct(hole.x_ratio)}, y ratio=${pct(hole.y_ratio)}), radius ratio=${pct(hole.radius_ratio)}`
+      );
+    }
+    if (measured.side_profile) {
+      lines.push(
+        `- Side profile: thickness ratio=${pct(measured.side_profile.thickness_ratio)}, ` +
+        `height ratio=${pct(measured.side_profile.height_ratio)}, ` +
+        `hub height ratio=${pct(measured.side_profile.hub_height_ratio)}, ` +
+        `hub radius ratio=${pct(measured.side_profile.hub_radius_ratio)}`
+      );
+    }
+    if (measured.polygon) {
+      lines.push(`- Outline polygon: ${measured.polygon.point_count ?? (measured.polygon.points || []).length} points`);
+    }
+    for (const item of measured.needs_input || []) {
+      lines.push(`- Measurement needs input: ${item.parameter || "unknown"} - ${item.question || item.reason || ""}`);
+    }
+    lines.push(
+      "Rules for measured ratios: treat them as measured facts. Do NOT replace them with your own estimates and do NOT convert ratios to millimetres without an explicit reference. If your visual reading disagrees, record the disagreement in uncertainties instead of silently changing the value."
+    );
+    lines.push("");
+  }
 
   for (const img of visionEvidence.images) {
     lines.push(`Image ${img.image_index} (${img.width ?? "?"}x${img.height ?? "?"} px):`);
@@ -286,10 +332,10 @@ function analysisPrompt(reference, visionEvidence) {
     "- manufacturingProcess: e.g. CNC machining, casting, forging, injection moulding. Use 'unknown' when ambiguous.",
     "- reasoning: 1-3 sentences justifying the classification and measurements.",
     "- uncertainties: list the specific measurements you could not determine and why.",
-    "- For dimensions, provide realistic estimated values based on standard engineering proportions when not explicitly measured.",
+    "- Do not invent absolute dimensions. Use null when a value cannot be determined; relative proportions are acceptable only where the schema asks for a recipe shape.",
     "",
     "GEOMETRY RECIPE (geometryRecipe): produce a construction recipe the renderer and CAD engine can execute. Pick ONE style and fill only its fields:",
-    '- "revolved": axisymmetric parts (shafts, pulleys, flanges, valve bodies, couplings). Provide revolvedProfile as 3-8 points {z, radius} tracing the meridian outline from one axial end to the other. z is the position along the axis of revolution, radius is the radial distance (radius >= 0).',
+    '- "revolved": axisymmetric parts (shafts, pulleys, valve bodies, couplings). Provide revolvedProfile as 3-8 points {z, radius} tracing the meridian outline from one axial end to the other. z is the position along the axis of revolution, radius is the radial distance (radius >= 0).',
     '- "extruded": plates, brackets, housings, levers. Provide outline as a closed polygon of 3-12 points {x, y} plus optional holes [{cx, cy, radius}] for through-holes, and depth (extrude thickness).',
     '- "gear": toothed wheels. Provide gear = {teeth, module, pressureAngle (default 20), helixAngle (0 = spur, > 0 = helical), faceWidth (tooth face width), boreRadius}. Mirror teeth/module/helixAngle into the top-level fields too. Ensure module, teeth, and faceWidth are always non-null positive numbers.',
     '- "combination": complex or ambiguous parts. Compose from up to ~8 additive primitives (kind: box | cylinder | sphere | cone | torus), each with its size fields, position and rotation.',
@@ -508,6 +554,72 @@ export function sanitizeRecipe(rawRecipe) {
   return recipe;
 }
 
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function consensusRuns() {
+  const parsed = Number(process.env.GEMINI_CONSENSUS_RUNS);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.min(5, Math.round(parsed)));
+}
+
+export function mergeConsensus(analyses, modelName) {
+  if (analyses.length === 1) {
+    const only = analyses[0];
+    only.meta = {
+      model: modelName,
+      consensus_runs: 1,
+      classification_agreement: 1,
+    };
+    return only;
+  }
+
+  const votes = new Map();
+  for (const analysis of analyses) {
+    const key = analysis.componentType || "other";
+    votes.set(key, (votes.get(key) || 0) + 1);
+  }
+  const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1]);
+  const majority = ranked[0][0];
+  const base = analyses.find((analysis) => analysis.componentType === majority) || analyses[0];
+
+  const merged = {
+    ...base,
+    dimensions: { ...base.dimensions },
+    features: [...new Set(analyses.flatMap((analysis) => analysis.features || []))],
+    uncertainties: [...new Set(analyses.flatMap((analysis) => analysis.uncertainties || []))],
+  };
+  for (const key of Object.keys(merged.dimensions)) {
+    merged.dimensions[key] = median(
+      analyses
+        .map((analysis) => analysis.dimensions?.[key])
+        .filter((value) => typeof value === "number" && Number.isFinite(value))
+    );
+  }
+  for (const key of ["teeth", "module", "helixAngle"]) {
+    const value = median(
+      analyses
+        .map((analysis) => analysis[key])
+        .filter((item) => typeof item === "number" && Number.isFinite(item))
+    );
+    merged[key] = value == null ? null : key === "teeth" ? Math.round(value) : value;
+  }
+  merged.confidence = median(analyses.map((analysis) => analysis.confidence));
+  merged.meta = {
+    model: modelName,
+    consensus_runs: analyses.length,
+    classification_agreement: ranked[0][1] / analyses.length,
+    component_votes: Object.fromEntries(ranked),
+  };
+  return merged;
+}
+
 export async function analyzeComponent({ images, reference, visionEvidence }) {
   const genAI = client();
   const parts = images.map((image) => ({
@@ -516,6 +628,7 @@ export async function analyzeComponent({ images, reference, visionEvidence }) {
   parts.push({ text: analysisPrompt(reference, visionEvidence) });
 
   const candidateModels = getCandidateModels();
+  const runs = consensusRuns();
   let lastError = null;
 
   for (const modelName of candidateModels) {
@@ -524,21 +637,28 @@ export async function analyzeComponent({ images, reference, visionEvidence }) {
       const result = await targetModel.generateContent({
         contents: [{ role: "user", parts }],
         generationConfig: withSchema
-          ? { responseMimeType: "application/json", temperature: 0.2, responseSchema: ANALYSIS_SCHEMA }
-          : { responseMimeType: "application/json", temperature: 0.2 },
+          ? { responseMimeType: "application/json", temperature: 0, responseSchema: ANALYSIS_SCHEMA }
+          : { responseMimeType: "application/json", temperature: 0 },
       });
       return JSON.parse(stripFences(result.response.text()));
     };
 
     try {
-      let raw;
-      try {
-        raw = await attempt(false);
-      } catch (parseError) {
-        if (!(parseError instanceof SyntaxError)) throw parseError;
-        raw = await attempt(true);
+      const analyses = [];
+      for (let index = 0; index < runs; index += 1) {
+        let raw;
+        try {
+          raw = await attempt(true);
+        } catch (schemaError) {
+          if (schemaError instanceof SyntaxError) throw schemaError;
+          console.warn(
+            `Schema-constrained analysis failed for ${modelName} (${String(schemaError?.message || schemaError).slice(0, 120)}); retrying without responseSchema.`
+          );
+          raw = await attempt(false);
+        }
+        analyses.push(normalizeAnalysis(raw));
       }
-      return normalizeAnalysis(raw);
+      return mergeConsensus(analyses, modelName);
     } catch (modelError) {
       lastError = modelError;
       const errMsg = String(modelError?.message || modelError);
