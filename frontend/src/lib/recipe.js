@@ -193,7 +193,8 @@ function buildExtruded(outline, holes, depth) {
     hole.absarc(h.cx, h.cy, h.radius, 0, Math.PI * 2, true);
     shape.holes.push(hole);
   }
-  const d = depth > 0 ? depth : Math.max(1, (Math.max(...outline.map((p) => Math.abs(p.x)), ...outline.map((p) => Math.abs(p.y)))) * 0.2);
+  const span = Math.max(1, ...outline.map((p) => Math.abs(p.x)), ...outline.map((p) => Math.abs(p.y)));
+  const d = depth > 0 ? depth : Math.max(1, span * 0.25);
   const geo = extrude(shape, d);
   geo.center();
   const mesh = new THREE.Mesh(geo, matBody);

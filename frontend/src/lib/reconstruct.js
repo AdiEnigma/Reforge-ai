@@ -267,7 +267,29 @@ export function buildModel(analysis) {
     recipe.primitives.length === 1 &&
     recipe.primitives[0].kind === "box";
 
-  if (recipe && !isTrivialBoxFallback) {
+  // Flange photos often yield a flat extruded disc (outline without holes/depth) in preview.
+  // Prefer the parametric flange builder when the recipe lacks 3D flange features.
+  const isShallowFlangeRecipe =
+    p.type === "flange" &&
+    recipe &&
+    recipe.style === "extruded" &&
+    (!Array.isArray(recipe.holes) || recipe.holes.length === 0) &&
+    (() => {
+      const outline = recipe.outline || [];
+      if (outline.length < 3) return true;
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const pt of outline) {
+        if (pt.x < minX) minX = pt.x;
+        if (pt.x > maxX) maxX = pt.x;
+        if (pt.y < minY) minY = pt.y;
+        if (pt.y > maxY) maxY = pt.y;
+      }
+      const span = Math.max(maxX - minX, maxY - minY, 1);
+      const depth = typeof recipe.depth === "number" && isFinite(recipe.depth) ? recipe.depth : 0;
+      return depth <= 0 || depth < span * 0.08;
+    })();
+
+  if (recipe && !isTrivialBoxFallback && !isShallowFlangeRecipe) {
     body = executeRecipe(recipe);
     label = String(analysis?.componentType || "other").trim().toUpperCase() || COMPONENT_LABELS.other;
   } else {

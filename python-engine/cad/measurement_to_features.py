@@ -753,7 +753,18 @@ def synthesize_feature_recipe(
             pattern_holes.append({"x": x, "y": y, "r": hole_d / 2.0, "provenance": "measured"})
 
     individual_holes = measurements.get("holes") or []
+    # When the user supplies a complete bolt pattern, trust it over the partial
+    # hole detections from the photo (which are usually a few of the holes at
+    # arbitrary positions).  Mixing the two sets made the sanity check compare
+    # measured holes against generated pattern holes and falsely report overlap.
+    user_provides_bolt_pattern = bool(
+        _number(user.get("hole_count"))
+        and _number(user.get("bolt_circle_diameter"))
+        and _number(user.get("hole_diameter"))
+    )
     for item in individual_holes:
+        if user_provides_bolt_pattern:
+            continue
         radius_ratio = _positive(item.get("radius_ratio"))
         x_ratio = _number(item.get("x_ratio"))
         y_ratio = _number(item.get("y_ratio"))
