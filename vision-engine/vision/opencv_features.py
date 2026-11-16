@@ -205,7 +205,7 @@ def extract_features(rgb: np.ndarray, mask: Optional[np.ndarray] = None, image_i
     )
 
     if lines_raw is not None:
-        for x1, y1, x2, y2 in lines_raw[:, 0]:
+        for x1, y1, x2, y2 in np.asarray(lines_raw).reshape(-1, 4):
             length = math.hypot(x2 - x1, y2 - y1)
             angle = _angle_deg(x1, y1, x2, y2)
             line_features.append({

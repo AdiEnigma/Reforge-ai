@@ -11,6 +11,12 @@ import numpy as np
 import cv2
 
 
+@pytest.fixture(autouse=True)
+def allow_custom_export_dir(monkeypatch):
+    """Tests write CAD exports into pytest tmp_path directories."""
+    monkeypatch.setenv("CAD_ALLOW_CUSTOM_EXPORT_DIR", "1")
+
+
 @pytest.fixture
 def synthetic_cylinder_points():
     """

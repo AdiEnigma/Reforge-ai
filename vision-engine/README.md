@@ -9,57 +9,41 @@ The ReForge Vision Preprocessing Engine is an internal microservice providing **
 
 ## 1. System Requirements
 
-- **Python**: `>= 3.10`
+- **Python**: `3.13` (the repository uses one shared root virtual environment)
 - **RAM**: Minimum 8 GB (16 GB recommended for local GPU/CUDA execution)
 - **Disk Space**: ~2 GB for model weights
 - **OS**:
   - Linux (Ubuntu 22.04+ recommended)
-  - Windows 10/11 (WSL2 with Ubuntu recommended for CUDA support; native Windows supported in CPU mode)
+  - Windows 10/11 (CUDA PyTorch runs natively; SAM2 recommends WSL2 for its optional CUDA extension)
   - macOS (Apple Silicon / MPS supported)
 
 ---
 
 ## 2. Setup & Installation
 
-### Step 1: Create a dedicated virtual environment
-```bash
-cd vision-engine
-
-# Linux / macOS / WSL2:
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Windows (PowerShell):
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+### Step 1: Use the shared repository virtual environment
+```powershell
+# From the repository root (Python 3.13 must be installed):
+uv venv .venv --python 3.13
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 ```
 
 ### Step 2: Install dependencies
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
+```powershell
+# Install the CUDA PyTorch pair on NVIDIA Windows systems:
+uv pip install --python .venv/Scripts/python.exe torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# Install the pinned SAM 2.1 code. On Windows, skip building SAM2's optional CUDA extension:
+$env:SAM2_BUILD_CUDA = "0"
+uv pip install --python .venv/Scripts/python.exe -r vision-engine/requirements-vision-ml.txt
 ```
 
-#### Hardware-specific PyTorch
-Install the matching official PyTorch and TorchVision builds for your hardware. The CPU pair exercised for this setup is:
-
-```bash
-pip install torch==2.14.1 torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cpu
-```
-
-For GPU, select a matching PyTorch/TorchVision release pair and official CUDA wheel index for the installed CUDA runtime. GPU execution was not tested in this verification; the runtime selects CUDA only when PyTorch reports it available.
-
-#### SAM 2 and Depth Anything V2 source installations:
-```bash
-# SAM 2.1
-pip install "huggingface_hub==0.36.2"
-pip install git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4
-```
+The shared root requirements include the Vision, reconstruction and CAD runtime packages. Keep these services in the same `.venv`; their Python packages were resolved together for Python 3.13.
 
 The official Depth Anything V2 repository has no `pyproject.toml` or `setup.py`; its documented setup is a source checkout plus its requirements. ReForge pins the official source to commit `a561b849ebae10a6f5ef49e26c83cbbcd36c71bf` in the ignored project-local `.dependencies/Depth-Anything-V2` path. With Git available, run from `vision-engine`:
 
-```bash
-python scripts/install_depth_anything_v2.py
+```powershell
+..\.venv\Scripts\python.exe .\scripts\install_depth_anything_v2.py
 ```
 
 At runtime `vision/depth_estimator.py` imports `depth_anything_v2.dpt.DepthAnythingV2` and the official `depth_anything_v2.util.transform` preprocessing classes from that checkout. Its transitive source imports include `dinov2.py`, `dinov2_layers/*`, and `util/blocks.py`. The model's inference dependencies (`torch`, `torchvision`, OpenCV, and NumPy) are already project requirements; upstream Gradio demo packages are not needed by this service. The default source path is resolved from the project directory, so no `PYTHONPATH` or temporary `C:\Temp` checkout is required. `DEPTH_ANYTHING_V2_SOURCE_DIR` remains an optional override.
@@ -70,8 +54,8 @@ At runtime `vision/depth_estimator.py` imports `depth_anything_v2.dpt.DepthAnyth
 
 Run the official download utility with checksum verification:
 
-```bash
-python scripts/download_models.py
+```powershell
+..\.venv\Scripts\python.exe .\scripts\download_models.py
 ```
 
 This downloads:
@@ -87,7 +71,7 @@ This downloads:
 Start the Uvicorn server bound to localhost (`127.0.0.1:8765`):
 
 ```bash
-uvicorn app:app --host 127.0.0.1 --port 8765
+..\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8765
 ```
 
 ### Verify Health

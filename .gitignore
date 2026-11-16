@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.cache/
+.tools/
 .env
 .env.local
 .env.*.local
@@ -9,4 +11,8 @@ env.local
 *.log
 .DS_Store
 .dependencies/
+backend/var/
+python-engine/exports/cad/
+__pycache__/
+*.pyc
 

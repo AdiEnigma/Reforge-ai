@@ -57,6 +57,53 @@ def _load_real_segmentor():
     return segmentor
 
 
+class _FakePredictor:
+    def __init__(self):
+        self.shape = None
+        self.kwargs = None
+
+    def set_image(self, rgb):
+        self.shape = rgb.shape[:2]
+
+    def predict(self, **kwargs):
+        self.kwargs = kwargs
+        h, w = self.shape
+        mask = np.zeros((h, w), dtype=bool)
+        mask[10:60, 10:70] = True
+        return mask[None, ...], np.array([0.93]), None
+
+
+def test_cpu_without_hint_skips_slow_automatic_mode():
+    segmentor = SAM2Segmentor()
+    segmentor._loaded = True
+    segmentor._device = "cpu"
+    segmentor._predictor = _FakePredictor()
+    segmentor._mask_generator = object()
+
+    res = segmentor.segment(np.zeros((100, 100, 3), dtype=np.uint8))
+    assert res["status"] == "unavailable"
+    assert any("automatic mode is disabled on CPU" in w for w in res["warnings"])
+
+
+def test_cpu_with_point_and_box_hint_uses_predictor():
+    segmentor = SAM2Segmentor()
+    segmentor._loaded = True
+    segmentor._device = "cpu"
+    predictor = _FakePredictor()
+    segmentor._predictor = predictor
+    segmentor._mask_generator = object()
+
+    rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+    res = segmentor.segment(rgb, hint={"point": [40, 40], "box": [10, 10, 70, 60]})
+
+    assert predictor.kwargs is not None
+    assert "point_coords" in predictor.kwargs
+    assert "box" in predictor.kwargs
+    assert res["status"] == "ok"
+    assert res["bbox_xyxy_px"] == [10.0, 10.0, 69.0, 59.0]
+    assert res["score"] == pytest.approx(0.93)
+
+
 def test_segmentor_loads_real_sam2_model_when_available():
     segmentor = _load_real_segmentor()
     assert segmentor._loaded is True

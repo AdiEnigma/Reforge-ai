@@ -4,14 +4,19 @@
  * Follows the fail-open pattern: if the reconstruction service is unavailable or disabled,
  * returns null so the existing workflow continues unchanged.
  */
-import { request } from 'node:http';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 
-const RECONSTRUCTION_SERVICE_URL = process.env.RECONSTRUCTION_SERVICE_URL || 'http://127.0.0.1:8766';
-const RECONSTRUCTION_ENABLED = process.env.RECONSTRUCTION_ENABLED === 'true';
-const RECONSTRUCTION_TIMEOUT_MS = (Number(process.env.RECONSTRUCTION_TIMEOUT_SECONDS) || 60) * 1000;
+function reconstructionConfig() {
+  return {
+    enabled: process.env.RECONSTRUCTION_ENABLED === 'true',
+    serviceUrl: process.env.RECONSTRUCTION_SERVICE_URL || 'http://127.0.0.1:8766',
+    timeoutMs: (Number(process.env.RECONSTRUCTION_TIMEOUT_SECONDS) || 60) * 1000,
+  };
+}
 
 export function isReconstructionEnabled() {
-  return RECONSTRUCTION_ENABLED;
+  return reconstructionConfig().enabled;
 }
 
 /**
@@ -19,18 +24,21 @@ export function isReconstructionEnabled() {
  * Always resolves (never rejects). Returns null on any failure.
  */
 export async function callReconstructionService(payload) {
-  if (!RECONSTRUCTION_ENABLED) return null;
+  const config = reconstructionConfig();
+  if (!config.enabled) return null;
 
   const body = JSON.stringify(payload || {});
 
   return new Promise((resolve) => {
     let url;
     try {
-      url = new URL('/reconstruct', RECONSTRUCTION_SERVICE_URL);
+      url = new URL('/reconstruct', config.serviceUrl);
     } catch {
-      console.warn('[reconstruction-adapter] Invalid RECONSTRUCTION_SERVICE_URL:', RECONSTRUCTION_SERVICE_URL);
+      console.warn('[reconstruction-adapter] Invalid RECONSTRUCTION_SERVICE_URL:', config.serviceUrl);
       return resolve(null);
     }
+
+    const request = url.protocol === 'https:' ? httpsRequest : httpRequest;
 
     const req = request(
       {
@@ -58,8 +66,8 @@ export async function callReconstructionService(payload) {
       }
     );
 
-    req.setTimeout(RECONSTRUCTION_TIMEOUT_MS, () => {
-      console.warn('[reconstruction-adapter] Request timed out after', RECONSTRUCTION_TIMEOUT_MS, 'ms');
+    req.setTimeout(config.timeoutMs, () => {
+      console.warn('[reconstruction-adapter] Request timed out after', config.timeoutMs, 'ms');
       req.destroy();
       resolve(null);
     });

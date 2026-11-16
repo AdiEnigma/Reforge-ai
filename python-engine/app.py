@@ -31,11 +31,14 @@ from cad.advanced_recipe_adapter import (
 )
 from cad.feature_modeller import FeatureModellingError
 from cad.advanced_cad_validator import validate_feature_geometry
+from cad.fit_loop import run_image_fit, ImageFitError
 from cad import advanced_preview
 from cad import integration_contract
 from exports.step_export import export_step, StepExportError
 from exports.mesh_export import export_stl, MeshExportError
+from exports.mesh_preview import export_mesh_preview
 from dataclasses import asdict
+import math
 import os
 import uuid
 
@@ -165,6 +168,38 @@ def full_reconstruct_endpoint(payload: ReconstructRequest):
     }
 
 
+def _default_export_dir() -> str:
+    return os.path.abspath(
+        os.environ.get("CAD_EXPORT_DIR")
+        or os.path.join(os.path.dirname(__file__), "exports", "cad")
+    )
+
+
+def _resolve_export_dir(requested: Optional[str]) -> str:
+    """Resolve a safe export directory.
+
+    Client-provided output_dir is ignored unless it lies inside CAD_EXPORT_DIR
+    or CAD_ALLOW_CUSTOM_EXPORT_DIR is explicitly enabled (used by tests).
+    """
+    root = _default_export_dir()
+    allow_custom = str(os.environ.get("CAD_ALLOW_CUSTOM_EXPORT_DIR", "")).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    target = root
+    if requested and isinstance(requested, str):
+        requested_abs = os.path.abspath(requested)
+        if allow_custom:
+            target = requested_abs
+        else:
+            relative = os.path.relpath(requested_abs, root)
+            if not relative.startswith("..") and not os.path.isabs(relative):
+                target = requested_abs
+    os.makedirs(target, exist_ok=True)
+    return target
+
+
 class CadGenerateRequest(BaseModel):
     job_id: str = Field(default="cad_001")
     recipe: Dict[str, Any] = Field(..., description="Component recipe dictionary")
@@ -288,15 +323,13 @@ def generate_cad_endpoint(payload: CadGenerateRequest):
         )
 
     # 4 & 5. STEP and STL Export
-    target_dir = payload.output_dir
-    if not target_dir:
-        target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "exports"))
-    os.makedirs(target_dir, exist_ok=True)
+    target_dir = _resolve_export_dir(payload.output_dir)
 
     uid = uuid.uuid4().hex[:8]
     base_name = f"{payload.job_id}_{uid}"
     step_path = os.path.join(target_dir, f"{base_name}.step")
     stl_path = os.path.join(target_dir, f"{base_name}.stl")
+    mesh_path = os.path.join(target_dir, f"{base_name}.mesh.json")
 
     try:
         exported_step_path = export_step(workplane, step_path)
@@ -356,7 +389,14 @@ def generate_cad_endpoint(payload: CadGenerateRequest):
             },
         )
 
-    # 6. Structured Success Response
+    # 6. JSON mesh preview (non-fatal: STEP/STL remain source of truth)
+    exported_mesh_path = None
+    try:
+        exported_mesh_path = export_mesh_preview(workplane, mesh_path)
+    except Exception as mesh_error:
+        logger.warning("Mesh preview export failed (non-fatal): %s", mesh_error)
+
+    # 7. Structured Success Response
     return {
         "status": "success",
         "job_id": payload.job_id,
@@ -365,6 +405,7 @@ def generate_cad_endpoint(payload: CadGenerateRequest):
         "validation_report": validation_report,
         "step_path": exported_step_path,
         "stl_path": exported_stl_path,
+        "mesh_path": exported_mesh_path,
     }
 
 
@@ -379,9 +420,132 @@ class AdvancedCadGenerateRequest(BaseModel):
         description="Advanced feature recipe, or a legacy recipe to be converted "
                     "through the feature pipeline.",
     )
+    user_dimensions: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="Explicit user-supplied dimensions that override estimated "
+                    "legacy recipe geometry (best-effort scaling).",
+    )
     output_dir: Optional[str] = Field(default=None, description="Custom directory for export files")
     strict: bool = Field(default=False, description="Fail on the first invalid feature")
     generate_previews: bool = Field(default=False, description="Render SVG/PNG preview images")
+    fit_evidence: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional {'mask': base64|array, 'mm_per_pixel': float, "
+                    "'view': str} for the image-fit silhouette check.",
+    )
+
+
+def _apply_user_dimensions_to_legacy_recipe(
+    recipe: Dict[str, Any], user_dimensions: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Best-effort rescale of a legacy revolved/extruded recipe to user dims.
+
+    Only explicit, positive values are applied. The conversion is a similarity
+    transform of the estimated profile/outline, so it adjusts size without
+    inventing feature topology.
+    """
+    if not user_dimensions or not isinstance(recipe, dict):
+        return recipe
+
+    def _num(*keys: str) -> Optional[float]:
+        for key in keys:
+            try:
+                value = float(user_dimensions.get(key))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and value > 0:
+                return value
+        return None
+
+    result = dict(recipe)
+    style = recipe.get("style")
+
+    if style == "revolved":
+        profile = recipe.get("revolvedProfile")
+        if isinstance(profile, list) and profile:
+            radii = [abs(float(p.get("radius", 0.0)))
+                     for p in profile if isinstance(p, dict)]
+            zs = [float(p.get("z", 0.0)) for p in profile if isinstance(p, dict)]
+            if radii and zs:
+                max_radius = max(radii)
+                outer = _num("outerDiameter")
+                height = _num("height", "length")
+                r_scale = (outer / 2.0) / max_radius if outer and max_radius > 0 else 1.0
+                z_min, z_max = min(zs), max(zs)
+                span = z_max - z_min
+                z_scale = height / span if height and span > 0 else 1.0
+                if r_scale != 1.0 or z_scale != 1.0:
+                    z_mid = (z_min + z_max) / 2.0
+                    scaled = []
+                    for p in profile:
+                        if not isinstance(p, dict):
+                            scaled.append(p)
+                            continue
+                        q = dict(p)
+                        q["radius"] = float(p.get("radius", 0.0)) * r_scale
+                        q["z"] = z_mid + (float(p.get("z", 0.0)) - z_mid) * z_scale
+                        scaled.append(q)
+                    result["revolvedProfile"] = scaled
+
+    elif style == "extruded":
+        outline = recipe.get("outline")
+        if isinstance(outline, list) and outline:
+            xs = [float(p.get("x", 0.0)) for p in outline if isinstance(p, dict)]
+            ys = [float(p.get("y", 0.0)) for p in outline if isinstance(p, dict)]
+            width = _num("width", "length")
+            length = _num("length") or width
+            if xs and ys and width and length:
+                cx = (min(xs) + max(xs)) / 2.0
+                cy = (min(ys) + max(ys)) / 2.0
+                span_x = max(xs) - min(xs)
+                span_y = max(ys) - min(ys)
+                sx = width / span_x if span_x > 0 else 1.0
+                sy = length / span_y if span_y > 0 else 1.0
+                if sx != 1.0 or sy != 1.0:
+                    result["outline"] = [
+                        {
+                            **p,
+                            "x": cx + (float(p.get("x", 0.0)) - cx) * sx,
+                            "y": cy + (float(p.get("y", 0.0)) - cy) * sy,
+                        }
+                        if isinstance(p, dict) else p
+                        for p in outline
+                    ]
+            depth = _num("depth", "thickness", "height")
+            if depth:
+                result["depth"] = depth
+
+    return result
+
+
+def _run_fit_evidence(workplane: Any, evidence: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Run the optional image-fit silhouette check; never raises."""
+    if not evidence:
+        return None
+    try:
+        result = run_image_fit(
+            workplane,
+            evidence.get("mask"),
+            evidence.get("mm_per_pixel"),
+            view=str(evidence.get("view") or "front"),
+        )
+        return result.to_dict()
+    except ImageFitError as exc:
+        return {
+            "status": "failed",
+            "fit_score": 0.0,
+            "iou": 0.0,
+            "reason": str(exc),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Image-fit check failed unexpectedly: %s", exc)
+        return {
+            "status": "failed",
+            "fit_score": 0.0,
+            "iou": 0.0,
+            "reason": f"Image-fit check failed: {exc}",
+        }
+
 
 
 @app.post("/cad/generate-advanced")
@@ -403,6 +567,8 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
     # 1. Resolve to a feature recipe.
     try:
         if not is_advanced_recipe(recipe):
+            recipe = _apply_user_dimensions_to_legacy_recipe(
+                recipe, payload.user_dimensions)
             recipe = legacy_recipe_to_feature_recipe(recipe)
     except ValueError as ve:
         return JSONResponse(
@@ -472,6 +638,11 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
             },
         )
 
+    image_fit = _run_fit_evidence(workplane, payload.fit_evidence)
+    if image_fit is not None:
+        validation_report["image_fit"] = image_fit
+        validation_report["fit_score_image"] = image_fit.get("fit_score")
+
     # 4. Export STEP + STL.
     target_dir = payload.output_dir
     if not target_dir:
@@ -482,6 +653,7 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
     base_name = f"{payload.job_id}_{uid}"
     step_path = os.path.join(target_dir, f"{base_name}.step")
     stl_path = os.path.join(target_dir, f"{base_name}.stl")
+    mesh_path = os.path.join(target_dir, f"{base_name}.mesh.json")
 
     try:
         exported_step_path = export_step(workplane, step_path)
@@ -498,6 +670,12 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
                 "validation_report": validation_report,
             },
         )
+
+    exported_mesh_path = None
+    try:
+        exported_mesh_path = export_mesh_preview(workplane, mesh_path)
+    except Exception as mesh_error:  # noqa: BLE001
+        logger.warning("Mesh preview export failed (non-fatal): %s", mesh_error)
 
     # 5. Optional previews.
     previews = None
@@ -516,8 +694,10 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
         "mode": "feature",
         "feature_history": history,
         "validation_report": validation_report,
+        "image_fit": image_fit,
         "step_path": exported_step_path,
         "stl_path": exported_stl_path,
+        "mesh_path": exported_mesh_path,
         "previews": previews,
     }
 
@@ -539,6 +719,11 @@ class ReconstructionCadRequest(BaseModel):
     allow_assumed: bool = Field(
         default=False,
         description="Accept dimensions explicitly marked as 'assumed' (off by default).",
+    )
+    fit_evidence: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional {'mask': base64|array, 'mm_per_pixel': float, "
+                    "'view': str} for the image-fit silhouette check.",
     )
 
 
@@ -613,6 +798,11 @@ def cad_from_reconstruction_endpoint(payload: ReconstructionCadRequest):
             },
         )
 
+    image_fit = _run_fit_evidence(workplane, payload.fit_evidence)
+    if image_fit is not None:
+        validation_report["image_fit"] = image_fit
+        validation_report["fit_score_image"] = image_fit.get("fit_score")
+
     target_dir = payload.output_dir
     if not target_dir:
         target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "exports"))
@@ -621,6 +811,7 @@ def cad_from_reconstruction_endpoint(payload: ReconstructionCadRequest):
     base_name = f"{payload.job_id}_{uid}"
     step_path = os.path.join(target_dir, f"{base_name}.step")
     stl_path = os.path.join(target_dir, f"{base_name}.stl")
+    mesh_path = os.path.join(target_dir, f"{base_name}.mesh.json")
     try:
         exported_step_path = export_step(workplane, step_path)
         exported_stl_path = export_stl(workplane, stl_path)
@@ -634,6 +825,12 @@ def cad_from_reconstruction_endpoint(payload: ReconstructionCadRequest):
                 "job_id": payload.job_id,
             },
         )
+
+    exported_mesh_path = None
+    try:
+        exported_mesh_path = export_mesh_preview(workplane, mesh_path)
+    except Exception as mesh_error:  # noqa: BLE001
+        logger.warning("Mesh preview export failed (non-fatal): %s", mesh_error)
 
     previews = None
     if payload.generate_previews:
@@ -652,7 +849,9 @@ def cad_from_reconstruction_endpoint(payload: ReconstructionCadRequest):
         "component": contract["component"],
         "feature_history": history,
         "validation_report": validation_report,
+        "image_fit": image_fit,
         "step_path": exported_step_path,
         "stl_path": exported_stl_path,
+        "mesh_path": exported_mesh_path,
         "previews": previews,
     }

@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from "./vision-adapter.js";
+import {
+  isVisionEnabled,
+  callVisionService,
+  buildVisionEvidenceSummary,
+  buildVisionObservations,
+} from "./vision-adapter.js";
 
 test("isVisionEnabled defaults to false", () => {
   assert.equal(isVisionEnabled(), false);
@@ -81,5 +86,86 @@ test("buildVisionEvidenceSummary preserves structure and strips heavy arrays", (
   assert.equal(img.opencv.line_count, 1);
   assert.equal(img.depth.depth_type, "relative");
   assert.equal(img.depth.metric, false);
+});
+
+test("buildVisionObservations returns null on empty input", () => {
+  assert.equal(buildVisionObservations(null), null);
+  assert.equal(buildVisionObservations({}), null);
+  assert.equal(buildVisionObservations({ images: "nope" }), null);
+});
+
+test("buildVisionObservations forwards raw circles and derives contour bboxes", () => {
+  const visionResult = {
+    schema_version: "1.0",
+    status: "ok",
+    device: { actual: "cpu" },
+    images: [
+      {
+        image_index: 0,
+        width: 640,
+        height: 480,
+        calibration: { status: "calibrated", mm_per_pixel: 0.5, confidence: 0.85 },
+        segmentation: { status: "ok", bbox_xyxy_px: [10, 20, 200, 220], score: 0.95 },
+        opencv: {
+          circles: [
+            { cx_px: 100, cy_px: 100, radius_px: 50, confidence: 0.9 },
+            { cx_px: 120, cy_px: 120, radius_px: 20, confidence: 0.6 },
+          ],
+          ellipses: [{ cx_px: 5, cy_px: 6, axes_px: [10, 4], angle_deg: 30, confidence: 0.7 }],
+          lines: [{ x1_px: 0, y1_px: 0, x2_px: 10, y2_px: 10, length_px: 14, angle_deg: 45, confidence: 0.5 }],
+          contours: [
+            {
+              type: "outer_contour",
+              points_px: [
+                [10, 20],
+                [110, 20],
+                [110, 70],
+                [10, 70],
+              ],
+              area_px2: 5000,
+              perimeter_px: 300,
+              circularity: 0.7,
+              solidity: 0.95,
+              confidence: 0.8,
+            },
+          ],
+          bounding_box: { axis_aligned: [10, 20, 190, 200] },
+          symmetry_hints: { bilateral: true },
+        },
+      },
+    ],
+    warnings: ["low light"],
+  };
+
+  const observations = buildVisionObservations(visionResult);
+  assert.ok(observations);
+  const image = observations.images[0];
+  assert.equal(image.image_index, 0);
+  assert.equal(image.calibration.mm_per_pixel, 0.5);
+  assert.equal(image.opencv.circles.length, 2);
+  assert.equal(image.opencv.circles[0].radius_px, 50);
+  assert.equal(image.opencv.ellipses.length, 1);
+  assert.equal(image.opencv.lines.length, 1);
+  assert.deepEqual(image.opencv.contours[0].bbox, {
+    x: 10,
+    y: 20,
+    width: 100,
+    height: 50,
+  });
+  assert.equal(image.opencv.contours[0].point_count, 4);
+  assert.equal(observations.warnings[0], "low light");
+});
+
+test("buildVisionObservations caps observation arrays", () => {
+  const circles = Array.from({ length: 120 }, (_, index) => ({
+    cx_px: index,
+    cy_px: index,
+    radius_px: 10,
+    confidence: 0.5,
+  }));
+  const result = buildVisionObservations({
+    images: [{ image_index: 0, opencv: { circles } }],
+  });
+  assert.equal(result.images[0].opencv.circles.length, 50);
 });
 

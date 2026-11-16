@@ -1,6 +1,10 @@
-import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const MAX_CHAT_MESSAGE_CHARS = 4000;
+const MAX_CHAT_HISTORY_ITEMS = 20;
+const MAX_CHAT_HISTORY_ITEM_CHARS = 4000;
+const MAX_CHAT_CONTEXT_CHARS = 20000;
 
 const COMPONENT_STYLES = ["revolved", "extruded", "gear", "combination"];
 const PRIMITIVE_KINDS = ["box", "cylinder", "sphere", "cone", "torus"];
@@ -145,17 +149,11 @@ function getCandidateModels() {
   return Array.from(new Set(list));
 }
 
-function model(client, modelName = null) {
+function model(client, modelName = null, systemInstruction = null) {
   const target = modelName || getCandidateModels()[0] || "gemini-3.5-flash";
-  return client.getGenerativeModel({
-    model: target,
-    safetySettings: [
-      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    ],
-  });
+  const config = { model: target };
+  if (systemInstruction) config.systemInstruction = systemInstruction;
+  return client.getGenerativeModel(config);
 }
 
 function referenceBlock(reference) {
@@ -464,7 +462,8 @@ export function sanitizeRecipe(rawRecipe) {
     const sorted = [...positive].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
     const cap = Math.max(median * RECIPE_LIMITS.maxDimensionRatio, 1000);
-    const clip = (v) => (typeof v === "number" && isFinite(v) ? Math.max(0, Math.min(v, cap)) : v);
+    const clip = (v) =>
+      typeof v === "number" && isFinite(v) ? Math.sign(v) * Math.min(Math.abs(v), cap) : v;
     for (const p of recipe.revolvedProfile || []) { p.z = clip(p.z); p.radius = clip(p.radius); }
     for (const pt of recipe.outline || []) { pt.x = clip(pt.x); pt.y = clip(pt.y); }
     for (const h of recipe.holes || []) h.radius = clip(h.radius);
@@ -519,7 +518,8 @@ export async function analyzeComponent({ images, reference, visionEvidence }) {
       let raw;
       try {
         raw = await attempt(false);
-      } catch (parseOrSchemaError) {
+      } catch (parseError) {
+        if (!(parseError instanceof SyntaxError)) throw parseError;
         raw = await attempt(true);
       }
       return normalizeAnalysis(raw);
@@ -545,10 +545,14 @@ export async function analyzeComponent({ images, reference, visionEvidence }) {
 }
 
 function chatSystemInstruction(engineeringContext) {
-  const contextJson =
+  const rawContext =
     engineeringContext && typeof engineeringContext === "object" && Object.keys(engineeringContext).length
       ? JSON.stringify(engineeringContext, null, 2)
       : "No component has been analyzed yet in this session.";
+  const contextJson =
+    rawContext.length > MAX_CHAT_CONTEXT_CHARS
+      ? `${rawContext.slice(0, MAX_CHAT_CONTEXT_CHARS)}\n…[context truncated]`
+      : rawContext;
 
   return [
     "You are the ReForge AI Engineering Copilot, an expert mechanical and manufacturing engineer assisting with the inspection, reverse engineering, and remanufacturing of mechanical components.",
@@ -572,9 +576,12 @@ function chatSystemInstruction(engineeringContext) {
 }
 
 function toHistory(history) {
+  const items = Array.isArray(history) ? history.slice(-MAX_CHAT_HISTORY_ITEMS) : [];
   const clean = [];
-  for (const item of Array.isArray(history) ? history : []) {
-    const text = typeof item?.text === "string" ? item.text.trim() : "";
+  for (const item of items) {
+    const text = typeof item?.text === "string"
+      ? item.text.trim().slice(0, MAX_CHAT_HISTORY_ITEM_CHARS)
+      : "";
     if (!text) continue;
     const role = item.role === "user" ? "user" : "model";
     clean.push({ role, parts: [{ text }] });
@@ -583,7 +590,7 @@ function toHistory(history) {
 }
 
 export async function chatWithEngineer({ message, engineeringContext, analysis, history }) {
-  const text = typeof message === "string" ? message.trim() : "";
+  const text = typeof message === "string" ? message.trim().slice(0, MAX_CHAT_MESSAGE_CHARS) : "";
   if (!text) throw Object.assign(new Error("Message cannot be empty."), { status: 400 });
   const genAI = client();
   const candidateModels = getCandidateModels();
@@ -591,15 +598,12 @@ export async function chatWithEngineer({ message, engineeringContext, analysis, 
 
   for (const modelName of candidateModels) {
     try {
-      const targetModel = model(genAI, modelName);
+      const targetModel = model(genAI, modelName, chatSystemInstruction(context));
       const chat = targetModel.startChat({
         history: toHistory(history),
         generationConfig: { temperature: 0.35 },
       });
-      const result = await chat.sendMessage([
-        { text: chatSystemInstruction(context) },
-        { text },
-      ]);
+      const result = await chat.sendMessage([{ text }]);
       const reply = result.response.text();
       if (reply) return { text: reply.trim() };
     } catch (err) {

@@ -81,6 +81,8 @@ export function PipWorkbench({
   onClose,
   initialPipMode = 'single', // 'single' | 'assembly'
   ReconstructedViewport,
+  cadMesh = null,
+  cadMeshComponentId = null,
 }) {
   const [pos, setPos] = useState({ x: window.innerWidth > 1200 ? window.innerWidth - 750 : 20, y: 30 });
   const [size, setSize] = useState({ width: 420, height: 300 });
@@ -272,6 +274,8 @@ export function PipWorkbench({
             ) : (
               <ReconstructedViewport
                 analysis={currentAnalysis}
+                cadMesh={cadMesh}
+                useCadMesh={Boolean(cadMesh) && activeComp?.id === cadMeshComponentId}
                 wire={wire}
                 grid={grid}
                 stress={stress}

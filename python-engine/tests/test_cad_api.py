@@ -10,6 +10,7 @@ import pytest
 from unittest.mock import patch
 
 from app import generate_cad_endpoint, CadGenerateRequest
+from app import generate_advanced_cad_endpoint, AdvancedCadGenerateRequest
 from exports.step_export import StepExportError
 from exports.mesh_export import MeshExportError
 
@@ -188,4 +189,75 @@ def test_cad_generate_endpoint_stl_export_failure():
     assert body["status"] == "error"
     assert body["stage"] == "stl_export"
     assert "Mesh generation failed" in body["error"]
+
+
+def test_advanced_endpoint_exports_mesh_and_applies_user_dimensions(tmp_path):
+    """Advanced routing exports a mesh preview and rescales to user dimensions."""
+    recipe = {
+        "style": "revolved",
+        "revolvedProfile": [
+            {"radius": 0.0, "z": 0.0},
+            {"radius": 10.0, "z": 0.0},
+            {"radius": 10.0, "z": 30.0},
+            {"radius": 0.0, "z": 30.0},
+        ],
+    }
+    payload = AdvancedCadGenerateRequest(
+        job_id="adv_api_01",
+        recipe=recipe,
+        user_dimensions={"outerDiameter": 40.0, "height": 60.0},
+        output_dir=str(tmp_path),
+    )
+    res = generate_advanced_cad_endpoint(payload)
+
+    assert isinstance(res, dict)
+    assert res["status"] == "success"
+    assert res["mode"] == "feature"
+    assert res["mesh_path"] and os.path.exists(res["mesh_path"])
+    assert os.path.getsize(res["step_path"]) > 0
+
+    metrics = res["validation_report"]["metrics"]
+    bbox = metrics["actual_bbox"]
+    assert bbox["xlen"] == pytest.approx(40.0, rel=1e-2)
+    assert bbox["zlen"] == pytest.approx(60.0, rel=1e-2)
+    assert metrics["actual_volume_mm3"] == pytest.approx(
+        3.14159265 * 20.0**2 * 60.0, rel=2e-2
+    )
+
+
+def test_advanced_endpoint_reports_image_fit_for_supplied_mask(tmp_path):
+    """fit_evidence compares the projected silhouette with the supplied mask."""
+    from cad.advanced_recipe_adapter import (
+        generate_cad_from_recipe,
+        legacy_recipe_to_feature_recipe,
+    )
+    from cad.fit_loop import project_silhouette
+
+    recipe = {
+        "style": "revolved",
+        "revolvedProfile": [
+            {"radius": 0.0, "z": 0.0},
+            {"radius": 10.0, "z": 0.0},
+            {"radius": 10.0, "z": 30.0},
+            {"radius": 0.0, "z": 30.0},
+        ],
+    }
+    reference, _ = generate_cad_from_recipe(legacy_recipe_to_feature_recipe(recipe))
+    mask = project_silhouette(reference, (200, 200), mm_per_pixel=0.25, view="front")
+
+    payload = AdvancedCadGenerateRequest(
+        job_id="adv_fit_01",
+        recipe=recipe,
+        output_dir=str(tmp_path),
+        fit_evidence={"mask": mask.tolist(), "mm_per_pixel": 0.25, "view": "front"},
+    )
+    res = generate_advanced_cad_endpoint(payload)
+
+    assert isinstance(res, dict)
+    assert res["image_fit"]["status"] == "converged"
+    assert res["image_fit"]["iou"] >= 0.85
+    assert res["validation_report"]["image_fit"]["iou"] == res["image_fit"]["iou"]
+    assert res["validation_report"]["fit_score_image"] >= 0.85
+
+
 

@@ -522,7 +522,7 @@ Use known-measurement mechanical parts across at least cylinder/shaft, flange/pl
 | Tests           | 283 passed, 5 warnings in the last full run (148.92 seconds).                                                                                             |
 | Base commit     | The feature branch was created from master at 1c89efe (Windows path handling fix in CAD validator).                                                       |
 | Warnings        | Five known Starlette deprecation warnings for HTTP_422_UNPROCESSABLE_ENTITY; use HTTP_422_UNPROCESSABLE_CONTENT in future cleanup when compatible.        |
-| CAD environment | Windows dedicated CAD venv: Python 3.10.11 and CadQuery 2.7.0; do not substitute the Vision Engine venv for CAD testing.                                  |
+| Python environment | Current setup uses one repository-root `.venv` with system Python 3.13 and the combined Vision/Reconstruction/CAD requirements.                                  |
 
 ## Final intended structure
 
@@ -554,8 +554,8 @@ docs/CAD_INTEGRATION_CONTRACT.md
 ## Reproduction commands
 
 ```powershell
-# Windows PowerShell: use the dedicated CAD virtual environment
-$py = Join-Path $env:LOCALAPPDATA "ReForge-CAD-venv\Scripts\python.exe"
+# Windows PowerShell: use the shared repository-root virtual environment
+$py = Join-Path (Get-Location) ".venv\Scripts\python.exe"
 
 # From repository root
 & $py .\python-engine\cad\scripts\generate_advanced_cad_demo.py
@@ -606,7 +606,7 @@ INTEGRATION TARGET
 Image intake -> Vision evidence per view -> scale/calibration evidence -> COLMAP/multi-view Reconstruction -> solve_geometry SolverResult -> interface_from_solver_result (or a feature-aware adapter) -> validate reforge-cad-interface -> POST /cad/from-reconstruction -> feature modelling -> geometry validation -> STEP/STL/drawing/export validation. Unknown scale, ambiguous segmentation or missing critical dimensions must stop automatic CAD and return needs_input. Keep provenance, job IDs, coordinate frames and artifact references through every hop.
 
 WORK RULES FOR THIS REPOSITORY
-Inspect git status and read relevant code before editing. Preserve uncommitted/user files. Do not reset/clean/delete broad paths. Keep Advanced CAD under python-engine/cad/. Do not relocate app.py, tests/, exports/ or docs/. Preserve the legacy /cad/generate route. Add tests for every contract/feature change. Use the dedicated CAD venv on Windows. Run the full Python Engine suite before claiming success. Do not stage, commit, push or merge unless explicitly asked.
+Inspect git status and read relevant code before editing. Preserve uncommitted/user files. Do not reset/clean/delete broad paths. Keep Advanced CAD under python-engine/cad/. Do not relocate app.py, tests/, exports/ or docs/. Preserve the legacy /cad/generate route. Add tests for every contract/feature change. Use the shared repository-root `.venv` with Python 3.13. Run the Python Engine suite before claiming success. Do not stage, commit, push or merge unless explicitly asked.
 ```
 
 # 21. Source materials and terminology

@@ -13,13 +13,13 @@ Tests:
 9. Bounding-box mismatch detected and invalidates geometry.
 10. Extruded hole count and diameter verification.
 11. Gear bore diameter verification.
-12. Backend volume cross-check available and verified against geometry-volume.js.
-13. Backend estimator unavailable handling (does not crash, fit score from bbox only).
-14. Combination volume overlap does not falsely invalidate geometry.
+12. CAD volume reported directly; no Node.js volume cross-check is invoked.
+13. Fit score is computed from bounding-box error only.
+14. Combination CSG primitives remain valid.
 15. Invalid geometry produces zero fit score.
 16. Fit score bounds always strictly in [0.0, 1.0].
 17. Missing or invalid CadSpec handled safely.
-18. Diagnostic volume mismatch does not automatically invalidate CAD geometry.
+18. Gear geometry remains valid without an analytical volume estimate.
 """
 
 import math
@@ -244,8 +244,8 @@ def test_gear_bore_diameter_verification():
 # Test 12–15: Backend Volume Cross-Check & Discrepancies
 # ---------------------------------------------------------------------------
 
-def test_backend_volume_cross_check_available():
-    """Verify cross-check successfully invokes geometry-volume.js and records volume metrics."""
+def test_volume_is_reported_without_node_cross_check():
+    """Verify CAD volume is reported and no Node.js volume estimator is invoked."""
     recipe = {
         "style": "extruded",
         "outline": [
@@ -260,10 +260,11 @@ def test_backend_volume_cross_check_available():
     wp, ft = generate_cad(cad_spec)
     result = validate_cad_geometry(wp, cad_spec, ft)
 
-    assert result["metrics"]["volume_component_available"] is True
-    assert pytest.approx(result["metrics"]["volume_estimate_mm3"], rel=1e-3) == 4000.0
     assert pytest.approx(result["metrics"]["actual_volume_mm3"], rel=1e-3) == 4000.0
-    assert result["metrics"]["volume_relative_error"] < 1e-4
+    assert result["metrics"]["fit_score_method"] == "bbox_only"
+    assert "volume_estimate_mm3" not in result["metrics"]
+    assert "volume_component_available" not in result["metrics"]
+    assert not any("volume" in issue.lower() for issue in result["issues"])
 
 
 def test_diagnostic_volume_mismatch_does_not_invalidate_geometry():

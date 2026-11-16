@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import './styles.css';
-import { analyzeComponent, sendChatMessage } from './lib/api.js';
+import { ApiError, analyzeComponent, analyzeComponentDetailed, buildCad, fetchCadMesh, runAnalysisJob, sendChatMessage } from './lib/api.js';
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
 import { normalizeFeatures } from './lib/features.js';
@@ -25,6 +25,13 @@ import { ManageComponentsTab } from './components/ManageComponentsTab.jsx';
 import { MultiViewportGrid } from './components/MultiViewportGrid.jsx';
 import { PipWorkbench } from './components/PipWorkbench.jsx';
 import { ExportWorkWindow } from './components/ExportWorkWindow.jsx';
+import { ReconstructedViewport } from './components/ReconstructedViewport.jsx';
+import {
+  dimensionRows,
+  dimensionSourceLabel,
+  formatDimensionValue,
+  bboxDimensionRows,
+} from './lib/dimensions.js';
 
 const AppContext = createContext();
 const useApp = () => useContext(AppContext);
@@ -66,163 +73,6 @@ function GearCanvas() {
     return () => { cancelAnimationFrame(frame); observer.disconnect(); host.removeEventListener('pointermove', onMove); renderer.dispose(); geo.dispose(); material.dispose(); host.replaceChildren(); };
   }, []);
   return <div className="gear-canvas" ref={mount} aria-hidden="true" />;
-}
-
-function createStressMaterial() {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      minStress: { value: 0.0 },
-      maxStress: { value: 1.0 },
-    },
-    vertexShader: `
-      varying vec3 vPosition;
-      varying vec3 vNormal;
-      void main() {
-        vPosition = position;
-        vNormal = normalMatrix * normal;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vPosition;
-      varying vec3 vNormal;
-
-      // Turbo / Jet colormap approximation
-      vec3 jetHeatmap(float val) {
-        float v = clamp(val, 0.0, 1.0);
-        return clamp(vec3(
-          1.5 - abs(v * 4.0 - 3.0),
-          1.5 - abs(v * 4.0 - 2.0),
-          1.5 - abs(v * 4.0 - 1.0)
-        ), 0.0, 1.0);
-      }
-
-      void main() {
-        // Stress distribution based on distance from center & local curvature
-        float dist = length(vPosition.xy);
-        float curvature = length(cross(dFdx(vNormal), dFdy(vNormal))) * 5.0;
-        float stressFactor = clamp(sin(dist * 1.5) * 0.5 + 0.5 + curvature * 0.3, 0.0, 1.0);
-
-        // Simple directional lighting
-        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.8));
-        float diff = max(dot(normalize(vNormal), lightDir), 0.25);
-
-        vec3 heatColor = jetHeatmap(stressFactor);
-        gl_FragColor = vec4(heatColor * diff, 1.0);
-      }
-    `,
-  });
-}
-
-function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey, selectedFeatureId, hoveredFeatureId }) {
-  const mount = useRef(null);
-  const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId };
-
-  useEffect(() => {
-    const host = mount.current;
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 1000);
-    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    host.appendChild(renderer.domElement);
-    const { group } = buildModel(analysis);
-    scene.add(group);
-    scene.add(new THREE.AmbientLight('#7a4a38', 0.6));
-    const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
-    const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
-    const gridHelper = new THREE.GridHelper(10, 12, '#544337', '#3d332c'); gridHelper.position.z = -1.2; gridHelper.visible = false; scene.add(gridHelper);
-    
-    const originals = new Map();
-    group.traverse(node => { if (node.isMesh) originals.set(node.uuid, node.material); });
-    
-    const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
-    const selectHighlightMat = new THREE.MeshStandardMaterial({
-      color: '#c9f88d',
-      emissive: '#c9f88d',
-      emissiveIntensity: 0.8,
-      metalness: 0.5,
-      roughness: 0.25,
-    });
-    const hoverHighlightMat = new THREE.MeshStandardMaterial({
-      color: '#ffb77f',
-      emissive: '#ffb77f',
-      emissiveIntensity: 0.5,
-      metalness: 0.5,
-      roughness: 0.35,
-    });
-
-    const stressMaterial = createStressMaterial();
-    const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
-    const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
-    let pointerMode = null, lastPoint = null, appliedKey = null;
-    const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
-    const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
-    const onMove = event => { if (!pointerMode || !lastPoint) return; const dx = event.clientX - lastPoint.x, dy = event.clientY - lastPoint.y; lastPoint = { x: event.clientX, y: event.clientY }; if (pointerMode === 'rotate') { view.theta -= dx * .008; view.phi = Math.max(.18, Math.min(Math.PI - .18, view.phi - dy * .008)); } else { target.x -= dx * .006 * view.radius; target.y += dy * .006 * view.radius; } };
-    const onUp = () => { pointerMode = null; lastPoint = null; canvas.style.cursor = 'grab'; };
-    const onWheel = event => { event.preventDefault(); view.radius = Math.max(2.5, Math.min(20, view.radius * (1 + event.deltaY * .001))); };
-    const preventContext = event => event.preventDefault();
-    canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMove); canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointercancel', onUp); canvas.addEventListener('wheel', onWheel, { passive: false }); canvas.addEventListener('contextmenu', preventContext);
-    const resize = () => { const { width, height } = host.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height, false); }; const observer = new ResizeObserver(resize); observer.observe(host); resize();
-    
-    let frame;
-    const animate = () => {
-      frame = requestAnimationFrame(animate);
-      if (options.current.autoRotate) view.theta += .006;
-      gridHelper.visible = options.current.grid;
-
-      const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
-      const isSelected = Boolean(options.current.selectedFeatureId);
-      const materialKey = `${options.current.wire ? 'w' : ''}${options.current.stress ? 's' : ''}|${activeFeatureId ?? ''}`;
-
-      if (materialKey !== appliedKey) {
-        appliedKey = materialKey;
-
-        group.traverse(node => {
-          if (!node.isMesh) return;
-
-          if (node.userData?.isHighlightOnly) {
-            node.visible = Boolean(activeFeatureId && node.userData.featureId === activeFeatureId);
-          } else if (options.current.wire) {
-            node.material = wireMaterial;
-          } else if (activeFeatureId && (node.userData?.featureId === activeFeatureId || node.parent?.userData?.featureId === activeFeatureId)) {
-            node.material = isSelected ? selectHighlightMat : hoverHighlightMat;
-          } else if (options.current.stress) {
-            node.material = stressMaterial;
-          } else {
-            node.material = originals.get(node.uuid) || node.material;
-          }
-        });
-      }
-      const r = view.radius * Math.sin(view.phi);
-      camera.position.set(target.x + r * Math.cos(view.theta), target.y + view.radius * Math.cos(view.phi), target.z + r * Math.sin(view.theta));
-      camera.lookAt(target);
-      renderer.render(scene, camera);
-    };
-    animate();
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      canvas.removeEventListener('pointerdown', onDown);
-      canvas.removeEventListener('pointermove', onMove);
-      canvas.removeEventListener('pointerup', onUp);
-      canvas.removeEventListener('pointercancel', onUp);
-      canvas.removeEventListener('wheel', onWheel);
-      canvas.removeEventListener('contextmenu', preventContext);
-      group.traverse(node => { if (node.geometry) node.geometry.dispose(); });
-      wireMaterial.dispose();
-      selectHighlightMat.dispose();
-      hoverHighlightMat.dispose();
-      stressMaterial.dispose();
-      renderer.dispose();
-      host.replaceChildren();
-    };
-  }, [analysis]);
-
-  useEffect(() => { resetViewRef.current?.(); }, [resetKey]);
-  return <div className="model-canvas" ref={mount} aria-label="Interactive reconstructed 3D model" />;
 }
 
 function Nav() {
@@ -1051,6 +901,8 @@ function Upload() {
     setAnalysis,
     setLastAnalyzedSnapshot,
     setActiveComponentId,
+    requestCadBuild,
+    adoptCadBuildFromJob,
   } = useApp();
 
   const [activeUploadSlot, setActiveUploadSlot] = useState('primary'); // 'primary' | 'companion' | 'surroundings'
@@ -1106,7 +958,22 @@ function Upload() {
     setStage('analysing');
     try {
       const primaryRef = buildReference(reference);
-      const pAnalysis = await analyzeComponent(pImages, primaryRef);
+      let job = null;
+      try {
+        job = await runAnalysisJob(pImages, primaryRef);
+      } catch (jobError) {
+        if (!(jobError instanceof ApiError) || ![0, 404, 405, 501].includes(jobError.status)) {
+          throw jobError;
+        }
+        console.warn('Job API unavailable; using blocking analysis.', jobError.message);
+      }
+
+      if (job && job.state === 'failed' && !job.analysis) {
+        throw new Error(job.error || 'Analysis job failed.');
+      }
+      const pAnalysis = job?.analysis
+        ? job.analysis
+        : (await analyzeComponentDetailed(pImages, primaryRef)).analysis;
 
       let cAnalysis = null;
       if (companion?.images?.length) {
@@ -1135,6 +1002,11 @@ function Upload() {
       setActiveComponentId(primary.id);
       setStage('extracting');
       setPage('workbench');
+      if (job) {
+        await adoptCadBuildFromJob(job, pAnalysis);
+      } else {
+        requestCadBuild(pAnalysis, primaryRef);
+      }
     } catch (err) {
       setError(err.message || 'Analysis failed. Please try again.');
       setStage('idle');
@@ -1993,6 +1865,8 @@ function Workbench() {
     isRegenerating,
     isDirty,
     setLastAnalyzedSnapshot,
+    cadBuild,
+    requestCadBuild,
   } = useApp();
 
   const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
@@ -2294,6 +2168,48 @@ function Workbench() {
   const activeReconstructionAnalysis = isGeometryValid && scenarioAnalysis ? scenarioAnalysis : analysis;
   const modifiedCount = Object.keys(scenarioParams).length;
 
+  const usingCad = cadBuild.status === 'ready' && Boolean(cadBuild.mesh);
+  const cadResult = cadBuild.status === 'ready' ? cadBuild.result?.result || null : null;
+  const cadDimensionSource =
+    Array.isArray(cadResult?.dimensions) && cadResult.dimensions.length
+      ? { dimensionsDetail: cadResult.dimensions }
+      : activeReconstructionAnalysis;
+  const dimensionRowsList = useMemo(
+    () => dimensionRows(cadDimensionSource),
+    [cadDimensionSource]
+  );
+  const solidBboxRows = useMemo(
+    () => bboxDimensionRows(cadResult?.model?.bbox),
+    [cadResult?.model?.bbox]
+  );
+  const hasEstimatedDimensions = dimensionRowsList.some(
+    (dimension) => dimension.source === 'estimated'
+  );
+
+  const rebuildFromDimension = (key, rawValue) => {
+    const numeric = Number(rawValue);
+    if (!Number.isFinite(numeric) || numeric < 0) return;
+    if (key === 'teeth' && (numeric < 4 || numeric > 400)) return;
+    if (key === 'helixAngle' && numeric > 60) return;
+    if (key !== 'helixAngle' && key !== 'teeth' && numeric <= 0) return;
+    const reference = {
+      ...(machineryState?.primaryGear?.reference || {}),
+      [key]: key === 'teeth' ? Math.round(numeric) : numeric,
+    };
+    setMachineryState((previous) =>
+      previous
+        ? {
+            ...previous,
+            primaryGear: {
+              ...previous.primaryGear,
+              reference,
+            },
+          }
+        : previous
+    );
+    requestCadBuild(analysis, reference);
+  };
+
   return (
     <>
       <Nav />
@@ -2352,7 +2268,7 @@ function Workbench() {
             <section className="viewport">
               <div className="cad viewport-status" aria-live="polite">
                 {ready
-                  ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                  ? <>● {label}{usingCad ? ' · PARAMETRIC CAD' : ' · APPROXIMATE PREVIEW'}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>{usingCad ? 'SOLID GENERATED BY PYTHON-ENGINE' : 'AI RECONSTRUCTED'} FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
                   : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
               </div>
 
@@ -2393,13 +2309,102 @@ function Workbench() {
                   hoveredFeatureId={hoveredFeatureId}
                   ready={ready}
                   onOpenImageManager={() => setCopilotTab('components')}
+                  cadMesh={cadBuild.status === 'ready' ? cadBuild.mesh : null}
+                  cadMeshComponentId={machineryState?.primaryGear?.id || null}
                 />
+              )}
+
+              {ready && (
+                <div className="cad-export-panel" aria-live="polite">
+                  {cadBuild.status === 'building' && (
+                    <span className="cad-export-status">BUILDING PARAMETRIC CAD…</span>
+                  )}
+                  {cadBuild.status === 'ready' && !cadBuild.result?.result?.exportBlocked && (
+                    <>
+                      <span className="cad-export-status cad-export-ready">
+                        PARAMETRIC CAD{typeof cadBuild.result?.result?.validation?.fitScore === 'number'
+                          ? ` · FIT ${(cadBuild.result.result.validation.fitScore * 100).toFixed(0)}%`
+                          : ''}
+                      </span>
+                      {cadBuild.result?.result?.stepUrl && (
+                        <a href={cadBuild.result.result.stepUrl} download>STEP</a>
+                      )}
+                      {cadBuild.result?.result?.stlUrl && (
+                        <a href={cadBuild.result.result.stlUrl} download>STL</a>
+                      )}
+                    </>
+                  )}
+                  {cadBuild.status === 'ready' && cadBuild.result?.result?.exportBlocked && (
+                    <span className="cad-export-status cad-export-blocked">
+                      RELATIVE PREVIEW · ENTER ONE MEASUREMENT TO ENABLE EXPORT
+                    </span>
+                  )}
+                  {cadBuild.status === 'needs_input' && (
+                    <span className="cad-export-status cad-export-blocked" title={cadBuild.error || ''}>
+                      MORE DIMENSIONS NEEDED FOR PARAMETRIC CAD
+                    </span>
+                  )}
+                  {(cadBuild.status === 'unavailable' || cadBuild.status === 'failed') && (
+                    <span className="cad-export-status cad-export-blocked" title={cadBuild.error || ''}>
+                      APPROXIMATE PREVIEW · CAD ENGINE UNAVAILABLE
+                    </span>
+                  )}
+                </div>
               )}
 
               {ready && dims && (
                 <div className="dims-overlay" aria-label="Component dimensions">
-                  {dimensionList(activeReconstructionAnalysis).map(d => (
-                    <div className="dims-row" key={d.label}><span className="dims-label">{d.label}</span><span className="dims-value">{d.value}</span></div>
+                  {hasEstimatedDimensions && (
+                    <div className="dims-estimate-notice">
+                      ESTIMATED DIMENSIONS · EDIT A VALUE TO MEASURE AND ANCHOR EXPORTS
+                    </div>
+                  )}
+                  {dimensionRowsList.map((dimension) => (
+                    <div className="dims-row" key={`${dimension.key}-${dimension.value}`}>
+                      <span className="dims-label">
+                        {dimension.label}
+                        {dimension.anchor ? <span className="dims-anchor" title="Anchor dimension">●</span> : null}
+                      </span>
+                      <input
+                        className="dims-input"
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step={dimension.unit === 'count' ? '1' : '0.1'}
+                        defaultValue={formatDimensionValue(dimension.value, dimension.unit)}
+                        title={dimension.note || `Source: ${dimensionSourceLabel(dimension.source)}`}
+                        aria-label={`${dimension.label} in ${dimension.unit}`}
+                        onBlur={(event) => {
+                          const next = Number(event.target.value);
+                          if (Number.isFinite(next) && Math.abs(next - dimension.value) < 1e-9) return;
+                          rebuildFromDimension(dimension.key, event.target.value);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') event.currentTarget.blur();
+                          if (event.key === 'Escape') {
+                            event.currentTarget.value = formatDimensionValue(
+                              dimension.value,
+                              dimension.unit
+                            );
+                            event.currentTarget.blur();
+                          }
+                        }}
+                      />
+                      <span className={`dims-source dims-source-${dimension.source}`}>
+                        {dimensionSourceLabel(dimension.source)}
+                      </span>
+                    </div>
+                  ))}
+                  {solidBboxRows.map((dimension) => (
+                    <div className="dims-row dims-row-solid" key={dimension.key}>
+                      <span className="dims-label">{dimension.label}</span>
+                      <span className="dims-value">
+                        {formatDimensionValue(dimension.value, dimension.unit)}
+                      </span>
+                      <span className="dims-source dims-source-measured">
+                        {dimensionSourceLabel(dimension.source)}
+                      </span>
+                    </div>
                   ))}
                 </div>
               )}
@@ -2583,7 +2588,7 @@ function Workbench() {
           )}
 
           {activeTab === 'export' && (
-            <ExportWorkWindow analysis={activeReconstructionAnalysis} mfgData={mfgData} />
+            <ExportWorkWindow analysis={activeReconstructionAnalysis} cadBuild={cadBuild} />
           )}
 
           {/* Picture-in-Picture Floating 3D Workbench when in other work windows */}
@@ -2612,6 +2617,8 @@ function Workbench() {
               onClose={() => setPipVisible(false)}
               dimensionList={dimensionList}
               ReconstructedViewport={ReconstructedViewport}
+              cadMesh={cadBuild.status === 'ready' ? cadBuild.mesh : null}
+              cadMeshComponentId={machineryState?.primaryGear?.id || null}
             />
           )}
 
@@ -2812,6 +2819,99 @@ function App() {
   const [analysis, setAnalysis] = useState(null);
   const [stage, setStage] = useState('idle');
   const [analysisVersion, setAnalysisVersion] = useState(0);
+  const [cadBuild, setCadBuild] = useState({
+    status: 'idle',
+    analysis: null,
+    result: null,
+    mesh: null,
+    error: null,
+  });
+  const cadRequestRef = useRef(0);
+
+  const adoptCadBuildFromJob = useCallback(async (job, targetAnalysis) => {
+    const requestId = ++cadRequestRef.current;
+    if (!job) return;
+    if (['unavailable', 'failed', 'needs_input'].includes(job.state)) {
+      setCadBuild({
+        status: job.state,
+        analysis: targetAnalysis,
+        result: job,
+        mesh: null,
+        error: job.error || 'CAD generation is unavailable.',
+      });
+      return;
+    }
+    let mesh = null;
+    if (job.result?.meshUrl) {
+      try {
+        mesh = await fetchCadMesh(job.result.meshUrl);
+      } catch (meshError) {
+        console.warn('CAD preview could not be loaded:', meshError.message);
+      }
+    }
+    if (requestId !== cadRequestRef.current) return;
+    setCadBuild({
+      status: 'ready',
+      analysis: targetAnalysis,
+      result: job,
+      mesh,
+      error: null,
+    });
+  }, []);
+
+  const requestCadBuild = useCallback(async (targetAnalysis, reference) => {
+    const requestId = ++cadRequestRef.current;
+    if (!targetAnalysis?.geometryRecipe) {
+      setCadBuild({ status: 'idle', analysis: null, result: null, mesh: null, error: null });
+      return;
+    }
+    setCadBuild({
+      status: 'building',
+      analysis: targetAnalysis,
+      result: null,
+      mesh: null,
+      error: null,
+    });
+    try {
+      const job = await buildCad({ analysis: targetAnalysis, reference });
+      if (requestId !== cadRequestRef.current) return;
+      if (['unavailable', 'failed', 'needs_input'].includes(job?.state)) {
+        setCadBuild({
+          status: job.state,
+          analysis: targetAnalysis,
+          result: job,
+          mesh: null,
+          error: job.error || 'CAD generation is unavailable.',
+        });
+        return;
+      }
+      let mesh = null;
+      if (job?.result?.meshUrl) {
+        try {
+          mesh = await fetchCadMesh(job.result.meshUrl);
+        } catch (meshError) {
+          console.warn('CAD preview could not be loaded:', meshError.message);
+        }
+      }
+      if (requestId !== cadRequestRef.current) return;
+      setCadBuild({
+        status: 'ready',
+        analysis: targetAnalysis,
+        result: job,
+        mesh,
+        error: null,
+      });
+    } catch (error) {
+      if (requestId !== cadRequestRef.current) return;
+      setCadBuild({
+        status: 'failed',
+        analysis: targetAnalysis,
+        result: null,
+        mesh: null,
+        error: error?.message || 'CAD generation failed.',
+      });
+    }
+  }, []);
 
   // Machinery Context State
   const [machineryState, setMachineryState] = useState(() => createInitialMachineryState());
@@ -2872,21 +2972,25 @@ function App() {
       setLastAnalyzedSnapshot(newSnapshot);
       if (pAnalysis) {
         setAnalysis(pAnalysis);
+        requestCadBuild(pAnalysis, primary?.reference || {});
       }
     } catch (err) {
       console.error('Regeneration failed:', err);
     } finally {
       setIsRegenerating(false);
     }
-  }, [machineryState, isRegenerating]);
+  }, [machineryState, isRegenerating, requestCadBuild]);
 
   const updateImages = useCallback((next) => {
+    cadRequestRef.current += 1;
     setImages(next);
     setAnalysis(null);
     setStage('idle');
+    setCadBuild({ status: 'idle', analysis: null, result: null, mesh: null, error: null });
   }, []);
 
   const updateAnalysis = useCallback((result) => {
+    cadRequestRef.current += 1;
     setAnalysis(result);
     if (result) setAnalysisVersion(v => v + 1);
   }, []);
@@ -2897,6 +3001,9 @@ function App() {
     analysis, setAnalysis: updateAnalysis,
     stage, setStage,
     analysisVersion,
+    cadBuild,
+    requestCadBuild,
+    adoptCadBuildFromJob,
     machineryState, setMachineryState,
     lastAnalyzedSnapshot, setLastAnalyzedSnapshot,
     viewMode, setViewMode,
@@ -2907,6 +3014,7 @@ function App() {
     isDirty,
   }), [
     page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
+    cadBuild, requestCadBuild, adoptCadBuildFromJob,
     machineryState, lastAnalyzedSnapshot, viewMode, activeComponentId,
     selectedComponentIds, handleRegenerate, isRegenerating, isDirty
   ]);

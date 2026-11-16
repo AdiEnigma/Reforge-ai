@@ -1,0 +1,15 @@
+# Shared runtime dependencies for Vision, Reconstruction, and CAD.
+# Use Python 3.13 on Windows. Torch/TorchVision are installed separately from
+# the PyTorch CUDA index; see vision-engine/requirements-vision-ml.txt.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+numpy>=2.0
+scipy>=1.15
+opencv-python-headless>=4.10
+pillow>=11
+matplotlib>=3.9
+huggingface-hub==0.36.2
+pytest>=8.3
+pytest-asyncio>=0.24
+httpx2>=2.16
+-r python-engine/requirements-cad.txt

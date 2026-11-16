@@ -24,7 +24,7 @@ CHECKPOINTS = {
         "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt",
         "description": "SAM 2.1 Small (Hiera) Checkpoint (~185 MB)",
         "license": "Apache-2.0",
-        "sha256": "47333a5cf0f23ba5b550dd7eb762b322a30ba5be669b7b9db893444458514930",
+        "sha256": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
     },
     "depth_anything_v2_small": {
         "filename": "depth_anything_v2_vits.pth",

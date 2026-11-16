@@ -1,0 +1,4 @@
+# Install torch and torchvision first from the selected PyTorch CUDA index.
+torch>=2.5.1
+torchvision>=0.20.1
+git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4

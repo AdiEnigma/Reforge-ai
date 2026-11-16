@@ -601,3 +601,43 @@ def test_status_consistency():
     assert spec_rej.status == "rejected"
     assert len(spec_rej.errors) > 0
 
+
+# ---------------------------------------------------------------------------
+# J. Negative-coordinate preservation (Node sanitize parity)
+# ---------------------------------------------------------------------------
+
+def test_centered_outline_coordinates_preserved():
+    """A centered plate keeps negative x/y coordinates through validation."""
+    recipe = {
+        "style": "extruded",
+        "outline": [
+            {"x": -50.0, "y": -30.0},
+            {"x": 50.0, "y": -30.0},
+            {"x": 50.0, "y": 30.0},
+            {"x": -50.0, "y": 30.0},
+        ],
+        "depth": 10.0,
+    }
+    spec = validate_recipe(recipe)
+
+    assert spec.status == "ok"
+    xs = [point["x"] for point in spec.spec["outline"]]
+    ys = [point["y"] for point in spec.spec["outline"]]
+    assert -50.0 in xs and 50.0 in xs
+    assert -30.0 in ys and 30.0 in ys
+
+
+def test_negative_revolved_profile_z_preserved():
+    """A revolved profile spanning z=-20..20 keeps its negative z values."""
+    recipe = {
+        "style": "revolved",
+        "revolvedProfile": [
+            {"z": -20.0, "radius": 10.0},
+            {"z": 20.0, "radius": 10.0},
+        ],
+    }
+    spec = validate_recipe(recipe)
+
+    assert spec.status == "ok"
+    z_values = [point["z"] for point in spec.spec["revolvedProfile"]]
+    assert z_values == [-20.0, 20.0]

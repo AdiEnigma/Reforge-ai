@@ -101,10 +101,10 @@ export function sanitizeRecipe(analysis) {
   }
 
   const dims = [];
-  for (const p of recipe.revolvedProfile || []) dims.push(p.z, p.radius);
+  for (const p of recipe.revolvedProfile || []) dims.push(Math.abs(p.z), Math.abs(p.radius));
   for (const pt of recipe.outline || []) dims.push(Math.abs(pt.x), Math.abs(pt.y));
-  for (const h of recipe.holes || []) dims.push(h.radius);
-  if (recipe.depth != null) dims.push(recipe.depth);
+  for (const h of recipe.holes || []) dims.push(Math.abs(h.cx), Math.abs(h.cy), Math.abs(h.radius));
+  if (recipe.depth != null) dims.push(Math.abs(recipe.depth));
   if (recipe.gear) {
     for (const key of ["module", "faceWidth", "boreRadius"]) {
       if (recipe.gear[key] != null) dims.push(Math.abs(recipe.gear[key]));
@@ -120,7 +120,8 @@ export function sanitizeRecipe(analysis) {
     const sorted = [...positive].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
     const cap = Math.max(median * RECIPE_LIMITS.maxDimensionRatio, 1000);
-    const clip = (v) => (typeof v === "number" && isFinite(v) ? Math.max(0, Math.min(v, cap)) : v);
+    const clip = (v) =>
+      typeof v === "number" && isFinite(v) ? Math.sign(v) * Math.min(Math.abs(v), cap) : v;
     for (const p of recipe.revolvedProfile || []) {
       p.z = clip(p.z);
       p.radius = clip(p.radius);

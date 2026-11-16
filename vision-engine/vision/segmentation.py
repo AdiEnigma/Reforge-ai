@@ -93,13 +93,64 @@ class SAM2Segmentor:
         return True
 
     # ------------------------------------------------------------------
+    def _predict_with_hint(self, rgb: np.ndarray, hint: dict) -> list:
+        """Run the prompted predictor using a point and/or box hint."""
+        import numpy as np  # type: ignore
+
+        self._predictor.set_image(rgb)
+        box = hint.get("box")
+        # A box already pins the object, so ask SAM2 for a single mask; point-only
+        # prompts keep multimask output so callers can pick a granularity.
+        kwargs = {"multimask_output": box is None}
+
+        points = hint.get("points")
+        if points is None and hint.get("point") is not None:
+            points = [hint["point"]]
+        if points:
+            point_array = np.array(points, dtype=np.float32)
+            if point_array.ndim == 1:
+                point_array = point_array.reshape(1, 2)
+            labels = hint.get("labels")
+            label_array = (
+                np.array(labels, dtype=np.int32)
+                if labels
+                else np.ones(len(point_array), dtype=np.int32)
+            )
+            kwargs["point_coords"] = point_array
+            kwargs["point_labels"] = label_array
+
+        box = hint.get("box")
+        if box is not None:
+            kwargs["box"] = np.array(box, dtype=np.float32)
+
+        masks, scores, _ = self._predictor.predict(**kwargs)
+        if masks is None:
+            return []
+        if masks.ndim == 2:
+            masks = masks[None, ...]
+        score_array = np.atleast_1d(scores) if scores is not None else None
+        results = []
+        for index, mask in enumerate(masks):
+            score = (
+                float(score_array[index])
+                if score_array is not None and index < len(score_array)
+                else _LOW_CONFIDENCE_THRESHOLD
+            )
+            results.append({"segmentation": mask, "predicted_iou": score})
+        return results
+
+    # ------------------------------------------------------------------
     def segment(self, rgb: np.ndarray, hint=None) -> dict:
         """
         Segment the primary subject in an RGB image.
 
         Args:
             rgb:  np.ndarray (H, W, 3) uint8
-            hint: optional point/box hint (currently unused — auto mode)
+            hint: optional {"point": [x, y] | "points": [[x, y], ...], "labels": [...], "box": [x1, y1, x2, y2]}
+
+        On CPU the full-grid automatic mask generator is skipped (too slow and
+        unreliable); a prompted predictor is used when a hint is supplied. On
+        CUDA/MPS auto mode remains available.
 
         Returns:
             dict with keys:
@@ -121,24 +172,39 @@ class SAM2Segmentor:
             "warnings": [],
         }
 
-        if not self._loaded or self._mask_generator is None:
+        if not self._loaded or self._predictor is None:
             result_base["warnings"].append("SAM2 not available; segmentation skipped")
+            return result_base
+
+        hint = hint if isinstance(hint, dict) else {}
+        has_hint = bool(hint.get("point") or hint.get("points") or hint.get("box"))
+        cpu_without_hint = self._device == "cpu" and not has_hint
+
+        if cpu_without_hint:
+            result_base["warnings"].append(
+                "SAM2 automatic mode is disabled on CPU; segmentation skipped (no prompt available)."
+            )
             return result_base
 
         try:
             import torch  # type: ignore
 
-            # Choose autocast context — only on cuda/mps
             use_autocast = self._device in ("cuda", "mps")
-
             with torch.inference_mode():
                 if use_autocast:
                     dtype = torch.float16 if self._device == "cuda" else torch.bfloat16
                     with torch.autocast(self._device, dtype=dtype):
-                        masks = self._mask_generator.generate(rgb)
+                        masks = (
+                            self._predict_with_hint(rgb, hint)
+                            if has_hint
+                            else self._mask_generator.generate(rgb)
+                        )
                 else:
-                    masks = self._mask_generator.generate(rgb)
-
+                    masks = (
+                        self._predict_with_hint(rgb, hint)
+                        if has_hint
+                        else self._mask_generator.generate(rgb)
+                    )
         except RuntimeError as exc:
             msg = str(exc).lower()
             if "out of memory" in msg or "oom" in msg:
@@ -171,7 +237,9 @@ class SAM2Segmentor:
         bbox_xyxy = None
         if seg_mask is not None:
             import cv2  # type: ignore
-            mask_uint8 = seg_mask.astype(np.uint8) * 255
+            mask_uint8 = np.asarray(seg_mask).astype(np.uint8)
+            if mask_uint8.max() <= 1:
+                mask_uint8 = mask_uint8 * 255
             # Remove small isolated components
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_uint8, connectivity=8)
             min_area_px = _MIN_COMPONENT_AREA_RATIO * total_pixels

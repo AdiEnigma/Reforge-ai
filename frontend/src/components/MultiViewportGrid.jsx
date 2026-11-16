@@ -17,6 +17,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { buildModel, buildAssemblyScene, dimensionList, resolveLabel } from '../lib/reconstruct.js';
+import { buildCadMeshGroup } from '../lib/cad-mesh.js';
 import { getAllComponents, ROLE_TYPES } from '../lib/machinery-context.js';
 
 const Icon = ({ children, className = '' }) => (
@@ -72,6 +73,8 @@ function SingleViewportCanvas({
   title = 'COMPONENT',
   isAssembly = false,
   machineryState = null,
+  cadMesh = null,
+  useCadMesh = false,
   wire,
   grid,
   stress,
@@ -100,6 +103,8 @@ function SingleViewportCanvas({
     if (isAssembly && machineryState) {
       const { group } = buildAssemblyScene(machineryState);
       mainGroup = group;
+    } else if (useCadMesh && cadMesh) {
+      mainGroup = buildCadMeshGroup(cadMesh);
     } else {
       const { group } = buildModel(analysis);
       mainGroup = group;
@@ -273,7 +278,7 @@ function SingleViewportCanvas({
       renderer.dispose();
       host.replaceChildren();
     };
-  }, [analysis, isAssembly, machineryState]);
+  }, [analysis, isAssembly, machineryState, cadMesh, useCadMesh]);
 
   useEffect(() => {
     resetViewRef.current?.();
@@ -337,6 +342,8 @@ export function MultiViewportGrid({
   hoveredFeatureId,
   ready,
   onOpenImageManager,
+  cadMesh = null,
+  cadMeshComponentId = null,
 }) {
   const allComponents = useMemo(() => getAllComponents(machineryState), [machineryState]);
   const primary = machineryState?.primaryGear;
@@ -561,6 +568,8 @@ export function MultiViewportGrid({
           <SingleViewportCanvas
             analysis={activeAnalysis}
             title={activeComponent?.name || resolveLabel(activeAnalysis)}
+            cadMesh={cadMesh}
+            useCadMesh={Boolean(cadMesh) && activeComponent?.id === cadMeshComponentId}
             wire={wire}
             grid={grid}
             stress={stress}
@@ -582,6 +591,8 @@ export function MultiViewportGrid({
                 <SingleViewportCanvas
                   analysis={analysis1}
                   title={`VP 1 · ${comp1?.name || 'Primary Gear'}`}
+                  cadMesh={cadMesh}
+                  useCadMesh={Boolean(cadMesh) && comp1?.id === cadMeshComponentId}
                   headerControls={renderViewportDropdown(
                     dualAssignments[0],
                     (newId) => setDualAssignments([newId, dualAssignments[1]]),
@@ -642,6 +653,8 @@ export function MultiViewportGrid({
                 <SingleViewportCanvas
                   analysis={comp1?.analysis || activeAnalysis}
                   title={`1. ${comp1?.name || 'Primary Gear'}`}
+                  cadMesh={cadMesh}
+                  useCadMesh={Boolean(cadMesh) && comp1?.id === cadMeshComponentId}
                   headerControls={renderViewportDropdown(
                     quadAssignments[0],
                     (newId) => setQuadAssignments([newId, quadAssignments[1], quadAssignments[2], quadAssignments[3]]),

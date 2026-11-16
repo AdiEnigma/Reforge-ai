@@ -1,140 +1,225 @@
 # ReForge AI
 
-ReForge AI is an AI-assisted engineering tool for **MSMEs** (micro, small and medium enterprises) in manufacturing. It lets you upload photos of a mechanical component (gears, shafts, flanges, brackets, bearings) and get an AI-generated parametric **3D model** you can inspect — no CAD expertise or expensive software required. This helps small workshops and fabricators reverse-engineer parts, quote jobs, and communicate designs faster.
+ReForge AI turns photos of a mechanical component into an editable, engineering-ready
+parametric CAD model. It is aimed at MSMEs and small workshops that need to
+reverse-engineer parts, quote jobs, or re-manufacture components without a
+full CAD seat.
+
+Upload one or more photos, optionally enter a known reference dimension, and the
+app analyses the geometry, estimates dimensions with provenance, builds a
+parametric solid, validates it, and exports STEP/STL plus an interactive 3D
+preview.
 
 ## Features
 
-- Upload one or more photos of a component (drag-and-drop or click to select)
-- Gemini analyzes the images and returns structured geometry (component type, dimensions, features, material estimate, manufacturing process)
-- AI-powered parametric 3D reconstruction (spur gear, cylinder/shaft, flange, bearing, bracket)
-- Interactive 3D viewport: rotate, zoom, pan, wireframe, grid, dimensions, reset
-- **AI Engineer** chat to ask engineering questions about your component
+- Photo analysis with Gemini, with optional local vision preprocessing
+  (SAM 2 masks, OpenCV circles/contours/calibration, Depth Anything V2)
+- Editable dimensions with per-dimension provenance (`user`, `measured`,
+  `assumed`, `estimated`) and an anchor dimension that gates export
+- Parametric CAD generation in Python (CadQuery) with legacy and feature-based
+  advanced routes, geometry validation, STEP/STL export and a JSON mesh preview
+- Image-fit check: projected CAD silhouette vs segmentation mask (IoU) with a
+  capped 3-5 iteration scale refine loop
+- Multi-photo reconstruction (COLMAP + SciPy) that degrades gracefully to the
+  single-view solve when COLMAP is not installed
+- Job orchestration (`POST /api/jobs`, `GET /api/jobs/:id`, resume) with
+  `queued | analyzing | generating_cad | needs_input | done | failed | unavailable`
+- Interactive Three.js viewport for the generated mesh, plus OBJ/GLTF export
+- AI Engineer chat and manufacturing/material/engineering analysis helpers
 
 ## Prerequisites
 
 - Node.js 18+
+- Python 3.13
+- [`uv`](https://github.com/astral-sh/uv) (manages the shared `.venv`)
 - A [Gemini API key](https://aistudio.google.com/apikey)
+- Optional: COLMAP on `PATH` (or `COLMAP_EXE_PATH`) for multi-photo reconstruction
 
 ## Setup
 
-```bash
-# 1. Install backend dependencies
-cd backend
-npm install
+```powershell
+# From the repository root: one venv for every Python service
+uv venv .venv --python 3.13
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 
-# 2. Configure your Gemini API key
-copy .env.example .env.local
-# then edit .env.local and set GEMINI_API_KEY=your_key_here
+# Optional: CUDA PyTorch for the vision engine (NVIDIA on Windows)
+uv pip install --python .venv/Scripts/python.exe torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
-# 3. Install frontend dependencies
-cd ../frontend
-npm install
+# Optional: pinned SAM 2 + model checkpoints for the vision engine
+$env:SAM2_BUILD_CUDA = "0"
+uv pip install --python .venv/Scripts/python.exe -r vision-engine/requirements-vision-ml.txt
+Push-Location vision-engine
+..\.venv\Scripts\python.exe .\scripts\install_depth_anything_v2.py
+..\.venv\Scripts\python.exe .\scripts\download_models.py
+Pop-Location
+
+# Node dependencies
+Push-Location backend;  npm ci; Pop-Location
+Push-Location frontend; npm ci; Pop-Location
+
+# Configuration
+Copy-Item backend/.env.example backend/.env.local
+# edit backend/.env.local and set GEMINI_API_KEY, then enable the services you need
 ```
 
-## Run (development)
+## Run
 
-In two terminals:
+### One command (recommended)
 
-```bash
-# Terminal 1 — backend API (http://localhost:8787)
-cd backend
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\dev.ps1
+```
+
+This starts the vision engine (`8765`), the Python CAD/reconstruction engine
+(`8766`), the Node API (`8787`) and the Vite dev server (`5173`), waits for
+health checks, and stops everything on Ctrl+C.
+
+### Manual (separate terminals)
+
+```powershell
+# Terminal 1 - vision engine (optional)
+Push-Location vision-engine
+..\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8765
+
+# Terminal 2 - CAD + reconstruction engine
+Push-Location python-engine
+..\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8766
+
+# Terminal 3 - Node API
+Push-Location backend
 npm run server
 
-# Terminal 2 — frontend (http://localhost:5173)
-cd frontend
+# Terminal 4 - frontend dev server
+Push-Location frontend
 npm run dev
 ```
 
-Open http://localhost:5173, click **Start ReForge**, upload component photos, optionally enter a known reference dimension, then click **Create 3D Model**.
+Open http://localhost:5173. Service reachability is reported at
+http://localhost:8787/api/health.
 
-## Run (production)
+### Production-style
 
-```bash
-cd frontend
-npm run build
-
-cd ../backend
-npm run server
+```powershell
+Push-Location frontend; npm run build; Pop-Location
+Push-Location backend;  npm run server; Pop-Location
 ```
 
 The backend serves the built frontend at http://localhost:8787.
 
+## Multi-process layout
+
+```
+backend/        Express API: auth-less local API, CORS, rate limiting,
+                Gemini calls, vision/reconstruction/CAD adapters, job store,
+                CAD artefact staging and download
+frontend/       React + Vite + Three.js UI, upload flow, workbench, 3D viewer
+vision-engine/  FastAPI vision service: SAM 2, OpenCV, Depth Anything V2
+python-engine/  FastAPI engineering service: SciPy solver, COLMAP multiview,
+                CadQuery modelling, validation, STEP/STL/mesh export, fit loop
+scripts/        dev.ps1 launcher
+```
+
+All Python services share the repository-root `.venv` and bind to `127.0.0.1`.
+The Node API is the only process intended to be browser-facing in development.
+
+## API overview
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/analyze-component` | Analyse photos, return enriched analysis + optional vision observations |
+| `POST` | `/api/jobs` | Create an analysis + CAD job (returns `202` with a job id) |
+| `GET` | `/api/jobs/:id` | Poll job state, progress and result |
+| `POST` | `/api/jobs/:id/resume` | Supply dimensions for a `needs_input` job |
+| `POST` | `/api/cad/build` | Build CAD from an analysis/recipe (blocking) |
+| `GET` | `/api/cad/files/:filename` | Download staged STEP/STL/mesh output |
+| `POST` | `/api/reconstruct` | COLMAP + SciPy reconstruction (accepts inline `photos[]`) |
+| `POST` | `/api/chat` | AI Engineer chat |
+| `GET` | `/api/health` | Overall + per-service reachability |
+
+### Job flow
+
+1. `POST /api/jobs` with the same `images` / `reference` payload as analysis.
+2. Poll `GET /api/jobs/:id`; the job moves through `analyzing` and
+   `generating_cad`.
+3. Terminal states are `done`, `needs_input`, `failed`, `unavailable`.
+   `needs_input` jobs can be resumed with `user_dimensions`.
+
+Jobs are in-memory and expire after `JOB_TTL_SECONDS` (default 30 minutes).
+
 ## Environment variables
 
-| Variable        | Required | Description                          |
-| --------------- | -------- | ------------------------------------ |
-| `GEMINI_API_KEY`| Yes      | Gemini API key (kept server-side)    |
-| `GEMINI_MODEL`  | No       | Gemini model, defaults to `gemini-2.0-flash` |
-| `PORT`          | No       | Backend port, defaults to `8787`     |
+Set these in `backend/.env.local`.
 
-The API key is never exposed to the browser — it stays in the backend's `.env.local` (gitignored).
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | - | Required. Stays server-side. |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini model id |
+| `PORT` | `8787` | Node API port |
+| `VISION_PIPELINE_ENABLED` | `false` | Enable the local vision service |
+| `VISION_SERVICE_URL` | `http://127.0.0.1:8765` | Vision service base URL |
+| `VISION_FAIL_OPEN` | `true` | Continue with Gemini only if vision fails |
+| `VISION_REQUEST_TIMEOUT_SECONDS` | `60` | Vision request timeout |
+| `CAD_ENABLED` | `false` | Enable parametric CAD generation |
+| `CAD_SERVICE_URL` | `http://127.0.0.1:8766` | Python engineering service URL |
+| `CAD_TIMEOUT_SECONDS` | `120` | CAD request timeout |
+| `CAD_ADVANCED_ENABLED` | `false` | Route non-gear recipes to the feature pipeline |
+| `CAD_STORE_DIR` | `backend/var/cad` | Staged CAD artefacts |
+| `CAD_JOB_TTL_HOURS` | `24` | Staged artefact retention |
+| `RECONSTRUCTION_ENABLED` | `false` | Enable COLMAP + SciPy reconstruction |
+| `RECONSTRUCTION_SERVICE_URL` | `http://127.0.0.1:8766` | Reconstruction service URL |
+| `RECONSTRUCTION_TIMEOUT_SECONDS` | `60` | Reconstruction timeout |
+| `RECONSTRUCTION_IMAGE_ROOT` | OS temp `reforge-recon-images` | Where inline photos are staged |
+| `JOB_TTL_SECONDS` | `1800` | Job retention |
+| `JOB_MAX_ENTRIES` | `50` | Maximum live jobs |
+| `ANALYSIS_LOG_ENABLED` | `false` | Opt-in dataset logging (per-request consent required) |
+| `ANALYSIS_LOG_DIR` | `backend/var/analysis-log` | Log output directory |
+| `ANALYSIS_LOG_RETENTION_DAYS` | `30` | Log retention |
+| `ANALYSIS_LOG_INCLUDE_IMAGES` | `false` | Also store raw photos (review consent first) |
+| `CORS_ORIGINS` | `http://localhost:5173,...` | Allowed browser origins |
 
-## Project structure
+The Gemini key is never exposed to the browser.
 
-```
-backend/   Express + Gemini API server (/api/analyze-component, /api/chat, /api/health)
-frontend/  React + Vite + Three.js app (landing, upload, 3D reconstruction workbench)
-```
+## Tests
 
-## License
+```powershell
+# Node unit tests
+node --test backend/*.test.js
 
-Prototype — for demonstration purposes.
+# Python tests (run from each service directory)
+Push-Location python-engine
+..\.venv\Scripts\python.exe -B -m pytest tests -q
+Pop-Location
 
+Push-Location vision-engine
+..\.venv\Scripts\python.exe -B -m pytest tests -q
+Pop-Location
 
----
-
-## Vision Preprocessing Service (Optional)
-
-ReForge AI includes an optional Python-based vision preprocessing service that uses
-**SAM 2.1** image segmentation, **OpenCV** geometric feature extraction, and **Depth Anything V2 Small**
-depth estimation to provide supplementary visual evidence to the Gemini analysis.
-
-> **Disabled by default.** The existing Gemini-only analysis path works exactly as
-> before when `VISION_PIPELINE_ENABLED=false` (the default).
-
-### Prerequisites
-
-- Python >= 3.10
-- ~2 GB disk space for model checkpoints (downloaded separately)
-- Recommended: Linux or WSL2 with Ubuntu on Windows (for SAM 2 CUDA support; CPU fallback is automatic)
-
-### Quick start
-
-```bash
-# 1. Create virtual environment for vision service
-cd vision-engine
-python -m venv .venv
-
-# Windows (PowerShell)
-.venv\Scripts\activate
-# Linux / macOS / WSL2
-source .venv/bin/activate
-
-# 2. Install Python dependencies
-pip install -r requirements.txt
-
-# 3. Download model checkpoints (~284 MB)
-python scripts/download_models.py
-
-# 4. Start the vision service (loopback only)
-uvicorn app:app --host 127.0.0.1 --port 8765
+# Frontend production build
+Push-Location frontend; npm run build; Pop-Location
 ```
 
-### Enable in backend
+## Accuracy evaluation
 
-Add to `backend/.env.local`:
-```env
-VISION_PIPELINE_ENABLED=true
-VISION_SERVICE_URL=http://127.0.0.1:8765
+`evaluation/` contains a harness that compares predicted dimensions against
+caliper-measured parts and reports per-dimension MAE/MAPE plus tolerance pass
+rates. Fill `evaluation/dataset.json` with 50-100 measured parts (see
+`evaluation/README.md`) and run:
+
+```powershell
+..\.venv\Scripts\python.exe -B evaluation\run_evaluation.py evaluation\dataset.json --md evaluation\report.md
 ```
 
-### Fail-safe behavior
+## Privacy and dataset logging
 
-If the vision service is offline, times out, or returns an error:
-- `VISION_FAIL_OPEN=true` (default): analysis continues using Gemini only
-- A warning is logged server-side
-- The API response `{ analysis }` is unaffected
+Analysis logging is **off by default** and requires explicit per-request consent
+(`consent_for_training: true`). When `ANALYSIS_LOG_ENABLED=true`, consented
+records store the Gemini output, user corrections, and reference dimensions;
+photos are hashed, not stored, unless `ANALYSIS_LOG_INCLUDE_IMAGES=true`. Logs
+expire after `ANALYSIS_LOG_RETENTION_DAYS` (default 30). Send corrections to
+`POST /api/analysis-feedback`.
 
-### Model information
+## Model and license notices
 
-See [MODEL_NOTICES.md](MODEL_NOTICES.md) for upstream URLs, licenses (both Apache-2.0), and checkpoint details.
+SAM 2.1 and Depth Anything V2 checkpoints are described in
+[MODEL_NOTICES.md](MODEL_NOTICES.md) (both Apache-2.0). The application is a
+prototype intended for demonstration and local evaluation.
