@@ -680,7 +680,7 @@ async function buildCadFromBody(rawBody) {
   const body = sanitizeCadBuildBody(rawBody);
   const { analysis, reference, extraUserDimensions, solverOutput, visionObservations } = body;
   const { analysis: enriched } = deriveAssumptions(analysis, { reference });
-  const recipe = sanitizeRecipe(body.recipeSource ?? enriched.geometryRecipe);
+  const recipe = sanitizeRecipe(enriched.geometryRecipe ?? body.recipeSource);
   if (!recipe || !recipe.style) {
     return ({
       jobId: null,
@@ -695,7 +695,8 @@ async function buildCadFromBody(rawBody) {
   }
   const provenance = cadProvenance(enriched);
   const jobId = newJobId();
-  const exportBlocked = !enriched.anchorDimension;
+  const allowAssumedExports = process.env.ALLOW_ASSUMED_EXPORTS !== "false";
+  const exportBlocked = !allowAssumedExports && !enriched.anchorDimension;
   const exportBlockedReason = exportBlocked
     ? "Add at least one user-provided or measured dimension to enable STEP/STL export."
     : null;

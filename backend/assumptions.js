@@ -197,12 +197,39 @@ function syncRecipeGear(analysis) {
   if (isPositiveNumber(analysis.dimensions?.height) && !recipe.gear.faceWidth) {
     recipe.gear.faceWidth = analysis.dimensions.height;
   }
+  if (!recipe.gear.faceWidth) {
+    recipe.gear.faceWidth = isPositiveNumber(analysis.dimensions?.thickness)
+      ? analysis.dimensions.thickness
+      : 15;
+  }
+  if (!recipe.gear.module && isPositiveNumber(recipe.gear.teeth) && isPositiveNumber(analysis.dimensions?.outerDiameter)) {
+    recipe.gear.module = Number((analysis.dimensions.outerDiameter / (recipe.gear.teeth + 2)).toFixed(3));
+  }
 }
 
 function applyStandardSnapping(analysis, sources, confidence) {
   const part = classifyPart(analysis);
 
   if (part.isGear) {
+    // If module is missing but OD and teeth are present, infer module: OD = (teeth + 2) * module
+    if (
+      !isLockedSource(sources.module) &&
+      !isPositiveNumber(analysis.module) &&
+      isPositiveNumber(analysis.teeth) &&
+      isPositiveNumber(getValue(analysis, "outerDiameter"))
+    ) {
+      const rawModule = getValue(analysis, "outerDiameter") / (Math.round(analysis.teeth) + 2);
+      const snapped = snapToSeries(rawModule, ISO_MODULES, 0.25) || { value: Number(rawModule.toFixed(3)) };
+      setValue(
+        analysis,
+        "module",
+        snapped.value,
+        sources,
+        confidence,
+        `Gear module inferred from outer diameter ${getValue(analysis, "outerDiameter")} mm / (${Math.round(analysis.teeth)} + 2) teeth = ${snapped.value} mm.`
+      );
+    }
+
     if (!isLockedSource(sources.module) && isPositiveNumber(analysis.module)) {
       const snapped = snapToSeries(analysis.module, ISO_MODULES, 0.12);
       if (snapped && Math.abs(snapped.value - analysis.module) > 1e-9) {

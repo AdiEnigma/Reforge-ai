@@ -4,7 +4,7 @@ All settings have safe defaults. Override via environment variables.
 """
 import os
 
-VISION_PIPELINE_ENABLED = os.environ.get("VISION_PIPELINE_ENABLED", "false").lower() == "true"
+VISION_PIPELINE_ENABLED = os.environ.get("VISION_PIPELINE_ENABLED", "true").lower() == "true"
 VISION_SAM2_ENABLED = os.environ.get("VISION_SAM2_ENABLED", "true").lower() == "true"
 VISION_DEPTH_ENABLED = os.environ.get("VISION_DEPTH_ENABLED", "true").lower() == "true"
 VISION_FAIL_OPEN = os.environ.get("VISION_FAIL_OPEN", "true").lower() == "true"

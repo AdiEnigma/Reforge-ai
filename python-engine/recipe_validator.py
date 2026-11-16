@@ -270,6 +270,13 @@ def validate_recipe(
             provenance[k] = PROV_SOLVER_RESULT
 
     # Extract recipe parameters (Priority 3)
+    for dim_key in ["height", "thickness", "width", "length", "outerDiameter", "outer_diameter", "innerDiameter", "inner_diameter", "teeth", "module", "faceWidth", "face_width"]:
+        if dim_key in recipe and dim_key not in merged_params:
+            val = _clean_number(recipe[dim_key])
+            if val is not None and val > 0:
+                merged_params[dim_key] = val
+                provenance[dim_key] = PROV_RECIPE
+
     # Check style
     raw_style = recipe.get("style")
     if raw_style in COMPONENT_STYLES:
@@ -449,26 +456,6 @@ def validate_recipe(
                 merged_params["faceWidth"] = fw_val
                 provenance["faceWidth"] = PROV_RECIPE
 
-            gear_spec: Dict[str, Any] = {}
-            if teeth is not None:
-                gear_spec["teeth"] = teeth
-            else:
-                missing.append("gear.teeth")
-
-            if module_val is not None and module_val > 0:
-                gear_spec["module"] = module_val
-            else:
-                missing.append("gear.module")
-
-            gear_spec["pressureAngle"] = max(5.0, min(45.0, pa_val))
-            gear_spec["helixAngle"] = max(-60.0, min(60.0, ha_val))
-            if fw_val is not None and fw_val > 0:
-                gear_spec["faceWidth"] = fw_val
-            else:
-                missing.append("gear.faceWidth")
-
-            gear_spec["boreRadius"] = max(0.0, bore_val if bore_val is not None else 0.0)
-
             # Preserve measured outer diameter for gear module reconciliation
             measured_od = (
                 _clean_number(merged_params.get("outer_diameter"))
@@ -478,6 +465,40 @@ def validate_recipe(
                 or _clean_number(recipe.get("outer_diameter"))
                 or _clean_number(recipe.get("outerDiameter"))
             )
+
+            gear_spec: Dict[str, Any] = {}
+            if teeth is not None:
+                gear_spec["teeth"] = teeth
+            else:
+                missing.append("gear.teeth")
+
+            if module_val is not None and module_val > 0:
+                gear_spec["module"] = module_val
+            elif measured_od is not None and measured_od > 0 and teeth is not None and teeth >= 3:
+                inferred_module = round(measured_od / (float(teeth) + 2.0), 3)
+                gear_spec["module"] = inferred_module
+                merged_params["module"] = inferred_module
+                provenance["module"] = PROV_DEFAULT
+                warnings.append(f"Inferred gear module {inferred_module} mm from outer diameter {measured_od} mm and {teeth} teeth.")
+            else:
+                missing.append("gear.module")
+
+            gear_spec["pressureAngle"] = max(5.0, min(45.0, pa_val))
+            gear_spec["helixAngle"] = max(-60.0, min(60.0, ha_val))
+            if fw_val is not None and fw_val > 0:
+                gear_spec["faceWidth"] = fw_val
+            elif "height" in merged_params and _clean_number(merged_params["height"]) and merged_params["height"] > 0:
+                gear_spec["faceWidth"] = merged_params["height"]
+                merged_params["faceWidth"] = merged_params["height"]
+                provenance["faceWidth"] = PROV_DEFAULT
+            elif "thickness" in merged_params and _clean_number(merged_params["thickness"]) and merged_params["thickness"] > 0:
+                gear_spec["faceWidth"] = merged_params["thickness"]
+                merged_params["faceWidth"] = merged_params["thickness"]
+                provenance["faceWidth"] = PROV_DEFAULT
+            else:
+                missing.append("gear.faceWidth")
+
+            gear_spec["boreRadius"] = max(0.0, bore_val if bore_val is not None else 0.0)
             if measured_od is not None and measured_od > 0:
                 gear_spec["outer_diameter"] = measured_od
                 if "outer_diameter" not in merged_params:

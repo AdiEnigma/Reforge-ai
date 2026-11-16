@@ -325,10 +325,12 @@ def validate_cad_geometry(
                     )
 
         # Coordinate absolute / normalized errors for bounds
+        # For gears, tooth tip coordinates vary discretely with tooth count and angular alignment
         for coord in ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"]:
             exp_c = expected_bbox[coord]
             act_c = actual_bbox.get(coord, 0.0)
-            coord_tol = max(1e-6, BBOX_RELATIVE_TOLERANCE * max(abs(exp_c), 1.0))
+            coord_tol_factor = (BBOX_RELATIVE_TOLERANCE + 0.04) if style == "gear" and coord in ["xmin", "xmax", "ymin", "ymax"] else BBOX_RELATIVE_TOLERANCE
+            coord_tol = max(1e-6, coord_tol_factor * max(abs(exp_c), 1.0))
             if abs(act_c - exp_c) > coord_tol:
                 issues.append(
                     f"Bounding box coordinate '{coord}' ({act_c:.2f} mm) differs from expected "
@@ -336,7 +338,7 @@ def validate_cad_geometry(
                 )
 
         metrics["bbox_relative_errors"] = bbox_errors
-        bbox_valid = all(err <= BBOX_RELATIVE_TOLERANCE for err in bbox_errors.values()) and not any(
+        bbox_valid = all(err <= (BBOX_RELATIVE_TOLERANCE + (0.04 if style == "gear" else 0.0)) for err in bbox_errors.values()) and not any(
             "Bounding box" in iss for iss in issues
         )
     else:

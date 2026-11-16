@@ -145,12 +145,12 @@ function client() {
 
 function getCandidateModels() {
   const custom = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : null;
-  const list = [custom, "gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter(Boolean);
+  const list = [custom, "gemini-2.5-flash", "gemini-3.5-flash", "gemini-3.6-flash"].filter(Boolean);
   return Array.from(new Set(list));
 }
 
 function model(client, modelName = null, systemInstruction = null) {
-  const target = modelName || getCandidateModels()[0] || "gemini-3.5-flash";
+  const target = modelName || getCandidateModels()[0] || "gemini-2.5-flash";
   const config = { model: target };
   if (systemInstruction) config.systemInstruction = systemInstruction;
   return client.getGenerativeModel(config);
@@ -158,7 +158,10 @@ function model(client, modelName = null, systemInstruction = null) {
 
 function referenceBlock(reference) {
   if (!reference || typeof reference !== "object") {
-    return "No absolute reference was provided. Estimate relative proportions only; set dimension values to null when they cannot be determined.";
+    return [
+      "No physical reference scale was provided. Estimate realistic standard engineering dimensions in millimetres based on typical industrial parts of this type (e.g. standard shaft diameters, typical gear pitch/module, standard plate thicknesses, bolt hole diameters).",
+      "Crucially: all required dimensions for the chosen geometryRecipe MUST be populated with realistic positive numbers in millimetres so the parametric CAD solid can be constructed.",
+    ].join("\n");
   }
   const rows = [];
   const linear = [
@@ -283,12 +286,12 @@ function analysisPrompt(reference, visionEvidence) {
     "- manufacturingProcess: e.g. CNC machining, casting, forging, injection moulding. Use 'unknown' when ambiguous.",
     "- reasoning: 1-3 sentences justifying the classification and measurements.",
     "- uncertainties: list the specific measurements you could not determine and why.",
-    "Prefer leaving a value as null over guessing a wrong number.",
+    "- For dimensions, provide realistic estimated values based on standard engineering proportions when not explicitly measured.",
     "",
-    "GEOMETRY RECIPE (geometryRecipe): produce a construction recipe the renderer can execute. Pick ONE style and fill only its fields:",
+    "GEOMETRY RECIPE (geometryRecipe): produce a construction recipe the renderer and CAD engine can execute. Pick ONE style and fill only its fields:",
     '- "revolved": axisymmetric parts (shafts, pulleys, flanges, valve bodies, couplings). Provide revolvedProfile as 3-8 points {z, radius} tracing the meridian outline from one axial end to the other. z is the position along the axis of revolution, radius is the radial distance (radius >= 0).',
     '- "extruded": plates, brackets, housings, levers. Provide outline as a closed polygon of 3-12 points {x, y} plus optional holes [{cx, cy, radius}] for through-holes, and depth (extrude thickness).',
-    '- "gear": toothed wheels. Provide gear = {teeth, module, pressureAngle (default 20), helixAngle (0 = spur, > 0 = helical), faceWidth (tooth face width), boreRadius}. Mirror teeth/module/helixAngle into the top-level fields too.',
+    '- "gear": toothed wheels. Provide gear = {teeth, module, pressureAngle (default 20), helixAngle (0 = spur, > 0 = helical), faceWidth (tooth face width), boreRadius}. Mirror teeth/module/helixAngle into the top-level fields too. Ensure module, teeth, and faceWidth are always non-null positive numbers.',
     '- "combination": complex or ambiguous parts. Compose from up to ~8 additive primitives (kind: box | cylinder | sphere | cone | torus), each with its size fields, position and rotation.',
     "All recipe lengths are in mm, angles in degrees, counts as integers. Use sane, bounded magnitudes — never extreme values like 50000 or 0.0001. IMPORTANT: Do NOT fall back to a single plain box primitive. If you cannot determine the exact recipe, make your best geometric approximation using the component type — for example, use cylinders for shafts, the 'revolved' style for axisymmetric parts, or the 'gear' style for toothed wheels. A single box is never an acceptable fallback.",
   ];
@@ -397,21 +400,34 @@ export function sanitizeRecipe(rawRecipe) {
   const depth = cleanNumber(rawRecipe.depth);
   if (depth != null && depth > 0) recipe.depth = depth;
 
+  const outerDiameter = cleanNumber(rawRecipe.outerDiameter ?? rawRecipe.outer_diameter);
+  if (outerDiameter != null && outerDiameter > 0) recipe.outerDiameter = outerDiameter;
+
+  const heightVal = cleanNumber(rawRecipe.height ?? rawRecipe.thickness);
+  if (heightVal != null && heightVal > 0) recipe.height = heightVal;
+
   if (rawRecipe.gear && typeof rawRecipe.gear === "object") {
     const g = rawRecipe.gear;
     const teeth = typeof g.teeth === "number" && isFinite(g.teeth) && g.teeth >= 3 ? Math.round(g.teeth) : null;
-    const moduleVal = cleanNumber(g.module);
+    let moduleVal = cleanNumber(g.module);
     const pressureAngle = cleanNumber(g.pressureAngle) ?? 20;
     const helixAngle = cleanNumber(g.helixAngle) ?? 0;
-    const faceWidth = cleanNumber(g.faceWidth);
+    let faceWidth = cleanNumber(g.faceWidth);
     const boreRadius = cleanNumber(g.boreRadius) ?? 0;
+
     if (teeth != null) {
+      if (moduleVal == null && outerDiameter != null) {
+        moduleVal = Number((outerDiameter / (teeth + 2)).toFixed(3));
+      }
+      if (faceWidth == null) {
+        faceWidth = heightVal ?? 15;
+      }
       recipe.gear = {
         teeth,
         module: moduleVal != null && moduleVal > 0 ? moduleVal : null,
         pressureAngle: Math.max(5, Math.min(45, pressureAngle)),
         helixAngle: Math.max(-60, Math.min(60, helixAngle)),
-        faceWidth: faceWidth != null && faceWidth > 0 ? faceWidth : null,
+        faceWidth: faceWidth != null && faceWidth > 0 ? faceWidth : 15,
         boreRadius: Math.max(0, boreRadius),
       };
     }
