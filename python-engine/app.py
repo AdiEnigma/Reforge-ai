@@ -11,7 +11,10 @@ Provides endpoints for:
 from __future__ import annotations
 
 import logging
+import os
+import uuid
 from typing import Any, Dict, List, Optional
+from dataclasses import asdict
 
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
@@ -19,28 +22,45 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("reforge-reconstruction-service")
+
 from reconstruction.multiview import find_colmap_executable, run_multiview_reconstruction
 from reconstruction.geometry_solver import solve_geometry
 from recipe_validator import validate_recipe, CadSpec
-from cad.cad_generator import generate_cad, CadGenerationError
-from cad.cad_validator import validate_cad_geometry
-from cad.advanced_recipe_adapter import (
-    generate_cad_from_recipe,
-    is_advanced_recipe,
-    legacy_recipe_to_feature_recipe,
-)
-from cad.feature_modeller import FeatureModellingError
-from cad.advanced_cad_validator import validate_feature_geometry
-from cad import advanced_preview
 from cad import integration_contract
-from exports.step_export import export_step, StepExportError
-from exports.mesh_export import export_stl, MeshExportError
-from dataclasses import asdict
-import os
-import uuid
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("reforge-reconstruction-service")
+try:
+    from cad.cad_generator import generate_cad, CadGenerationError
+    from cad.cad_validator import validate_cad_geometry
+    from cad.advanced_recipe_adapter import (
+        generate_cad_from_recipe,
+        is_advanced_recipe,
+        legacy_recipe_to_feature_recipe,
+    )
+    from cad.feature_modeller import FeatureModellingError
+    from cad.advanced_cad_validator import validate_feature_geometry
+    from cad import advanced_preview
+    from exports.step_export import export_step, StepExportError
+    from exports.mesh_export import export_stl, MeshExportError
+    CAD_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as _cad_err:
+    logger.warning("CAD subsystems unavailable (CadQuery not installed): %s", _cad_err)
+    CAD_AVAILABLE = False
+    generate_cad = None
+    CadGenerationError = Exception
+    validate_cad_geometry = None
+    generate_cad_from_recipe = None
+    is_advanced_recipe = None
+    legacy_recipe_to_feature_recipe = None
+    FeatureModellingError = Exception
+    validate_feature_geometry = None
+    advanced_preview = None
+    export_step = None
+    StepExportError = Exception
+    export_stl = None
+    MeshExportError = Exception
+
 
 app = FastAPI(
     title="ReForge AI Reconstruction Engine",
@@ -229,6 +249,17 @@ def generate_cad_endpoint(payload: CadGenerateRequest):
         )
 
     # 2. CAD Solid Generation
+    if not CAD_AVAILABLE or generate_cad is None:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "error",
+                "stage": "cad_subsystem",
+                "error": "CAD modeling is unavailable because CadQuery is not installed.",
+                "job_id": payload.job_id,
+            },
+        )
+
     try:
         workplane, feature_tree = generate_cad(cad_spec)
     except CadGenerationError as cge:
@@ -417,6 +448,17 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
         )
 
     # 2. Model.
+    if not CAD_AVAILABLE or generate_cad_from_recipe is None:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "error",
+                "stage": "cad_subsystem",
+                "error": "Advanced CAD modeling is unavailable because CadQuery is not installed.",
+                "job_id": payload.job_id,
+            },
+        )
+
     try:
         workplane, history = generate_cad_from_recipe(recipe, strict=payload.strict)
     except FeatureModellingError as fme:
@@ -584,6 +626,17 @@ def cad_from_reconstruction_endpoint(payload: ReconstructionCadRequest):
         }
 
     # Model + validate the reconstructed feature recipe.
+    if not CAD_AVAILABLE or generate_cad_from_recipe is None:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "error",
+                "stage": "cad_subsystem",
+                "error": "CAD modeling is unavailable because CadQuery is not installed.",
+                "job_id": payload.job_id,
+            },
+        )
+
     try:
         workplane, history = generate_cad_from_recipe(recipe, strict=False)
     except FeatureModellingError as fme:
