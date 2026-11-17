@@ -82,10 +82,6 @@ export class AuthService {
     // Check if email already exists
     const existingUser = await this.db("users").where("normalized_email", normalizedEmail).first();
     if (existingUser) {
-      if (config.signupMode === "open") {
-        // Open mode: Return 202 without revealing if account exists
-        return { status: "pending_verification", code: 202 };
-      }
       throw new AppError("email_already_registered", "An account with this email address already exists.", 409);
     }
 
@@ -95,9 +91,8 @@ export class AuthService {
     const now = Date.now();
     const passwordHash = await hashPassword(password);
 
-    // In invite mode: user is verified immediately. In open mode: unverified.
-    const isVerified = config.signupMode === "invite";
-    const verifiedAt = isVerified ? now : null;
+    // Both open registration and valid invitation create an active, verified account in this flow
+    const verifiedAt = now;
 
     let sessionResult = null;
 
@@ -147,38 +142,14 @@ export class AuthService {
         updated_at: now,
       });
 
-      // 5. If verified (invite mode), establish session
-      if (isVerified) {
-        sessionResult = await this.sessionService.createSession({
-          userId,
-          activeOrgId: orgId,
-          ip,
-          userAgent,
-          trx,
-        });
-      } else {
-        // Create verification token
-        const rawToken = generateSecureToken(32);
-        const tokenHash = hashToken(rawToken);
-        await trx("auth_tokens").insert({
-          id: crypto.randomUUID(),
-          token_hash: tokenHash,
-          purpose: "verify_email",
-          user_id: userId,
-          org_id: orgId,
-          role: ROLES.OWNER,
-          expires_at: now + 24 * 60 * 60 * 1000,
-          used_at: null,
-          created_at: now,
-        });
-
-        await this.emailSender.send({
-          to: email.trim(),
-          subject: "Verify your ReForge AI account",
-          template: "verify_email",
-          data: { token: rawToken, displayName },
-        });
-      }
+      // 5. Establish session for the new owner
+      sessionResult = await this.sessionService.createSession({
+        userId,
+        activeOrgId: orgId,
+        ip,
+        userAgent,
+        trx,
+      });
 
       // 6. Audit event
       await writeAuditEvent({
@@ -190,14 +161,10 @@ export class AuthService {
         requestId,
         ip,
         userAgent,
-        metadata: { orgName, signupMode: config.signupMode },
+        metadata: { orgName, signupMode: config.signupMode, registrationMode: config.registrationMode },
         trx,
       });
     });
-
-    if (config.signupMode === "open") {
-      return { status: "pending_verification", code: 202 };
-    }
 
     const csrfToken = generateCsrfToken(config.csrfSecret, sessionResult.session.id);
 

@@ -38,11 +38,25 @@ export function validateEnv(env = process.env) {
     .map((o) => o.trim())
     .filter(Boolean);
 
-  // P2: Authentication & Multi-Tenancy Configuration
-  const signupMode = env.SIGNUP_MODE || "invite"; // 'invite' or 'open'
-  if (!["invite", "open"].includes(signupMode)) {
-    errors.push(`SIGNUP_MODE must be 'invite' or 'open'. Received: ${signupMode}`);
+  // P2/Registration Mode Configuration:
+  // Supported values: 'open' or 'invite_only'.
+  // Default: 'open' in development if not explicitly specified; 'invite_only' in production.
+  // Backwards compatibility: accept 'invite' as alias for 'invite_only'.
+  const rawRegMode = (env.REGISTRATION_MODE || env.SIGNUP_MODE || "").trim().toLowerCase();
+  let registrationMode;
+  if (!rawRegMode) {
+    registrationMode = nodeEnv === "production" ? "invite_only" : "open";
+  } else if (rawRegMode === "open") {
+    registrationMode = "open";
+  } else if (rawRegMode === "invite_only" || rawRegMode === "invite") {
+    registrationMode = "invite_only";
+  } else {
+    errors.push(`REGISTRATION_MODE must be 'open' or 'invite_only'. Received: ${env.REGISTRATION_MODE || env.SIGNUP_MODE}`);
+    registrationMode = "invite_only";
   }
+
+  // signupMode normalized alias for backward compatibility ('open' | 'invite')
+  const signupMode = registrationMode === "open" ? "open" : "invite";
 
   const appOrigin = env.APP_ORIGIN || "http://localhost:5173";
 
@@ -111,6 +125,7 @@ export function validateEnv(env = process.env) {
     dbPath,
     assetStorageDir,
     corsAllowedOrigins,
+    registrationMode,
     signupMode,
     appOrigin,
     csrfSecret,

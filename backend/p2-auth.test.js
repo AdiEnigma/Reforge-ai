@@ -139,6 +139,7 @@ test("P2 Policy: Role hierarchy and capability checks work deterministically", (
 // ─── 3. Multi-Tenant Database Transactions & Audit Logging ────────────────────
 
 test("P2 DB & Audit: Registration transaction creates org, user, membership, and audit event", async () => {
+  resetConfigForTest({ REGISTRATION_MODE: "invite_only", NODE_ENV: "development" });
   const testDb = getDb({ dbPath: ":memory:" });
   try {
     await runMigrations(testDb);
@@ -193,6 +194,7 @@ test("P2 DB & Audit: Registration transaction creates org, user, membership, and
 // ─── 4. End-to-End Authentication API Endpoints ───────────────────────────────
 
 test("P2 HTTP API: Registration, Login, /auth/me, CSRF Protection, and Logout", async () => {
+  resetConfigForTest({ REGISTRATION_MODE: "invite_only", NODE_ENV: "development" });
   const db = getDb();
   await runMigrations(db);
 

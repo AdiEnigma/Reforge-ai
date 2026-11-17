@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { sanitizeReturnTo } from '../components/RequireAuth.jsx';
 import { Icon } from '../components/Icon.jsx';
+import { getJson } from '../lib/api.js';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -115,6 +116,24 @@ export function RegisterPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [pendingVerification, setPendingVerification] = useState(false);
+  const [registrationMode, setRegistrationMode] = useState('open'); // 'open' | 'invite_only'
+
+  // Fetch safe registration configuration from backend
+  useEffect(() => {
+    let active = true;
+    getJson('/api/auth/config')
+      .then((cfg) => {
+        if (active && cfg?.registrationMode) {
+          setRegistrationMode(cfg.registrationMode);
+        }
+      })
+      .catch(() => {
+        // Safe fallback in offline mode
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -127,7 +146,7 @@ export function RegisterPage() {
         displayName,
         email,
         password,
-        inviteCode: inviteCode || null,
+        inviteCode: registrationMode === 'invite_only' ? (inviteCode || null) : null,
       });
 
       if (result?.status === 'pending_verification' || !result?.user) {
@@ -166,13 +185,21 @@ export function RegisterPage() {
     );
   }
 
+  const isInviteOnly = registrationMode === 'invite_only';
+
   return (
     <div className="auth-container">
       <div className="auth-card">
         <div className="auth-header">
-          <div className="cad readout">PILOT REGISTRATION // REFORGE AI</div>
+          <div className="cad readout">
+            {isInviteOnly ? 'INVITATION REGISTRATION // REFORGE AI' : 'OPEN WORKSPACE REGISTRATION // REFORGE AI'}
+          </div>
           <h1>Create Organization</h1>
-          <p>Register your engineering team to synthesize manufacturing intelligence.</p>
+          <p>
+            {isInviteOnly
+              ? 'Enter your invitation code to establish your organization workspace.'
+              : 'Register your organization to start reverse-engineering mechanical components.'}
+          </p>
         </div>
 
         {error && <div className="auth-alert error">{error}</div>}
@@ -236,16 +263,19 @@ export function RegisterPage() {
             </div>
           </div>
 
-          <div className="auth-field">
-            <label htmlFor="reg-invite">Invitation Code</label>
-            <input
-              id="reg-invite"
-              type="text"
-              value={inviteCode}
-              onChange={(e) => setInviteCode(e.target.value)}
-              placeholder="RF-XXXXXX..."
-            />
-          </div>
+          {isInviteOnly && (
+            <div className="auth-field">
+              <label htmlFor="reg-invite">Invitation Code (Required)</label>
+              <input
+                id="reg-invite"
+                type="text"
+                required
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value)}
+                placeholder="RF-XXXXXX..."
+              />
+            </div>
+          )}
 
           <button type="submit" className="primary full-width" disabled={loading}>
             {loading ? 'Creating Organization...' : 'Complete Registration'}
