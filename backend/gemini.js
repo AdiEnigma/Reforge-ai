@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from "@google/generative-ai";
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-4-argon";
 
 const COMPONENT_STYLES = ["revolved", "extruded", "gear", "combination"];
 const PRIMITIVE_KINDS = ["box", "cylinder", "sphere", "cone", "torus"];
@@ -129,6 +129,94 @@ function cleanNumber(value) {
   return typeof value === "number" && isFinite(value) ? value : null;
 }
 
+const MAX_RETRIES_PER_MODEL = 2;
+const BASE_RETRY_DELAY_MS = 100;
+const MAX_RETRY_DELAY_MS = 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function calculateBackoffDelay(attempt) {
+  const exp = Math.min(MAX_RETRY_DELAY_MS, BASE_RETRY_DELAY_MS * Math.pow(2, attempt));
+  const jitter = Math.random() * (exp * 0.5);
+  return Math.floor(exp + jitter);
+}
+
+export function isTransientError(error) {
+  if (!error) return false;
+  const status = error.status || error.statusCode || error.response?.status;
+  if ([429, 500, 502, 503, 504].includes(Number(status))) {
+    return true;
+  }
+  const msg = String(error.message || error).toLowerCase();
+  if (
+    msg.includes("429") ||
+    msg.includes("too many requests") ||
+    msg.includes("quota exceeded") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("resource has been exhausted") ||
+    msg.includes("500") ||
+    msg.includes("internal error") ||
+    msg.includes("502") ||
+    msg.includes("bad gateway") ||
+    msg.includes("503") ||
+    msg.includes("service unavailable") ||
+    msg.includes("high demand") ||
+    msg.includes("504") ||
+    msg.includes("gateway timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("etimedout") ||
+    msg.includes("fetch failed") ||
+    msg.includes("network error") ||
+    msg.includes("timeout")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function isAuthError(error) {
+  if (!error) return false;
+  const status = error.status || error.statusCode || error.response?.status;
+  if (status === 401 || status === 403) return true;
+  const msg = String(error.message || error).toLowerCase();
+  return (
+    msg.includes("api key not valid") ||
+    msg.includes("api_key_invalid") ||
+    msg.includes("permission_denied") ||
+    msg.includes("unauthenticated")
+  );
+}
+
+export function sanitizeUserError(error, defaultMsg = "Component analysis failed.") {
+  if (!error) return new Error(defaultMsg);
+  if (isAuthError(error)) {
+    const err = new Error("Invalid Gemini API key. Please check GEMINI_API_KEY in backend/.env.local.");
+    err.status = 401;
+    return err;
+  }
+  const msg = String(error.message || error).toLowerCase();
+  if (msg.includes("429") || msg.includes("quota exceeded") || msg.includes("too many requests") || msg.includes("rate limit")) {
+    const err = new Error("AI provider rate limit reached. Please wait a moment and try again.");
+    err.status = 429;
+    return err;
+  }
+  if (msg.includes("503") || msg.includes("high demand") || msg.includes("service unavailable")) {
+    const err = new Error("AI provider is currently experiencing high demand. Please try again shortly.");
+    err.status = 503;
+    return err;
+  }
+  if (msg.includes("404") || msg.includes("not found")) {
+    const err = new Error("The requested AI model is temporarily unavailable.");
+    err.status = 503;
+    return err;
+  }
+  const safeErr = new Error(defaultMsg);
+  safeErr.status = error.status && error.status < 500 ? error.status : 500;
+  return safeErr;
+}
+
 function client() {
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
@@ -139,14 +227,14 @@ function client() {
   return new GoogleGenerativeAI(key);
 }
 
-function getCandidateModels() {
+export function getCandidateModels() {
   const custom = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : null;
-  const list = [custom, "gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter(Boolean);
+  const list = [custom, "gemini-4-argon", "gemini-4-carbon", "gemini-3.6-flash"].filter(Boolean);
   return Array.from(new Set(list));
 }
 
 function model(client, modelName = null) {
-  const target = modelName || getCandidateModels()[0] || "gemini-3.5-flash";
+  const target = modelName || getCandidateModels()[0] || "gemini-4-argon";
   return client.getGenerativeModel({
     model: target,
     safetySettings: [
@@ -504,44 +592,51 @@ export async function analyzeComponent({ images, reference, visionEvidence }) {
   let lastError = null;
 
   for (const modelName of candidateModels) {
-    const attempt = async (withSchema) => {
-      const targetModel = model(genAI, modelName);
-      const result = await targetModel.generateContent({
-        contents: [{ role: "user", parts }],
-        generationConfig: withSchema
-          ? { responseMimeType: "application/json", temperature: 0.2, responseSchema: ANALYSIS_SCHEMA }
-          : { responseMimeType: "application/json", temperature: 0.2 },
-      });
-      return JSON.parse(stripFences(result.response.text()));
-    };
-
-    try {
-      let raw;
+    let modelRetries = 0;
+    while (modelRetries <= MAX_RETRIES_PER_MODEL) {
       try {
-        raw = await attempt(false);
-      } catch (parseOrSchemaError) {
-        raw = await attempt(true);
+        const targetModel = model(genAI, modelName);
+
+        const attempt = async (withSchema) => {
+          const result = await targetModel.generateContent({
+            contents: [{ role: "user", parts }],
+            generationConfig: withSchema
+              ? { responseMimeType: "application/json", temperature: 0.2, responseSchema: ANALYSIS_SCHEMA }
+              : { responseMimeType: "application/json", temperature: 0.2 },
+          });
+          return JSON.parse(stripFences(result.response.text()));
+        };
+
+        let raw;
+        try {
+          raw = await attempt(false);
+        } catch (parseOrSchemaError) {
+          raw = await attempt(true);
+        }
+        return normalizeAnalysis(raw);
+      } catch (err) {
+        lastError = err;
+
+        // If authentication error, fail immediately without retrying or fallback
+        if (isAuthError(err)) {
+          throw sanitizeUserError(err);
+        }
+
+        // Check if transient error to retry on the same model
+        if (isTransientError(err) && modelRetries < MAX_RETRIES_PER_MODEL) {
+          const delay = calculateBackoffDelay(modelRetries);
+          modelRetries++;
+          await sleep(delay);
+          continue;
+        }
+
+        // If non-transient or exhausted retries on this model, break to fallback to next candidate model
+        break;
       }
-      return normalizeAnalysis(raw);
-    } catch (modelError) {
-      lastError = modelError;
-      const errMsg = String(modelError?.message || modelError);
-      // If error is 404 or 429, try the next candidate model
-      if (errMsg.includes("404") || errMsg.includes("429") || errMsg.includes("no longer available")) {
-        console.warn(`Model ${modelName} hit issue (${errMsg.slice(0, 100)}), trying next candidate model...`);
-        continue;
-      }
-      // If authentication error, fail immediately
-      if (errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID") || errMsg.includes("401") || errMsg.includes("403")) {
-        const err = new Error("Invalid Gemini API key. Please check GEMINI_API_KEY in backend/.env.local.");
-        err.status = 401;
-        throw err;
-      }
-      // For any other error, continue to try fallback model
     }
   }
 
-  throw lastError || new Error("All candidate Gemini models failed to process component analysis.");
+  throw sanitizeUserError(lastError, "All candidate Gemini models failed to process component analysis.");
 }
 
 function chatSystemInstruction(engineeringContext) {
@@ -588,27 +683,45 @@ export async function chatWithEngineer({ message, engineeringContext, analysis, 
   const genAI = client();
   const candidateModels = getCandidateModels();
   const context = engineeringContext || analysis;
+  let lastError = null;
 
   for (const modelName of candidateModels) {
-    try {
-      const targetModel = model(genAI, modelName);
-      const chat = targetModel.startChat({
-        history: toHistory(history),
-        generationConfig: { temperature: 0.35 },
-      });
-      const result = await chat.sendMessage([
-        { text: chatSystemInstruction(context) },
-        { text },
-      ]);
-      const reply = result.response.text();
-      if (reply) return { text: reply.trim() };
-    } catch (err) {
-      const errMsg = String(err?.message || err);
-      if (errMsg.includes("404") || errMsg.includes("429") || errMsg.includes("no longer available")) {
-        continue;
+    let modelRetries = 0;
+    while (modelRetries <= MAX_RETRIES_PER_MODEL) {
+      try {
+        const targetModel = model(genAI, modelName);
+        const chat = targetModel.startChat({
+          history: toHistory(history),
+          generationConfig: { temperature: 0.35 },
+        });
+        const result = await chat.sendMessage([
+          { text: chatSystemInstruction(context) },
+          { text },
+        ]);
+        const reply = result.response.text();
+        if (reply) return { text: reply.trim() };
+        throw new Error("Empty response received from chat model.");
+      } catch (err) {
+        lastError = err;
+
+        // If authentication error, fail immediately without retrying or fallback
+        if (isAuthError(err)) {
+          throw sanitizeUserError(err);
+        }
+
+        // Check if transient error to retry on the same model
+        if (isTransientError(err) && modelRetries < MAX_RETRIES_PER_MODEL) {
+          const delay = calculateBackoffDelay(modelRetries);
+          modelRetries++;
+          await sleep(delay);
+          continue;
+        }
+
+        // If non-transient or exhausted retries on this model, break to fallback to next candidate model
+        break;
       }
-      throw err;
     }
   }
-  throw new Error("Chat could not reach any available Gemini model.");
+
+  throw sanitizeUserError(lastError, "Chat could not reach any available Gemini model.");
 }

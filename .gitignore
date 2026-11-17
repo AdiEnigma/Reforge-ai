@@ -10,3 +10,13 @@ env.local
 .DS_Store
 .dependencies/
 
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated CAD exports and test artifacts
+python-engine/exports/stl_fail_01/
+python-engine/exports/stl_fail_01_*.step

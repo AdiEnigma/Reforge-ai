@@ -6,10 +6,17 @@
   "scripts": {
     "server": "node --env-file-if-exists=.env.local index.js",
     "start": "node --env-file-if-exists=.env.local index.js",
+    "admin": "node bin/admin.js",
     "test": "node --test *.test.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "express": "^5.2.1"
+    "argon2": "^0.45.2",
+    "better-sqlite3": "^13.2.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
+    "knex": "^3.3.0"
   }
 }

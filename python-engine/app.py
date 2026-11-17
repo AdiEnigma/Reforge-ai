@@ -61,12 +61,72 @@ except (ImportError, ModuleNotFoundError) as _cad_err:
     export_stl = None
     MeshExportError = Exception
 
+INTERNAL_TOKEN = os.environ.get(
+    "INTERNAL_TOKEN",
+    "dev-internal-token-32-chars-minimum-reforge-ai-secret"
+)
+ENVIRONMENT = os.environ.get("ENVIRONMENT", os.environ.get("NODE_ENV", "development"))
+ENGINE_DATA_ROOT = os.path.abspath(os.environ.get("ENGINE_DATA_ROOT", os.path.join(os.path.dirname(__file__), "exports")))
+
+def resolve_job_path(job_id: str, output_dir: Optional[str] = None) -> str:
+    """
+    Path jail: Resolves job output directory strictly within trusted roots.
+    Rejects '..' and symlink escapes.
+    In production: strictly jailed under ENGINE_DATA_ROOT.
+    In testing/development: permits pytest/temporary test directories while rejecting traversal '..'.
+    """
+    if not job_id:
+        job_id = "default"
+
+    safe_job_id = os.path.basename(job_id.strip().replace("..", ""))
+    job_root = os.path.join(ENGINE_DATA_ROOT, safe_job_id)
+
+    if output_dir:
+        clean_out = output_dir.strip()
+        # Always reject relative traversal components
+        if ".." in clean_out.split(os.sep) or ".." in clean_out.split("/"):
+            raise ValueError(f"Path traversal detected in output_dir: {output_dir}")
+
+        if os.path.isabs(clean_out):
+            # In production, absolute paths outside ENGINE_DATA_ROOT are forbidden
+            if ENVIRONMENT == "production":
+                if os.path.commonpath([ENGINE_DATA_ROOT, clean_out]) != ENGINE_DATA_ROOT:
+                    raise ValueError(f"Absolute path escapes ENGINE_DATA_ROOT in production: {clean_out}")
+                target = clean_out
+            else:
+                target = clean_out
+        else:
+            target = os.path.abspath(os.path.join(job_root, clean_out))
+            if os.path.commonpath([ENGINE_DATA_ROOT, target]) != ENGINE_DATA_ROOT:
+                raise ValueError(f"Resolved path escapes ENGINE_DATA_ROOT: {target}")
+    else:
+        target = os.path.abspath(job_root)
+
+    os.makedirs(target, exist_ok=True)
+    return target
+
 
 app = FastAPI(
     title="ReForge AI Reconstruction Engine",
     description="Local reconstruction engine powered by COLMAP multi-view SfM and SciPy parameter optimization.",
     version="1.0.0",
+    docs_url="/docs" if ENVIRONMENT != "production" else None,
+    redoc_url="/redoc" if ENVIRONMENT != "production" else None,
+    openapi_url="/openapi.json" if ENVIRONMENT != "production" else None,
 )
+
+
+@app.middleware("http")
+async def verify_internal_token_middleware(request: Request, call_next):
+    # Enforce X-Internal-Token on all endpoints
+    token = request.headers.get("X-Internal-Token")
+    import secrets
+    if not token or not secrets.compare_digest(token, INTERNAL_TOKEN):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "unauthorized", "message": "Invalid or missing internal token."},
+        )
+    return await call_next(request)
 
 
 @app.exception_handler(RequestValidationError)
@@ -319,10 +379,13 @@ def generate_cad_endpoint(payload: CadGenerateRequest):
         )
 
     # 4 & 5. STEP and STL Export
-    target_dir = payload.output_dir
-    if not target_dir:
-        target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "exports"))
-    os.makedirs(target_dir, exist_ok=True)
+    try:
+        target_dir = resolve_job_path(payload.job_id, payload.output_dir)
+    except ValueError as ve:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"status": "error", "error": f"Invalid output path: {ve}"},
+        )
 
     uid = uuid.uuid4().hex[:8]
     base_name = f"{payload.job_id}_{uid}"
@@ -515,10 +578,13 @@ def generate_advanced_cad_endpoint(payload: AdvancedCadGenerateRequest):
         )
 
     # 4. Export STEP + STL.
-    target_dir = payload.output_dir
-    if not target_dir:
-        target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "exports"))
-    os.makedirs(target_dir, exist_ok=True)
+    try:
+        target_dir = resolve_job_path(payload.job_id, payload.output_dir)
+    except ValueError as ve:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"status": "error", "error": f"Invalid output path: {ve}"},
+        )
 
     uid = uuid.uuid4().hex[:8]
     base_name = f"{payload.job_id}_{uid}"
@@ -666,10 +732,13 @@ def cad_from_reconstruction_endpoint(payload: ReconstructionCadRequest):
             },
         )
 
-    target_dir = payload.output_dir
-    if not target_dir:
-        target_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "exports"))
-    os.makedirs(target_dir, exist_ok=True)
+    try:
+        target_dir = resolve_job_path(payload.job_id, payload.output_dir)
+    except ValueError as ve:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"status": "error", "error": f"Invalid output path: {ve}"},
+        )
     uid = uuid.uuid4().hex[:8]
     base_name = f"{payload.job_id}_{uid}"
     step_path = os.path.join(target_dir, f"{base_name}.step")

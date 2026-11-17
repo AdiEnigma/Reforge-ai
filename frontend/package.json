@@ -14,6 +14,7 @@
     "jspdf": "^4.2.1",
     "react": "latest",
     "react-dom": "latest",
+    "react-router-dom": "^7.18.5",
     "three": "^0.128.0",
     "vite": "latest"
   }

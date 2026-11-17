@@ -6,13 +6,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import app
+import config
 from schemas import ImageInput
 from vision.image_io import decode_and_validate_image
 
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return TestClient(app, headers={"X-Internal-Token": config.INTERNAL_TOKEN})
 
 
 def test_adversarial_random_bytes():

@@ -9,11 +9,12 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import app
+import config
 
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return TestClient(app, headers={"X-Internal-Token": config.INTERNAL_TOKEN})
 
 
 def make_b64(size=(64, 64), color="blue"):
