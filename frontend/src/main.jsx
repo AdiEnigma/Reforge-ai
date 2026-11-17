@@ -3644,6 +3644,28 @@ export function App({
             }
           />
           <Route
+            path="/standard-parts"
+            element={
+              <RequireAuth>
+                <RoutePlaceholder
+                  title="Standard Part Identification"
+                  description="Identify an existing standard component from catalogues before reconstructing. Upload photos, provide critical dimensions, and match against industrial standards."
+                />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/library"
+            element={
+              <RequireAuth>
+                <RoutePlaceholder
+                  title="Engineering Library"
+                  description="Access saved components, assemblies, CAD models, drawings, and revision histories for your organization."
+                />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="/parts/:partId"
             element={
               <RequireAuth>

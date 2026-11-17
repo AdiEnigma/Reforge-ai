@@ -108,6 +108,15 @@ export function createAuthRouter({ authService = null, sessionService = null } =
   router.use(originGuard);
   router.use(loadSession);
 
+  // 0. GET /api/auth/config (Public - returns client-safe configuration including registration mode)
+  router.get("/config", (req, res) => {
+    const config = getConfig();
+    res.json({
+      registrationMode: config.registrationMode, // 'open' | 'invite_only'
+      authEnforced: config.authEnforced,
+    });
+  });
+
   // 1. POST /api/auth/register
   router.post("/register", registerLimiter, async (req, res, next) => {
     try {

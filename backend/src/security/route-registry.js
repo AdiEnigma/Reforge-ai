@@ -25,6 +25,11 @@ export const ROUTE_REGISTRY = {
   },
 
   // Auth Routes (Public)
+  "GET /api/auth/config": {
+    public: true,
+    minRole: null,
+    stateChanging: false,
+  },
   "POST /api/auth/register": {
     public: true,
     minRole: null,

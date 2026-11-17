@@ -26,6 +26,7 @@ test("validateEnv: defaults AUTH_ENFORCED to false and parses valid config", () 
   const config = validateEnv(env);
   assert.equal(config.port, 9000);
   assert.equal(config.authEnforced, false);
+  assert.equal(config.registrationMode, "open"); // Default in development
   assert.deepEqual(config.corsAllowedOrigins, ["http://localhost:5173", "http://localhost:3000"]);
 });
 
