@@ -1,7 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import * as THREE from 'three';
 import './styles.css';
+import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import { RequireAuth, SessionExpiryOverlay } from './components/RequireAuth.jsx';
+import { LoginPage, RegisterPage, ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from './pages/AuthPages.jsx';
+import { HomePage } from './pages/HomePage.jsx';
 import { analyzeComponent, sendChatMessage } from './lib/api.js';
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
@@ -271,6 +276,19 @@ function Nav() {
 
 function Landing() {
   const { setPage } = useApp();
+  const { authState } = useAuth();
+  const navigate = useNavigate();
+
+  const handleStart = () => {
+    if (authState === 'authenticated') {
+      navigate('/home');
+    } else if (authState === 'booting') {
+      // Wait for auth resolution
+    } else {
+      navigate('/login?returnTo=/app/new?view=upload');
+    }
+  };
+
   return (
     <>
       <Nav />
@@ -283,13 +301,13 @@ function Landing() {
             <p className="eyebrow">INDUSTRIAL REVERSE ENGINEERING</p>
             <h1>RECONSTRUCT.<br />REFORGE.<br /><em>REMANUFACTURE.</em></h1>
             <p>Turn component images into engineering-ready geometry.</p>
-            <button className="primary" onClick={() => setPage('upload')}>START REFORGE <Icon>arrow_forward</Icon></button>
+            <button className="primary" onClick={handleStart}>START REFORGE <Icon>arrow_forward</Icon></button>
           </div>
         </section>
         <section className="how">
           <p className="eyebrow">THE REFORGE WORKFLOW</p>
           <div><span>01 / CAPTURE</span><span>02 / SYNTHESIZE</span><span>03 / REBUILD</span></div>
-          <button className="secondary" onClick={() => setPage('upload')}>START REFORGE <Icon>arrow_forward</Icon></button>
+          <button className="secondary" onClick={handleStart}>START REFORGE <Icon>arrow_forward</Icon></button>
         </section>
       </main>
     </>
@@ -3378,7 +3396,74 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-function App() {
+function RoutePlaceholder({ title, description }) {
+  const navigate = useNavigate();
+  return (
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'var(--bg)',
+      color: 'var(--text)',
+      fontFamily: "'JetBrains Mono', monospace",
+      padding: '24px',
+      textAlign: 'center',
+    }}>
+      <div style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--line)',
+        borderRadius: '4px',
+        padding: '32px 40px',
+        maxWidth: '480px',
+        width: '100%',
+      }}>
+        <div style={{ color: 'var(--primary)', fontSize: '11px', letterSpacing: '0.08em', marginBottom: '8px' }}>
+          REFORGE AI // ROUTE FOUNDATION
+        </div>
+        <h2 style={{ margin: '0 0 12px 0', fontSize: '20px', fontFamily: "'Corpta DEMO', sans-serif" }}>
+          {title}
+        </h2>
+        <p style={{ color: 'var(--muted)', fontSize: '13px', lineHeight: 1.5, marginBottom: '24px' }}>
+          {description}
+        </p>
+        <button className="primary" onClick={() => navigate('/')}>
+          <Icon>arrow_back</Icon> Back to Home
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EngineeringWorkflow({ workflowView }) {
+  const [searchParams] = useSearchParams();
+  const { analysis } = useApp();
+
+  const activeView = useMemo(() => {
+    const viewParam = searchParams.get('view');
+    if (viewParam === 'upload' || viewParam === 'workbench') {
+      return viewParam;
+    }
+    if (workflowView) {
+      return workflowView;
+    }
+    return analysis ? 'workbench' : 'upload';
+  }, [searchParams, workflowView, analysis]);
+
+  return activeView === 'workbench' ? <Workbench /> : <Upload />;
+}
+
+export function App({
+  entry = 'landing',
+  snapshotSource = null,
+  mode = 'edit',
+  bridgeRef = null,
+  renderRibbonExtras = null,
+} = {}) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [workflowView, setWorkflowView] = useState('upload'); // 'upload' | 'workbench'
   const [theme, setTheme] = useState(() => {
     try {
       const saved = localStorage.getItem('reforge_theme');
@@ -3412,11 +3497,31 @@ function App() {
     }
   }, [theme]);
 
-  const [page, setPage] = useState('home');
   const [images, setImages] = useState([]);
   const [analysis, setAnalysis] = useState(null);
   const [stage, setStage] = useState('idle');
   const [analysisVersion, setAnalysisVersion] = useState(0);
+
+  const setPage = useCallback((target) => {
+    if (target === 'home') {
+      navigate('/');
+    } else if (target === 'upload') {
+      setWorkflowView('upload');
+      navigate('/app/new');
+    } else if (target === 'workbench') {
+      setWorkflowView('workbench');
+      navigate('/app/new');
+    }
+  }, [navigate]);
+
+  const page = useMemo(() => {
+    if (location.pathname === '/') return 'home';
+    const params = new URLSearchParams(location.search);
+    const viewParam = params.get('view');
+    if (viewParam === 'upload' || viewParam === 'workbench') return viewParam;
+    if (workflowView) return workflowView;
+    return analysis ? 'workbench' : 'upload';
+  }, [location.pathname, location.search, workflowView, analysis]);
 
   // Machinery Context State
   const [machineryState, setMachineryState] = useState(() => createInitialMachineryState());
@@ -3513,7 +3618,7 @@ function App() {
     theme,
     toggleTheme,
   }), [
-    page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
+    page, setPage, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
     machineryState, lastAnalyzedSnapshot, viewMode, activeComponentId,
     selectedComponentIds, handleRegenerate, isRegenerating, isDirty,
     theme, toggleTheme
@@ -3522,14 +3627,63 @@ function App() {
   return (
     <ErrorBoundary>
       <AppContext.Provider value={value}>
-        {page === 'home' ? <Landing /> : page === 'upload' ? <Upload /> : <Workbench />}
+        <SessionExpiryOverlay />
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route
+            path="/home"
+            element={
+              <RequireAuth>
+                <HomePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/parts/:partId"
+            element={
+              <RequireAuth>
+                <RoutePlaceholder title="Part Details" description="Part view and revision history will be connected in Step 4." />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/new"
+            element={
+              <RequireAuth requiredRole="engineer">
+                <EngineeringWorkflow workflowView={workflowView} />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/parts/:partId/v/:n"
+            element={
+              <RequireAuth>
+                <RoutePlaceholder title="Saved Part Version" description="Saved part/version workflow will be connected in Step 4." />
+              </RequireAuth>
+            }
+          />
+          <Route path="/upload" element={<Navigate to="/app/new?view=upload" replace />} />
+          <Route path="/workbench" element={<Navigate to="/app/new?view=workbench" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </AppContext.Provider>
     </ErrorBoundary>
   );
 }
 
+export default App;
+
 createRoot(document.getElementById('root')).render(
   <ErrorBoundary>
-    <App />
+    <BrowserRouter>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </BrowserRouter>
   </ErrorBoundary>
 );

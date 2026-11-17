@@ -8,22 +8,53 @@ import { computeMaterialAlternatives } from "./material-comparison.js";
 import { simulateEngineeringChange, analyzeDimensionSensitivity } from "./engineering-analysis.js";
 import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from './vision-adapter.js';
 import { isReconstructionEnabled, callReconstructionService } from './reconstruction-adapter.js';
+import { getConfig } from "./src/config.js";
+import { requestIdMiddleware, centralErrorHandler, AppError } from "./src/errors.js";
+import { configureHelmet, configureCors } from "./src/security.js";
+import { assertDatabaseConnection } from "./src/db/connection.js";
+import { runMigrations } from "./src/db/migrator.js";
+import cookieParser from "cookie-parser";
+import { createAuthRouter } from "./src/routes/auth-routes.js";
+import { createGatewayEnforcer } from "./src/security/route-registry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT) || 8787;
+const config = getConfig();
+const PORT = config.port;
 const MAX_IMAGES = 8;
-const MAX_BODY_BYTES = 20 * 1024 * 1024;
+
+// Per-route body limits
+const DEFAULT_BODY_LIMIT = "1mb";
+const ANALYSIS_BODY_LIMIT = "25mb"; // Accommodates 8 high-res base64 images (~20MB)
 
 const app = express();
 app.disable("x-powered-by");
+
+// 1. Security Headers & Request Correlation
+app.use(configureHelmet());
+app.use(configureCors());
+app.use(cookieParser());
+app.use(requestIdMiddleware);
+
+// 2. Per-route JSON parsers (Default 1MB for all routes, 25MB for /api/analyze-component)
+const parseDefaultJson = express.json({ limit: DEFAULT_BODY_LIMIT });
+const parseAnalysisJson = express.json({ limit: ANALYSIS_BODY_LIMIT });
+
+// Apply 25MB limit for /api/analyze-component, 1MB for other /api routes
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+  if (req.path === "/api/analyze-component" || req.url.startsWith("/api/analyze-component")) {
+    return parseAnalysisJson(req, res, next);
+  }
+  if (req.path.startsWith("/api") || req.url.startsWith("/api")) {
+    return parseDefaultJson(req, res, next);
+  }
   next();
 });
-app.use(express.json({ limit: `${MAX_BODY_BYTES}` }));
+
+// 3. P3 Gateway Route Registry & Security Enforcer
+app.use(/^\/api(\/.*)?$/, createGatewayEnforcer());
+
+// 4. P2 Authentication Endpoints
+app.use("/api/auth", createAuthRouter());
 
 function validateImages(images) {
   if (!Array.isArray(images) || images.length === 0) {
@@ -79,7 +110,7 @@ function sanitizeReference(raw) {
   return clean;
 }
 
-app.post("/api/analyze-component", async (req, res) => {
+app.post("/api/analyze-component", async (req, res, next) => {
   try {
     const images = validateImages(req.body?.images);
     const reference = sanitizeReference(req.body?.reference);
@@ -122,11 +153,11 @@ app.post("/api/analyze-component", async (req, res) => {
 
     res.json(responseBody);
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message || "Analysis failed." });
+    next(error);
   }
 });
 
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", async (req, res, next) => {
   try {
     const rawContext = req.body?.engineeringContext;
     const engineeringContext = rawContext ? validateEngineeringContext(rawContext) : null;
@@ -141,7 +172,7 @@ app.post("/api/chat", async (req, res) => {
     });
     res.json(result);
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message || "Chat failed." });
+    next(error);
   }
 });
 
@@ -350,6 +381,11 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, geminiConfigured: Boolean(process.env.GEMINI_API_KEY) });
 });
 
+// 404 for unmatched /api routes returns standard JSON error envelope
+app.all(/^\/api(\/.*)?$/, (req, _res, next) => {
+  next(new AppError("not_found", `Endpoint not found: ${req.method} ${req.originalUrl}`, 404));
+});
+
 const distDir = path.resolve(__dirname, "../frontend/dist");
 if (existsSync(distDir)) {
   app.use(express.static(distDir));
@@ -362,9 +398,31 @@ if (existsSync(distDir)) {
   });
 }
 
-app.use((_req, res) => res.status(404).json({ error: "Not found." }));
-
-app.listen(PORT, () => {
-  console.log(`ReForge AI server listening on http://localhost:${PORT}`);
-  console.log(process.env.GEMINI_API_KEY ? "Gemini API key: configured" : "Gemini API key: NOT set — analysis/chat will fail until GEMINI_API_KEY is provided in .env.local");
+// 404 handler for non-API routes
+app.use((req, _res, next) => {
+  next(new AppError("not_found", `Route not found: ${req.method} ${req.originalUrl}`, 404));
 });
+
+// Central Error Handler
+app.use(centralErrorHandler);
+
+export { app };
+
+// Only listen when executed directly
+if (process.argv[1] && process.argv[1].endsWith("index.js")) {
+  // Assert DB connection and run pending migrations on startup
+  assertDatabaseConnection()
+    .then(async (dbStatus) => {
+      console.log(`[Database] SQLite connected: WAL=${dbStatus.journalMode}, ForeignKeys=${dbStatus.foreignKeys}`);
+      await runMigrations();
+    })
+    .catch((dbErr) => {
+      console.error("[Database] Critical DB connection assertion failed:", dbErr.message);
+      process.exit(1);
+    });
+
+  app.listen(PORT, () => {
+    console.log(`ReForge AI server listening on http://localhost:${PORT}`);
+    console.log(process.env.GEMINI_API_KEY ? "Gemini API key: configured" : "Gemini API key: NOT set — analysis/chat will fail until GEMINI_API_KEY is provided in .env.local");
+  });
+}

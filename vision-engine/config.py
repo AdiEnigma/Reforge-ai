@@ -34,3 +34,10 @@ SAM2_CONFIG_FILENAME = "configs/sam2.1/sam2.1_hiera_s"
 
 # Depth Anything V2 Small checkpoint
 DEPTH_CHECKPOINT_FILENAME = "depth_anything_v2_vits.pth"
+
+# P3: Internal Service Token
+INTERNAL_TOKEN = os.environ.get(
+    "INTERNAL_TOKEN",
+    "dev-internal-token-32-chars-minimum-reforge-ai-secret"
+)
+ENVIRONMENT = os.environ.get("ENVIRONMENT", os.environ.get("NODE_ENV", "development"))

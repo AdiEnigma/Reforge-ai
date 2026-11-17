@@ -5,6 +5,7 @@
  * returns null so the existing workflow continues unchanged.
  */
 import { request } from 'node:http';
+import { getConfig } from './src/config.js';
 
 const RECONSTRUCTION_SERVICE_URL = process.env.RECONSTRUCTION_SERVICE_URL || 'http://127.0.0.1:8766';
 const RECONSTRUCTION_ENABLED = process.env.RECONSTRUCTION_ENABLED === 'true';
@@ -21,6 +22,7 @@ export function isReconstructionEnabled() {
 export async function callReconstructionService(payload) {
   if (!RECONSTRUCTION_ENABLED) return null;
 
+  const config = getConfig();
   const body = JSON.stringify(payload || {});
 
   return new Promise((resolve) => {
@@ -41,6 +43,7 @@ export async function callReconstructionService(payload) {
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
+          'X-Internal-Token': config.internalToken,
         },
       },
       (res) => {
@@ -48,6 +51,10 @@ export async function callReconstructionService(payload) {
         res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
           try {
+            if (res.statusCode >= 400) {
+              console.warn(`[reconstruction-adapter] Upstream error: ${res.statusCode}`);
+              return resolve(null);
+            }
             const parsed = JSON.parse(data);
             resolve(parsed);
           } catch (e) {

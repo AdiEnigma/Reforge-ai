@@ -5,6 +5,7 @@
  * returns null so the existing Gemini-only path continues unchanged.
  */
 import { request } from 'node:http';
+import { getConfig } from './src/config.js';
 
 const VISION_PIPELINE_ENABLED = process.env.VISION_PIPELINE_ENABLED === 'true';
 const VISION_SERVICE_URL = process.env.VISION_SERVICE_URL || 'http://127.0.0.1:8765';
@@ -26,6 +27,7 @@ export function isVisionEnabled() {
 export async function callVisionService(images, reference) {
   if (!VISION_PIPELINE_ENABLED) return null;
 
+  const config = getConfig();
   const body = JSON.stringify({
     images: images.map((img, idx) => ({
       data: img.data,
@@ -53,6 +55,7 @@ export async function callVisionService(images, reference) {
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
+          'X-Internal-Token': config.internalToken,
         },
       },
       (res) => {
@@ -60,6 +63,10 @@ export async function callVisionService(images, reference) {
         res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
           try {
+            if (res.statusCode >= 400) {
+              console.warn(`[vision-adapter] Upstream error: ${res.statusCode}`);
+              return resolve(null);
+            }
             const parsed = JSON.parse(data);
             if (parsed && parsed.schema_version && Array.isArray(parsed.images)) {
               resolve(parsed);

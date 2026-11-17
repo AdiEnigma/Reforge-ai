@@ -40,7 +40,24 @@ app = FastAPI(
     description="Internal computer vision service providing SAM2 segmentation, OpenCV features, and Depth Anything V2 cues.",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if config.ENVIRONMENT != "production" else None,
+    redoc_url="/redoc" if config.ENVIRONMENT != "production" else None,
+    openapi_url="/openapi.json" if config.ENVIRONMENT != "production" else None,
 )
+
+
+@app.middleware("http")
+async def verify_internal_token_middleware(request: Request, call_next):
+    # Enforce X-Internal-Token on all endpoints
+    token = request.headers.get("X-Internal-Token")
+    expected = config.INTERNAL_TOKEN
+    import secrets
+    if not token or not secrets.compare_digest(token, expected):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "unauthorized", "message": "Invalid or missing internal token."},
+        )
+    return await call_next(request)
 
 
 @app.exception_handler(RequestValidationError)
