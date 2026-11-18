@@ -6,6 +6,7 @@
 
 import { jsPDF } from "jspdf";
 import { renderDrawingToSvg, buildDrawingModel } from "./drawing/index.js";
+import { downloadCadExport } from "./cad-export.js";
 
 /**
  * Triggers a browser file download from a Blob or string content.
@@ -59,119 +60,11 @@ function getPartDimensions(analysis) {
    ────────────────────────────────────────────────────────────────────────── */
 
 export function exportSTEP(analysis) {
-  const slug = getPartSlug(analysis);
-  const dims = getPartDimensions(analysis);
-  const now = new Date().toISOString();
-  const stepContent = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('ReForge AI Reconstructed CAD Model','STEP AP214 Automative Design'),'2;1');
-FILE_NAME('${slug}.step','${now}',('ReForge AI Reverse Engineering Kernel'),('MSME CAD/CAM Lab'),'ReForge STEP Generator v2.4','ReForge-AI Engine','');
-FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
-ENDSEC;
-DATA;
-#10=ORGANIZATION('UNSPECIFIED','ReForge AI','Reverse Engineering Suite');
-#11=APPLICATION_CONTEXT('core data for automotive mechanical design');
-#12=APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#11);
-#13=PRODUCT_CONTEXT('part definition',#11,'mechanical');
-#14=PRODUCT('${slug.toUpperCase()}','${slug.toUpperCase()}','Reconstructed Geometric Solid',(#13));
-#15=PRODUCT_DEFINITION_FORMATION('1.0','Initial AI Synthesis',#14);
-#16=PRODUCT_DEFINITION('design','ReForge Reconstruction',#15,#13);
-#20=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.001),#23,'distance_accuracy_value','confusion accuracy');
-#21=(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#20)) GLOBAL_UNIT_ASSIGNED_CONTEXT((#23,#24,#25)) REPRESENTATION_CONTEXT('3D','3D Space'));
-#23=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));
-#24=(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.));
-#25=(NAMED_UNIT(*) SOLID_ANGLE_UNIT() SI_UNIT($,.STERADIAN.));
-#30=CARTESIAN_POINT('Origin',(0.,0.,0.));
-#31=DIRECTION('Z Axis',(0.,0.,1.));
-#32=DIRECTION('X Axis',(1.,0.,0.));
-#33=AXIS2_PLACEMENT_3D('World Placement',#30,#31,#32);
-#40=MANIFOLD_SOLID_BREP('Solid Body',#41);
-#41=CLOSED_SHELL('Outer Skin',(#50,#51,#52,#53));
-#50=CYLINDRICAL_SURFACE('Outer Diameter Surface',#33,${(dims.od / 2).toFixed(3)});
-#51=PLANE('Top Cap',#33);
-#52=PLANE('Bottom Cap',#33);
-#53=CYLINDRICAL_SURFACE('Inner Bore Surface',#33,${(dims.id / 2).toFixed(3)});
-#60=ADVANCED_BREP_SHAPE_REPRESENTATION('${slug}_BREP',(#33,#40),#21);
-#61=SHAPE_DEFINITION_REPRESENTATION(#62,#60);
-#62=PRODUCT_DEFINITION_SHAPE('Shape for ${slug}','',#16);
-ENDSEC;
-END-ISO-10303-21;
-`;
-  return downloadFile(stepContent, `${slug}.step`, "application/step");
+  return downloadCadExport(analysis, "step");
 }
 
 export function exportIGES(analysis) {
-  const slug = getPartSlug(analysis);
-  const dims = getPartDimensions(analysis);
-  const now = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  
-  // Format IGES 80-column fixed records
-  const startLine = `REFORGE AI IGES EXPORT - MODEL: ${slug.toUpperCase()}`.padEnd(72) + "S      1\n";
-  const global1 = `1H,,1H;,11H${slug}.iges,11HReForge AI,10HReForgeCAD,32,38,6,308,15,11H${slug},1.,`.padEnd(72) + "G      1\n";
-  const global2 = `1,4HINCH,1,0.001,15H${now}.120000,0.0001,${dims.od.toFixed(1)},'Engineer','MSME',11,0;`.padEnd(72) + "G      2\n";
-  const d1 = "     186       1       0       1       0       0       0       000010001D      1\n";
-  const d2 = "     186       0       0       1       0                                0D      2\n";
-  const p1 = `186,0,0,0,${(dims.od/2).toFixed(2)},${dims.h.toFixed(2)},0,0,1,1;`.padEnd(72) + "P      1\n";
-  const term = "S      1G      2D      2P      1                                        T      1\n";
-
-  const igesContent = startLine + global1 + global2 + d1 + d2 + p1 + term;
-  return downloadFile(igesContent, `${slug}.iges`, "application/iges");
-}
-
-export function exportParasolidText(analysis) {
-  const slug = getPartSlug(analysis);
-  const dims = getPartDimensions(analysis);
-  const content = `** SCHEMA: 32.0.150 **
-** TRANSMIT FILE: ${slug}.x_t **
-PART_NAME: ${slug}
-UNITS: MM
-BODIES: 1
-SOLID_BODY 1
-  LUMP 1
-    SHELL 1 (CLOSED)
-      CYLINDER_SURFACE 1 RADIUS ${(dims.od / 2).toFixed(4)} HEIGHT ${dims.h.toFixed(4)}
-      PLANE_SURFACE 2 NORMAL (0.0, 0.0, 1.0)
-      PLANE_SURFACE 3 NORMAL (0.0, 0.0, -1.0)
-      ${dims.id > 0 ? `CYLINDER_SURFACE 4 RADIUS ${(dims.id / 2).toFixed(4)} HEIGHT ${dims.h.toFixed(4)}` : ""}
-END_TRANSMIT_FILE
-`;
-  return downloadFile(content, `${slug}.x_t`, "text/plain");
-}
-
-export function exportParasolidBinary(analysis) {
-  const slug = getPartSlug(analysis);
-  const text = `PS_BIN_ARCHIVE:v32.0:${slug}\n` + JSON.stringify(analysis?.dimensions || {});
-  return downloadFile(text, `${slug}.x_b`, "application/octet-stream");
-}
-
-export function exportACIS(analysis) {
-  const slug = getPartSlug(analysis);
-  const dims = getPartDimensions(analysis);
-  const content = `700 0 1 0
-16 ReForge-AI 7.0 2026 0
-1.0 9.9999999999999995e-007 1e-010
-body $-1 $-1 $-1 $1 $-1 $-1 #
-lump $-1 $-1 $-1 $2 $0 #
-shell $-1 $-1 $-1 $3 $-1 $1 #
-face $-1 $-1 $-1 $4 $2 $3 #
-cylinder-surface ${(dims.od/2).toFixed(4)} 0 0 0 0 0 1 1 0 0 forward_v #
-End-of-ACIS-data
-`;
-  return downloadFile(content, `${slug}.sat`, "text/plain");
-}
-
-export function exportJT(analysis) {
-  const slug = getPartSlug(analysis);
-  const content = `JT_OPEN_CAD_VERSION_10.5
-HEADER: ${slug}
-UNITS: MILLIMETER
-GEOMETRY_DEFINITION:
-  TYPE: BREP_TESSELLATED_HYBRID
-  DIMENSIONS: ${JSON.stringify(getPartDimensions(analysis))}
-  CONFIDENCE: ${analysis?.confidence || 0.95}
-END_JT
-`;
-  return downloadFile(content, `${slug}.jt`, "application/octet-stream");
+  return downloadCadExport(analysis, "iges");
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -211,98 +104,18 @@ export const exportCatiaAssembly = (a) => exportNativeCadPayload(a, "CATProduct"
 export const exportSiemensNX = (a) => exportNativeCadPayload(a, "prt", "Siemens NX Unigraphics");
 export const exportCreoAssembly = (a) => exportNativeCadPayload(a, "asm", "PTC Creo Parametric");
 export const exportRhino = (a) => exportNativeCadPayload(a, "3dm", "Rhino 3D OpenNURBS");
-export const exportFreeCAD = (a) => {
-  const slug = getPartSlug(a);
-  const dims = getPartDimensions(a);
-  const xml = `<?xml version="1.0" encoding="utf-8"?>
-<Document SchemaVersion="4" ProgramVersion="0.21.2" FileVersion="1">
-  <Properties Count="5">
-    <Property name="Comment" type="App::PropertyString"><String value="ReForge AI FreeCAD Part Document"/></Property>
-    <Property name="CreatedBy" type="App::PropertyString"><String value="ReForge AI"/></Property>
-    <Property name="PartName" type="App::PropertyString"><String value="${slug}"/></Property>
-  </Properties>
-  <Objects Count="1">
-    <Object type="Part::Feature" name="${slug}" ID="1">
-      <Properties Count="4">
-        <Property name="OuterDiameter" type="App::PropertyLength"><Float value="${dims.od}"/></Property>
-        <Property name="InnerDiameter" type="App::PropertyLength"><Float value="${dims.id}"/></Property>
-        <Property name="Height" type="App::PropertyLength"><Float value="${dims.h}"/></Property>
-        <Property name="Placement" type="App::PropertyPlacement"><Placement Position="(0,0,0)" Orientation="(0,0,0,1)"/></Property>
-      </Properties>
-    </Object>
-  </Objects>
-</Document>`;
-  return downloadFile(xml, `${slug}.FCStd`, "application/xml");
-};
+export const exportFreeCAD = (a) => downloadCadExport(a, "step"); // STEP opens natively in FreeCAD
 
 /* ──────────────────────────────────────────────────────────────────────────
    3. 3D MESH EXPORTERS
    ────────────────────────────────────────────────────────────────────────── */
 
 export function exportSTL(analysis) {
-  const slug = getPartSlug(analysis);
-  const dims = getPartDimensions(analysis);
-  const r = dims.od / 2;
-  const h = dims.h;
-  const segs = 32;
-
-  let stl = `solid ${slug}\n`;
-  for (let i = 0; i < segs; i++) {
-    const theta1 = (i / segs) * Math.PI * 2;
-    const theta2 = ((i + 1) / segs) * Math.PI * 2;
-    const x1 = (r * Math.cos(theta1)).toFixed(4);
-    const y1 = (r * Math.sin(theta1)).toFixed(4);
-    const x2 = (r * Math.cos(theta2)).toFixed(4);
-    const y2 = (r * Math.sin(theta2)).toFixed(4);
-
-    // Top cap triangle
-    stl += `  facet normal 0 0 1\n    outer loop\n      vertex 0 0 ${(h/2).toFixed(4)}\n      vertex ${x1} ${y1} ${(h/2).toFixed(4)}\n      vertex ${x2} ${y2} ${(h/2).toFixed(4)}\n    endloop\n  endfacet\n`;
-    // Bottom cap triangle
-    stl += `  facet normal 0 0 -1\n    outer loop\n      vertex 0 0 ${(-h/2).toFixed(4)}\n      vertex ${x2} ${y2} ${(-h/2).toFixed(4)}\n      vertex ${x1} ${y1} ${(-h/2).toFixed(4)}\n    endloop\n  endfacet\n`;
-    // Side quad (2 triangles)
-    stl += `  facet normal ${Math.cos(theta1).toFixed(4)} ${Math.sin(theta1).toFixed(4)} 0\n    outer loop\n      vertex ${x1} ${y1} ${(-h/2).toFixed(4)}\n      vertex ${x2} ${y2} ${(-h/2).toFixed(4)}\n      vertex ${x2} ${y2} ${(h/2).toFixed(4)}\n    endloop\n  endfacet\n`;
-    stl += `  facet normal ${Math.cos(theta1).toFixed(4)} ${Math.sin(theta1).toFixed(4)} 0\n    outer loop\n      vertex ${x1} ${y1} ${(-h/2).toFixed(4)}\n      vertex ${x2} ${y2} ${(h/2).toFixed(4)}\n      vertex ${x1} ${y1} ${(h/2).toFixed(4)}\n    endloop\n  endfacet\n`;
-  }
-  stl += `endsolid ${slug}\n`;
-
-  return downloadFile(stl, `${slug}.stl`, "model/stl");
+  return downloadCadExport(analysis, "stl");
 }
 
 export function exportOBJ(analysis) {
-  const slug = getPartSlug(analysis);
-  const dims = getPartDimensions(analysis);
-  const r = dims.od / 2;
-  const h = dims.h;
-  const segs = 32;
-
-  let obj = `# Wavefront OBJ File - ReForge AI\n# Component: ${slug}\no ${slug}\n`;
-  
-  // Vertices top circle & bottom circle
-  for (let i = 0; i < segs; i++) {
-    const theta = (i / segs) * Math.PI * 2;
-    obj += `v ${(r * Math.cos(theta)).toFixed(4)} ${(r * Math.sin(theta)).toFixed(4)} ${(h/2).toFixed(4)}\n`;
-  }
-  for (let i = 0; i < segs; i++) {
-    const theta = (i / segs) * Math.PI * 2;
-    obj += `v ${(r * Math.cos(theta)).toFixed(4)} ${(r * Math.sin(theta)).toFixed(4)} ${(-h/2).toFixed(4)}\n`;
-  }
-  obj += `v 0 0 ${(h/2).toFixed(4)}\nv 0 0 ${(-h/2).toFixed(4)}\n`;
-  const topCenter = segs * 2 + 1;
-  const botCenter = segs * 2 + 2;
-
-  // Faces
-  obj += `s 1\n`;
-  for (let i = 1; i <= segs; i++) {
-    const next = i === segs ? 1 : i + 1;
-    // Top
-    obj += `f ${topCenter} ${i} ${next}\n`;
-    // Bottom
-    obj += `f ${botCenter} ${segs + next} ${segs + i}\n`;
-    // Side
-    obj += `f ${i} ${segs + i} ${segs + next} ${next}\n`;
-  }
-
-  return downloadFile(obj, `${slug}.obj`, "model/obj");
+  return downloadCadExport(analysis, "obj");
 }
 
 export function export3MF(analysis) {

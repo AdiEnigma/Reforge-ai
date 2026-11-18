@@ -32,16 +32,73 @@ const mockMfgData = {
   },
 };
 
-describe('Engineering Exporter Suite', () => {
-  it('generates valid STEP and IGES CAD files', () => {
-    const step = exporters.exportSTEP(mockAnalysis);
-    assert.ok(step.content.includes('ISO-10303-21'));
-    assert.ok(step.content.includes('SPUR-GEAR') || step.content.includes('SPUR_GEAR'));
-    assert.ok(step.filename.endsWith('.step'));
+const originalFetch = globalThis.fetch;
 
-    const iges = exporters.exportIGES(mockAnalysis);
-    assert.ok(iges.content.includes('REFORGE AI IGES'));
-    assert.ok(iges.filename.endsWith('.iges'));
+function stubFetch() {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, body: JSON.parse(init.body) });
+    const format = JSON.parse(init.body).format;
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name) =>
+          String(name).toLowerCase() === 'content-disposition'
+            ? `attachment; filename="spur-gear.${format}"`
+            : null,
+      },
+      blob: async () => new Blob(['ISO-10303-21;']),
+    };
+  };
+  return requests;
+}
+
+describe('Engineering Exporter Suite', () => {
+  it('requests real CAD exports from the backend (STEP, IGES, STL, OBJ)', async () => {
+    const requests = stubFetch();
+    try {
+      const step = await exporters.exportSTEP(mockAnalysis);
+      assert.equal(requests[0].url, '/api/cad/export');
+      assert.equal(requests[0].body.format, 'step');
+      assert.equal(requests[0].body.analysis.dimensions.outerDiameter, 120);
+      assert.ok(step.filename.endsWith('.step'));
+
+      const iges = await exporters.exportIGES(mockAnalysis);
+      assert.equal(requests[1].body.format, 'iges');
+      assert.ok(iges.filename.endsWith('.iges'));
+
+      const stl = await exporters.exportSTL(mockAnalysis);
+      assert.equal(requests[2].body.format, 'stl');
+      assert.ok(stl.filename.endsWith('.stl'));
+
+      const obj = await exporters.exportOBJ(mockAnalysis);
+      assert.equal(requests[3].body.format, 'obj');
+      assert.ok(obj.filename.endsWith('.obj'));
+
+      const freecad = await exporters.exportFreeCAD(mockAnalysis);
+      assert.equal(requests[4].body.format, 'step');
+      assert.ok(freecad.filename.endsWith('.step'));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('surfaces CAD export failures instead of downloading a fabricated file', async () => {
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 503,
+      headers: { get: () => null },
+      json: async () => ({ error: 'CAD export needs Python with CadQuery.' }),
+    });
+    try {
+      await assert.rejects(
+        () => exporters.exportSTEP(mockAnalysis),
+        /CAD export needs Python with CadQuery/
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('generates native CAD parametric definitions', () => {
@@ -54,18 +111,7 @@ describe('Engineering Exporter Suite', () => {
     assert.ok(f3d.filename.endsWith('.f3d'));
   });
 
-  it('generates standard 3D mesh files (STL, OBJ, GLTF)', () => {
-    const stl = exporters.exportSTL(mockAnalysis);
-    assert.ok(stl.content.includes('solid'));
-    assert.ok(stl.content.includes('endsolid'));
-    assert.ok(stl.filename.endsWith('.stl'));
-
-    const obj = exporters.exportOBJ(mockAnalysis);
-    assert.ok(obj.content.includes('# Wavefront OBJ'));
-    assert.ok(obj.content.includes('v '));
-    assert.ok(obj.content.includes('f '));
-    assert.ok(obj.filename.endsWith('.obj'));
-
+  it('generates standard 3D mesh files (GLTF)', () => {
     const gltf = exporters.exportGLTF(mockAnalysis);
     assert.ok(gltf.content.includes('"asset":'));
     assert.ok(gltf.filename.endsWith('.gltf'));

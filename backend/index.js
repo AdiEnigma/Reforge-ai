@@ -1,6 +1,6 @@
 import express from "express";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { analyzeComponent, chatWithEngineer, sanitizeRecipe } from "./gemini.js";
 import { computeManufacturingIntelligence } from "./manufacturing.js";
@@ -8,6 +8,7 @@ import { computeMaterialAlternatives } from "./material-comparison.js";
 import { simulateEngineeringChange, analyzeDimensionSensitivity } from "./engineering-analysis.js";
 import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from './vision-adapter.js';
 import { isReconstructionEnabled, callReconstructionService } from './reconstruction-adapter.js';
+import { exportCadModel, isCadExportScriptPresent } from './cad-export-adapter.js';
 import {
   resolveGeometryFromVision,
   reconcileGeminiWithVision,
@@ -380,8 +381,86 @@ app.post("/api/reconstruct", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// CAD export — real B-Rep solids built by python-engine (CadQuery/OpenCASCADE)
+// ---------------------------------------------------------------------------
+
+const CAD_EXPORT_FORMATS = ["step", "iges", "stl", "obj"];
+
+function cadSlug(analysis) {
+  const raw = analysis?.componentName || analysis?.componentType || "component";
+  return String(raw)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "component";
+}
+
+/**
+ * Validate analysis for CAD export: the shared shape validator plus the
+ * dimension-free hints the geometry builders rely on.
+ */
+function validateCadExportAnalysis(raw) {
+  const base = validateAnalysisShape(raw);
+  const pick = (value, min, max) => {
+    const n = Number(value);
+    if (!isFinite(n)) return null;
+    return Math.max(min, Math.min(max, n));
+  };
+  return {
+    ...base,
+    componentName: typeof raw?.componentName === "string" ? raw.componentName.slice(0, 60) : "",
+    teeth: pick(raw?.teeth, 4, 400),
+    module: pick(raw?.module, 0.01, 100),
+    helixAngle: pick(raw?.helixAngle, -60, 60),
+    coneAngle: pick(raw?.coneAngle, 0, 90),
+    boltCount: pick(raw?.boltCount, 3, 64),
+    gearType: typeof raw?.gearType === "string" ? raw.gearType.slice(0, 20) : null,
+  };
+}
+
+app.post("/api/cad/export", async (req, res) => {
+  let cleanup = () => {};
+  try {
+    const analysis = validateCadExportAnalysis(req.body?.analysis);
+    const format = String(req.body?.format || "step").toLowerCase();
+    if (!CAD_EXPORT_FORMATS.includes(format)) {
+      return res.status(400).json({ error: `Unsupported CAD export format: ${format}` });
+    }
+    const requested = typeof req.body?.baseName === "string" ? req.body.baseName.trim() : "";
+    const baseName = requested || cadSlug(analysis);
+
+    const result = await exportCadModel({ analysis, format, baseName });
+    cleanup = result.cleanup;
+
+    res.setHeader("Content-Type", result.mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+    res.setHeader("Content-Length", String(result.bytes));
+    res.setHeader("X-ReForge-CAD-Solids", String(result.manifest.solids));
+
+    const stream = createReadStream(result.path);
+    stream.on("error", (streamError) => {
+      cleanup();
+      if (!res.headersSent) {
+        res.status(500).json({ error: streamError.message || "CAD export stream failed." });
+      } else {
+        res.destroy(streamError);
+      }
+    });
+    stream.on("close", cleanup);
+    stream.pipe(res);
+    return undefined;
+  } catch (error) {
+    cleanup();
+    return res.status(error.status || 500).json({ error: error.message || "CAD export failed." });
+  }
+});
+
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, geminiConfigured: Boolean(process.env.GEMINI_API_KEY) });
+  res.json({
+    ok: true,
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    cadExportAvailable: isCadExportScriptPresent(),
+  });
 });
 
 const distDir = path.resolve(__dirname, "../frontend/dist");
