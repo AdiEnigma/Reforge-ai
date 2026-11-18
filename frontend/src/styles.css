@@ -4473,7 +4473,42 @@ nav {
   padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px
+  gap: 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.comp-mgr-card.active-viewing,
+.additional-gear-block.active-viewing {
+  border-color: #b5e67e !important;
+  box-shadow: 0 0 8px rgba(181, 230, 126, 0.2);
+}
+
+.active-view-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #b5e67e;
+  background: rgba(181, 230, 126, 0.15);
+  border: 1px solid rgba(181, 230, 126, 0.35);
+  border-radius: 2px;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.analyzing-view-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #ffb77f;
+  background: rgba(255, 183, 127, 0.15);
+  border: 1px solid rgba(255, 183, 127, 0.35);
+  border-radius: 2px;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .comp-mgr-card.primary-card {

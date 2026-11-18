@@ -2,7 +2,7 @@ import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from "@google/ge
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
-const COMPONENT_STYLES = ["revolved", "extruded", "gear", "combination"];
+const COMPONENT_STYLES = ["revolved", "extruded", "gear", "flange", "combination"];
 const PRIMITIVE_KINDS = ["box", "cylinder", "sphere", "cone", "torus"];
 
 const ANALYSIS_SCHEMA = {
@@ -26,6 +26,10 @@ const ANALYSIS_SCHEMA = {
     features: { type: "ARRAY", items: { type: "STRING" } },
     teeth: { type: "NUMBER" },
     module: { type: "NUMBER" },
+    gearType: { type: "STRING" },
+    coneAngle: { type: "NUMBER" },
+    spokes: { type: "NUMBER" },
+    boltCount: { type: "NUMBER" },
     helixAngle: { type: "NUMBER" },
     materialEstimate: { type: "STRING" },
     manufacturingProcess: { type: "STRING" },
@@ -65,10 +69,29 @@ const ANALYSIS_SCHEMA = {
           properties: {
             teeth: { type: "NUMBER" },
             module: { type: "NUMBER" },
+            gearType: { type: "STRING" },
+            coneAngle: { type: "NUMBER" },
             pressureAngle: { type: "NUMBER" },
             helixAngle: { type: "NUMBER" },
             faceWidth: { type: "NUMBER" },
             boreRadius: { type: "NUMBER" },
+            hubDiameter: { type: "NUMBER" },
+            hubLength: { type: "NUMBER" },
+            spokes: { type: "NUMBER" },
+          },
+        },
+        flange: {
+          type: "OBJECT",
+          properties: {
+            outerDiameter: { type: "NUMBER" },
+            innerDiameter: { type: "NUMBER" },
+            thickness: { type: "NUMBER" },
+            height: { type: "NUMBER" },
+            boltCount: { type: "NUMBER" },
+            boltCircleDiameter: { type: "NUMBER" },
+            boltHoleDiameter: { type: "NUMBER" },
+            bossDiameter: { type: "NUMBER" },
+            bossHeight: { type: "NUMBER" },
           },
         },
         primitives: {
@@ -141,12 +164,20 @@ function client() {
 
 function getCandidateModels() {
   const custom = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : null;
-  const list = [custom, "gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.6-flash"].filter(Boolean);
+  const list = [
+    custom,
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+  ].filter(Boolean);
   return Array.from(new Set(list));
 }
 
 function model(client, modelName = null) {
-  const target = modelName || getCandidateModels()[0] || "gemini-3.5-flash";
+  const target = modelName || getCandidateModels()[0] || "gemini-3.1-flash-lite";
   return client.getGenerativeModel({
     model: target,
     safetySettings: [
@@ -288,9 +319,10 @@ function analysisPrompt(reference, visionEvidence) {
     "Prefer leaving a value as null over guessing a wrong number.",
     "",
     "GEOMETRY RECIPE (geometryRecipe): produce a construction recipe the renderer can execute. Pick ONE style and fill only its fields:",
-    '- "revolved": axisymmetric parts (shafts, pulleys, flanges, valve bodies, couplings). Provide revolvedProfile as 3-8 points {z, radius} tracing the meridian outline from one axial end to the other. z is the position along the axis of revolution, radius is the radial distance (radius >= 0).',
+    '- "flange": circular mounting plates, pipe flanges with bolt holes, companion flanges. Provide flange = { outerDiameter, innerDiameter (bore), thickness (flange plate thickness), height (total height including hub/boss), boltCount (count the bolt holes, e.g. 4, 6, 8, 12), boltCircleDiameter (PCD), boltHoleDiameter, bossDiameter, bossHeight }. Always include all bolt holes in the features array (e.g. "4 Mounting Bolt Holes").',
+    '- "revolved": continuous axisymmetric solid/hollow parts (shafts, pins, bushings, stepped spindles, simple sleeves). For stepped shafts with multiple diameters along their length, provide revolvedProfile with 4-12 points {z, radius} tracing each journal step and shoulder from one axial end to the other. NOTE: Do NOT use "revolved" for flanges with bolt holes — use "flange" instead.',
     '- "extruded": plates, brackets, housings, levers. Provide outline as a closed polygon of 3-12 points {x, y} plus optional holes [{cx, cy, radius}] for through-holes, and depth (extrude thickness).',
-    '- "gear": toothed wheels. Provide gear = {teeth, module, pressureAngle (default 20), helixAngle (0 = spur, > 0 = helical), faceWidth (tooth face width), boreRadius}. Mirror teeth/module/helixAngle into the top-level fields too.',
+    '- "gear": toothed wheels. Set gear.gearType: "bevel" for conical gears with angled/tapered teeth on a cone surface, "spur" for standard cylindrical gears, "helical" for angled teeth. For bevel gears, provide coneAngle (e.g. 45 degrees), teeth, module, faceWidth, boreRadius, hubDiameter, hubLength. Also set componentType to "bevel gear" and include "bevel gear" in features. For spoked gears, mirror spokes into top-level.',
     '- "combination": complex or ambiguous parts. Compose from up to ~8 additive primitives (kind: box | cylinder | sphere | cone | torus), each with its size fields, position and rotation.',
     "All recipe lengths are in mm, angles in degrees, counts as integers. Use sane, bounded magnitudes — never extreme values like 50000 or 0.0001. IMPORTANT: Do NOT fall back to a single plain box primitive. If you cannot determine the exact recipe, make your best geometric approximation using the component type — for example, use cylinders for shafts, the 'revolved' style for axisymmetric parts, or the 'gear' style for toothed wheels. A single box is never an acceptable fallback.",
   ];
@@ -326,6 +358,8 @@ function normalizeAnalysis(raw) {
     features: [],
     teeth: null,
     module: null,
+    spokes: null,
+    boltCount: null,
     helixAngle: null,
     materialEstimate: "",
     manufacturingProcess: "",
@@ -345,6 +379,10 @@ function normalizeAnalysis(raw) {
   out.features = Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [];
   out.teeth = typeof raw.teeth === "number" && isFinite(raw.teeth) ? Math.round(raw.teeth) : null;
   out.module = cleanNumber(raw.module);
+  out.gearType = typeof raw.gearType === "string" ? raw.gearType : (raw.geometryRecipe?.gear?.gearType || (String(raw.componentType || '').includes('bevel') ? 'bevel' : null));
+  out.coneAngle = cleanNumber(raw.coneAngle) ?? (cleanNumber(raw.geometryRecipe?.gear?.coneAngle) ?? (out.gearType === 'bevel' ? 45 : null));
+  out.spokes = typeof raw.spokes === "number" && isFinite(raw.spokes) ? Math.round(raw.spokes) : null;
+  out.boltCount = typeof raw.boltCount === "number" && isFinite(raw.boltCount) ? Math.round(raw.boltCount) : (raw.geometryRecipe?.flange?.boltCount ? Math.round(raw.geometryRecipe.flange.boltCount) : null);
   out.helixAngle = cleanNumber(raw.helixAngle);
   out.materialEstimate = typeof raw.materialEstimate === "string" ? raw.materialEstimate : "";
   out.manufacturingProcess = typeof raw.manufacturingProcess === "string" ? raw.manufacturingProcess : "";
@@ -407,16 +445,41 @@ export function sanitizeRecipe(rawRecipe) {
     const helixAngle = cleanNumber(g.helixAngle) ?? 0;
     const faceWidth = cleanNumber(g.faceWidth);
     const boreRadius = cleanNumber(g.boreRadius) ?? 0;
+    const gearType = typeof g.gearType === "string" ? g.gearType : null;
+    const coneAngle = cleanNumber(g.coneAngle);
+    const hubDiameter = cleanNumber(g.hubDiameter);
+    const hubLength = cleanNumber(g.hubLength);
+    const spokes = typeof g.spokes === "number" && isFinite(g.spokes) && g.spokes >= 3 ? Math.round(g.spokes) : null;
     if (teeth != null) {
       recipe.gear = {
         teeth,
         module: moduleVal != null && moduleVal > 0 ? moduleVal : null,
+        gearType: gearType || (coneAngle ? "bevel" : null),
+        coneAngle: coneAngle != null && coneAngle > 0 ? Math.min(85, Math.max(10, coneAngle)) : (gearType === "bevel" ? 45 : null),
         pressureAngle: Math.max(5, Math.min(45, pressureAngle)),
         helixAngle: Math.max(-60, Math.min(60, helixAngle)),
         faceWidth: faceWidth != null && faceWidth > 0 ? faceWidth : null,
         boreRadius: Math.max(0, boreRadius),
+        hubDiameter: hubDiameter != null && hubDiameter > 0 ? hubDiameter : null,
+        hubLength: hubLength != null && hubLength > 0 ? hubLength : null,
+        spokes: spokes || null,
       };
     }
+  }
+
+  if (rawRecipe.flange && typeof rawRecipe.flange === "object") {
+    const f = rawRecipe.flange;
+    recipe.flange = {
+      outerDiameter: cleanNumber(f.outerDiameter),
+      innerDiameter: cleanNumber(f.innerDiameter),
+      thickness: cleanNumber(f.thickness),
+      height: cleanNumber(f.height),
+      boltCount: typeof f.boltCount === "number" && isFinite(f.boltCount) ? Math.round(f.boltCount) : null,
+      boltCircleDiameter: cleanNumber(f.boltCircleDiameter),
+      boltHoleDiameter: cleanNumber(f.boltHoleDiameter),
+      bossDiameter: cleanNumber(f.bossDiameter),
+      bossHeight: cleanNumber(f.bossHeight),
+    };
   }
 
   const prims = Array.isArray(rawRecipe.primitives) ? rawRecipe.primitives.slice(0, RECIPE_LIMITS.maxPrimitives) : [];
@@ -482,14 +545,15 @@ export function sanitizeRecipe(rawRecipe) {
   }
 
   if (!recipe.style) {
-    if (recipe.gear) recipe.style = "gear";
+    if (recipe.flange) recipe.style = "flange";
+    else if (recipe.gear) recipe.style = "gear";
     else if (recipe.revolvedProfile) recipe.style = "revolved";
     else if (recipe.outline) recipe.style = "extruded";
     else if (recipe.primitives) recipe.style = "combination";
   }
 
   if (!recipe.style) return null;
-  if (!(recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.primitives)) return null;
+  if (!(recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange || recipe.primitives)) return null;
   return recipe;
 }
 

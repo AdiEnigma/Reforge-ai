@@ -87,6 +87,22 @@ function SingleViewportCanvas({
   const options = useRef({ wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId });
   options.current = { wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId };
 
+  if (!analysis && !isAssembly) {
+    return (
+      <div className="single-viewport-pane">
+        <div className="viewport-pane-header">
+          <span className="pane-title">{title}</span>
+          {headerControls}
+        </div>
+        <div className="viewport-empty-slot" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }}>
+          <Icon className="spin">sync</Icon>
+          <span style={{ fontSize: '13px', fontWeight: 600, letterSpacing: '0.05em', color: '#ffb77f' }}>AWAITING COMPONENT ANALYSIS…</span>
+          <span style={{ fontSize: '11px', color: '#a08875' }}>Upload or select photos in the left panel to reconstruct 3D CAD geometry.</span>
+        </div>
+      </div>
+    );
+  }
+
   useEffect(() => {
     const host = mount.current;
     if (!host) return;
@@ -141,12 +157,19 @@ function SingleViewportCanvas({
     });
     const stressMaterial = createStressMaterial();
 
-    const view = { radius: isAssembly ? 14 : 8, theta: 0.55, phi: 1.35 };
+    const compBox = new THREE.Box3().setFromObject(mainGroup);
+    const compSize = compBox.getSize(new THREE.Vector3());
+    const compMaxDim = Math.max(compSize.x, compSize.y, compSize.z, 1);
+    const defaultRadius = isAssembly ? Math.max(14, compMaxDim * 1.8) : Math.max(8.5, compMaxDim * 1.5);
+    const defaultTheta = 0.75;
+    const defaultPhi = 1.15;
+
+    const view = { radius: defaultRadius, theta: defaultTheta, phi: defaultPhi };
     const target = new THREE.Vector3();
     const reset = () => {
-      view.radius = isAssembly ? 14 : 8;
-      view.theta = 0.55;
-      view.phi = 1.35;
+      view.radius = defaultRadius;
+      view.theta = defaultTheta;
+      view.phi = defaultPhi;
       target.set(0, 0, 0);
     };
     resetViewRef.current = reset;
@@ -399,12 +422,7 @@ export function MultiViewportGrid({
   // Active single component & analysis
   const activeComponent =
     allComponents.find((c) => c.id === activeComponentId) || primary || allComponents[0];
-  const activeAnalysis = activeComponent?.analysis || {
-    componentType: 'spur gear',
-    teeth: 20,
-    module: 2.5,
-    dimensions: { outerDiameter: 55, innerDiameter: 16, height: 22 },
-  };
+  const activeAnalysis = activeComponent?.analysis || null;
 
   const handleSelectComponent = (id) => {
     setActiveComponentId?.(id);
@@ -602,13 +620,7 @@ export function MultiViewportGrid({
             {/* Viewport 2 */}
             {(() => {
               const comp2 = getAssignedComp(dualAssignments[1], 1) || companion || additional[0] || allComponents[1] || allComponents[0];
-              const analysis2 =
-                comp2?.analysis || {
-                  componentType: 'spur gear',
-                  teeth: 30,
-                  module: 2.5,
-                  dimensions: { outerDiameter: 80, innerDiameter: 20, height: 22 },
-                };
+              const analysis2 = comp2?.analysis || null;
               return (
                 <SingleViewportCanvas
                   analysis={analysis2}
@@ -664,14 +676,7 @@ export function MultiViewportGrid({
               const comp2 = getAssignedComp(quadAssignments[1], 1) || companion || additional[0] || allComponents[1];
               return (
                 <SingleViewportCanvas
-                  analysis={
-                    comp2?.analysis || {
-                      componentType: 'spur gear',
-                      teeth: 30,
-                      module: 2.5,
-                      dimensions: { outerDiameter: 80, innerDiameter: 20, height: 22 },
-                    }
-                  }
+                  analysis={comp2?.analysis || null}
                   title={`2. ${comp2?.name || 'Companion Gear'}`}
                   headerControls={renderViewportDropdown(
                     quadAssignments[1],
@@ -695,14 +700,7 @@ export function MultiViewportGrid({
               const comp3 = getAssignedComp(quadAssignments[2], 2) || additional[0] || allComponents[2];
               return (
                 <SingleViewportCanvas
-                  analysis={
-                    comp3?.analysis || {
-                      componentType: 'spur gear',
-                      teeth: 25,
-                      module: 2.5,
-                      dimensions: { outerDiameter: 68, innerDiameter: 18, height: 22 },
-                    }
-                  }
+                  analysis={comp3?.analysis || null}
                   title={`3. ${comp3?.name || 'Gear 3'}`}
                   headerControls={renderViewportDropdown(
                     quadAssignments[2],
@@ -747,14 +745,7 @@ export function MultiViewportGrid({
 
               return (
                 <SingleViewportCanvas
-                  analysis={
-                    fallbackComp4?.analysis || {
-                      componentType: 'spur gear',
-                      teeth: 35,
-                      module: 2.5,
-                      dimensions: { outerDiameter: 92, innerDiameter: 22, height: 22 },
-                    }
-                  }
+                  analysis={fallbackComp4?.analysis || null}
                   title={`4. ${fallbackComp4?.name || 'Gear 4'}`}
                   headerControls={renderViewportDropdown(
                     quadAssignments[3],

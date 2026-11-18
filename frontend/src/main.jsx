@@ -2448,13 +2448,23 @@ function Workbench() {
     return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear;
   }, [allComponents, activeComponentId, machineryState]);
 
+  // Derive active component analysis or fallback to top-level analysis
+  const currentAnalysis = activeComp?.analysis || analysis;
+
+  // Sync analysis whenever activeComponentId changes or when the active component gets an analysis
+  useEffect(() => {
+    if (activeComp?.analysis && activeComp.analysis !== analysis) {
+      setAnalysis(activeComp.analysis);
+    }
+  }, [activeComp?.id, activeComp?.analysis]);
+
   const activeScope = viewMode === 'assembly' ? 'assembly' : machineryState?.companionGear ? 'pair' : 'single';
 
   // Build structured Engineering Context for Copilot
   const engineeringContext = useMemo(() => {
     if (!ready) return null;
     return buildEngineeringContext({
-      analysis,
+      analysis: currentAnalysis,
       manufacturingIntelligence: mfgData,
       quantity,
       features,
@@ -2462,7 +2472,7 @@ function Workbench() {
       machineryState,
       activeScope,
     });
-  }, [ready, analysis, mfgData, quantity, features, machineryState, activeScope]);
+  }, [ready, currentAnalysis, mfgData, quantity, features, machineryState, activeScope]);
 
   // Generate context-aware suggestions
   const suggestions = useMemo(() => {
@@ -2472,7 +2482,7 @@ function Workbench() {
   // Reset scenario when a new analysis is loaded
   useEffect(() => {
     setScenarioParams({});
-  }, [analysis]);
+  }, [currentAnalysis]);
 
   const send = async (e, customMsg = null) => {
     if (e) e.preventDefault();
@@ -2482,7 +2492,7 @@ function Workbench() {
     if (!customMsg) setText('');
     setThinking(true);
     try {
-      const reply = await sendChatMessage(msgToSend, engineeringContext || analysis, historyRef.current);
+      const reply = await sendChatMessage(msgToSend, engineeringContext || currentAnalysis, historyRef.current);
       setMessages(m => [...m, { role: 'ai', text: reply }]);
       historyRef.current = [...historyRef.current, { role: 'user', text: msgToSend }, { role: 'model', text: reply }];
     } catch (err) {
@@ -2498,16 +2508,16 @@ function Workbench() {
     setHoveredFeatureId(null);
   }, [analysisVersion]);
 
-  const label = analysis ? resolveLabel(analysis) : null;
-  const conf = analysis && typeof analysis.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
-  const stageIndex = analysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
+  const label = currentAnalysis ? resolveLabel(currentAnalysis) : null;
+  const conf = currentAnalysis && typeof currentAnalysis.confidence === 'number' ? Math.round(currentAnalysis.confidence * 100) : null;
+  const stageIndex = currentAnalysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
 
   // Geometry Validation
   const { isGeometryValid, geometryError } = useMemo(() => {
-    if (!analysis) return { isGeometryValid: true, geometryError: null };
-    const currentOD = scenarioParams.outerDiameter ?? analysis.dimensions?.outerDiameter;
-    const currentID = scenarioParams.innerDiameter ?? analysis.dimensions?.innerDiameter;
-    const currentTeeth = scenarioParams.teeth ?? analysis.teeth;
+    if (!currentAnalysis) return { isGeometryValid: true, geometryError: null };
+    const currentOD = scenarioParams.outerDiameter ?? currentAnalysis.dimensions?.outerDiameter;
+    const currentID = scenarioParams.innerDiameter ?? currentAnalysis.dimensions?.innerDiameter;
+    const currentTeeth = scenarioParams.teeth ?? currentAnalysis.teeth;
 
     for (const [k, v] of Object.entries(scenarioParams)) {
       if (k !== 'innerDiameter' && k !== 'helixAngle' && typeof v === 'number' && v <= 0) {
@@ -2672,9 +2682,9 @@ function Workbench() {
     }
 
     return { warnings: [...new Set(warnList)], impactStatus: status };
-  }, [analysis, scenarioParams, isGeometryValid, geometryError]);
+  }, [currentAnalysis, scenarioParams, isGeometryValid, geometryError]);
 
-  const activeReconstructionAnalysis = isGeometryValid && scenarioAnalysis ? scenarioAnalysis : analysis;
+  const activeReconstructionAnalysis = isGeometryValid && scenarioAnalysis ? scenarioAnalysis : currentAnalysis;
   const modifiedCount = Object.keys(scenarioParams).length;
 
   return (

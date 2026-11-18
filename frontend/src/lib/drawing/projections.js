@@ -29,6 +29,23 @@ export function extractBaseDimensions(analysis) {
   let depth = dims.thickness || dims.length || recipe.depth || null;
   let teeth = typeof analysis?.teeth === "number" && analysis.teeth > 0 ? Math.round(analysis.teeth) : null;
   let module = analysis?.module || null;
+  let spokes = null;
+  if (typeof analysis?.spokes === "number" && analysis.spokes >= 3) {
+    spokes = Math.round(analysis.spokes);
+  } else if (typeof recipe?.gear?.spokes === "number" && recipe.gear.spokes >= 3) {
+    spokes = Math.round(recipe.gear.spokes);
+  } else if (Array.isArray(analysis?.features)) {
+    for (const f of analysis.features) {
+      const match = String(f).match(/(\d+)\s*(?:spoke|cutout|window|pocket|arm)/i);
+      if (match && match[1]) {
+        spokes = parseInt(match[1], 10);
+        break;
+      }
+      if (/spoke|lightening\s*cutout|web\s*pocket/i.test(String(f))) {
+        spokes = 6;
+      }
+    }
+  }
 
   // Recipe overrides / refinements
   if (recipe.gear) {
@@ -36,6 +53,7 @@ export function extractBaseDimensions(analysis) {
     if (recipe.gear.module) module = recipe.gear.module;
     if (recipe.gear.faceWidth) height = recipe.gear.faceWidth;
     if (recipe.gear.boreRadius) innerDia = recipe.gear.boreRadius * 2;
+    if (recipe.gear.spokes) spokes = recipe.gear.spokes;
     if (teeth && module) {
       outerDia = (teeth * module) + (2 * module);
       width = outerDia;
@@ -71,6 +89,7 @@ export function extractBaseDimensions(analysis) {
     depth,
     teeth,
     module,
+    spokes,
   };
 }
 
@@ -185,12 +204,34 @@ function projectExtruded(recipe, dims, isRecipe) {
       front.entities.push(centerMark(hx, hy, hr * 2 + 4));
     }
   } else {
-    // Default rectangular plate or circular flange
+    // Default circular flange or plate
     front.entities.push(circle(0, 0, halfW, "visible"));
     front.entities.push(line(-halfW - 8, 0, halfW + 8, 0, "centerline"));
     front.entities.push(line(0, -halfW - 8, 0, halfW + 8, 0, "centerline"));
     if (dims.innerDia > 0) {
       front.entities.push(circle(0, 0, dims.innerDia / 2, "visible"));
+    }
+    if (holes.length > 0) {
+      for (const hole of holes) {
+        const hx = hole.cx || 0;
+        const hy = hole.cy || 0;
+        const hr = hole.radius || 4;
+        front.entities.push(circle(hx, hy, hr, "visible"));
+        front.entities.push(centerMark(hx, hy, hr * 2 + 4));
+      }
+    } else {
+      // Flange bolt pattern: dynamic count on PCD
+      const boltR = halfW * 0.76;
+      const holeR = Math.max(3, halfW * 0.11);
+      const bCount = Math.max(3, Math.min(64, Math.round(dims.boltCount || recipe?.flange?.boltCount || 4)));
+      front.entities.push(circle(0, 0, boltR, "centerline"));
+      for (let i = 0; i < bCount; i++) {
+        const a = (i / bCount) * Math.PI * 2;
+        const hx = Math.cos(a) * boltR;
+        const hy = Math.sin(a) * boltR;
+        front.entities.push(circle(hx, hy, holeR, "visible"));
+        front.entities.push(centerMark(hx, hy, holeR * 2 + 4));
+      }
     }
   }
 
@@ -251,6 +292,24 @@ function projectGear(recipe, dims) {
     front.entities.push(line(x1, y1, x2, y2, "visible"));
   }
 
+  // Spoke cutouts / windows if spoked
+  const spokes = dims.spokes || g.spokes || null;
+  if (spokes && spokes >= 3) {
+    const N = Math.min(24, Math.max(3, spokes));
+    const rimIn = (rootDia * 0.88) / 2;
+    const hubOut = halfHub * 1.15;
+    for (let i = 0; i < N; i++) {
+      const centerA = (i / N) * Math.PI * 2;
+      const halfSpan = (Math.PI / N) * 0.62;
+      const a1 = centerA - halfSpan;
+      const a2 = centerA + halfSpan;
+      front.entities.push(line(Math.cos(a1) * hubOut, Math.sin(a1) * hubOut, Math.cos(a1) * rimIn, Math.sin(a1) * rimIn, "visible"));
+      front.entities.push(line(Math.cos(a2) * hubOut, Math.sin(a2) * hubOut, Math.cos(a2) * rimIn, Math.sin(a2) * rimIn, "visible"));
+      front.entities.push(arc(0, 0, hubOut, a1, a2, "visible"));
+      front.entities.push(arc(0, 0, rimIn, a1, a2, "visible"));
+    }
+  }
+
   // Side View: Gear section with face width and hub
   const totalW = faceWidth + hubExt * 2;
   // Rim / teeth body
@@ -293,14 +352,16 @@ export function buildDrawingModel({
   const style = recipe?.style || "fallback";
   const dims = extractBaseDimensions(analysis);
   const compType = String(analysis?.componentType || "Component").trim();
-  const isRecipeBacked = Boolean(recipe && (recipe.style || recipe.revolvedProfile || recipe.outline || recipe.gear));
+  const isRecipeBacked = Boolean(recipe && (recipe.style || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange));
 
   let views;
-  if (style === "revolved" || compType.toLowerCase().includes("shaft") || compType.toLowerCase().includes("cylinder")) {
+  if (style === "flange" || compType.toLowerCase().includes("flange")) {
+    views = projectExtruded(recipe, dims, isRecipeBacked);
+  } else if (style === "revolved" || compType.toLowerCase().includes("shaft") || compType.toLowerCase().includes("cylinder")) {
     views = projectRevolved(recipe, dims, isRecipeBacked);
   } else if (style === "gear" || compType.toLowerCase().includes("gear")) {
     views = projectGear(recipe, dims);
-  } else if (style === "extruded" || compType.toLowerCase().includes("flange") || compType.toLowerCase().includes("bracket")) {
+  } else if (style === "extruded" || compType.toLowerCase().includes("bracket")) {
     views = projectExtruded(recipe, dims, isRecipeBacked);
   } else {
     // Default parametric bounding projection

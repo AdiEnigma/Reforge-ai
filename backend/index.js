@@ -8,6 +8,11 @@ import { computeMaterialAlternatives } from "./material-comparison.js";
 import { simulateEngineeringChange, analyzeDimensionSensitivity } from "./engineering-analysis.js";
 import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from './vision-adapter.js';
 import { isReconstructionEnabled, callReconstructionService } from './reconstruction-adapter.js';
+import {
+  resolveGeometryFromVision,
+  reconcileGeminiWithVision,
+  fallbackDeterministicAnalysis,
+} from "./src/vision-geometry-resolver.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
@@ -86,10 +91,12 @@ app.post("/api/analyze-component", async (req, res) => {
 
     // Optional vision preprocessing — fail-open by default (null if disabled/offline/error)
     let visionEvidence = null;
+    let rawVisionResult = null;
     if (isVisionEnabled()) {
       try {
         const visionResult = await callVisionService(images, reference);
         if (visionResult) {
+          rawVisionResult = visionResult;
           visionEvidence = buildVisionEvidenceSummary(visionResult);
         }
       } catch (visionError) {
@@ -98,10 +105,37 @@ app.post("/api/analyze-component", async (req, res) => {
       }
     }
 
-    const analysis = await analyzeComponent({ images, reference, visionEvidence });
+    let analysis = null;
+    let solverMode = null;
+
+    // 1. Deterministic Computer Vision & Geometry Solver
+    // If local vision (SAM 2, OpenCV, Depth Anything V2) and reference can resolve the component directly:
+    const visionResolution = resolveGeometryFromVision(rawVisionResult, reference);
+    if (visionResolution.canResolveWithoutGemini && visionResolution.confidence >= 0.80) {
+      analysis = visionResolution.analysis;
+      solverMode = "deterministic_cv";
+    }
+
+    // 2. If vision alone is ambiguous or incomplete, use Gemini as assist
+    if (!analysis) {
+      try {
+        const geminiRaw = await analyzeComponent({ images, reference, visionEvidence });
+        // Reconcile Gemini's high-level semantic proposal with exact physical measurements & vision
+        analysis = reconcileGeminiWithVision(geminiRaw, rawVisionResult, reference);
+        solverMode = "gemini_assisted";
+      } catch (geminiError) {
+        console.warn('[analyze-component] Gemini assist failed or unavailable (falling back to deterministic solver):', geminiError?.message);
+        // 3. Guaranteed zero-crash fallback: synthesized engineering geometry adhering to ISO standards
+        analysis = fallbackDeterministicAnalysis(reference, geminiError?.message || 'Gemini assist offline');
+        solverMode = "deterministic_fallback";
+      }
+    }
 
     // Build response — visionDiagnostics is additive and optional
-    const responseBody = { analysis };
+    const responseBody = {
+      analysis,
+      solverMode,
+    };
     if (visionEvidence) {
       responseBody.visionDiagnostics = {
         status: visionEvidence.status,

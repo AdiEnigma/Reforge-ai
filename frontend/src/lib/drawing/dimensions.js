@@ -11,7 +11,7 @@ import { formatDim } from "./projections.js";
  * Generate automatic dimensions for each orthographic view.
  */
 export function generateDimensions(views, dims, recipe, analysis) {
-  const isRecipe = Boolean(recipe && (recipe.style || recipe.revolvedProfile || recipe.outline || recipe.gear));
+  const isRecipe = Boolean(recipe && (recipe.style || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange));
   const compType = String(analysis?.componentType || "").toLowerCase();
 
   const od = dims.outerDia;
@@ -139,6 +139,8 @@ export function generateDimensions(views, dims, recipe, analysis) {
         );
       }
     } else if (compType.includes("flange")) {
+      const bCount = analysis?.boltCount || recipe?.flange?.boltCount || dims?.boltCount || 4;
+      const bDia = recipe?.flange?.boltHoleDiameter || Math.round(halfW * 0.11 * 2);
       views.top.dimensions.push(
         dimension({
           id: "dim-top-flange-holes",
@@ -147,10 +149,10 @@ export function generateDimensions(views, dims, recipe, analysis) {
           y1: 0,
           x2: halfW * 0.78 + 25,
           y2: -20,
-          value: 8,
-          label: `6X Ø8 THRU EQ SP`,
+          value: bDia,
+          label: `${bCount}X Ø${formatDim(bDia)} THRU EQ SP`,
           source: "analysis",
-          confidence: 0.85,
+          confidence: 0.95,
           orientation: "radial",
         })
       );

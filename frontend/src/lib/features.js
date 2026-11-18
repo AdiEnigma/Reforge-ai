@@ -84,7 +84,7 @@ const SYNONYM_MAP = [
   { match: ["central bore", "central hole", "center hole", "centre hole", "bore", "through hole", "inner bore", "inner hole", "inner diameter", "center bore"], type: "bore" },
   { match: ["mounting hole", "mounting holes", "bolt hole", "bolt holes", "mount hole", "mount holes", "fastener hole", "fastener holes", "screw hole", "screw holes", "drilled holes", "perimeter holes"], type: "mounting_hole" },
   { match: ["keyway", "key way", "key seat", "key slot", "drive key"], type: "keyway" },
-  { match: ["gear teeth", "teeth", "tooth profile", "spur teeth", "helical teeth", "cog teeth", "splines", "pinion teeth"], type: "gear_teeth" },
+  { match: ["gear teeth", "teeth", "tooth profile", "spur teeth", "helical teeth", "cog teeth", "splines", "pinion teeth", "bevel teeth", "conical teeth"], type: "gear_teeth" },
   { match: ["shoulder", "step", "stepped diameter", "shaft shoulder", "collar step"], type: "shoulder" },
   { match: ["flange", "base flange", "mounting flange", "collar flange", "rim flange"], type: "flange" },
   { match: ["shaft", "spindle", "cylindrical body", "pin", "axle", "stem"], type: "shaft" },
@@ -116,7 +116,7 @@ export function matchFeatureType(rawText) {
  */
 export function extractCountFromString(rawText) {
   if (!rawText || typeof rawText !== "string") return null;
-  const match = rawText.match(/(\d+)\s*(?:bolt|mounting|mount|fastener|screw|drilled)?\s*holes?/i);
+  const match = rawText.match(/(\d+)\s*(?:bolt|mounting|mount|fastener|screw|drilled|\s)*holes?/i);
   if (match && match[1]) {
     const count = parseInt(match[1], 10);
     if (!isNaN(count) && count > 0) return count;
@@ -212,10 +212,15 @@ export function normalizeFeatures(analysis) {
     const mod = recipe.gear?.module || analysis.module || null;
     const helixAngle = recipe.gear?.helixAngle || analysis.helixAngle || null;
 
+    const isBevel = compType.includes("bevel") || recipe.gear?.gearType === "bevel";
+    const teethLabel = teethCount
+      ? (isBevel ? `${teethCount} Conical Bevel Teeth` : `${teethCount} Gear Teeth`)
+      : (isBevel ? "Conical Bevel Teeth" : "Gear Teeth");
+
     addOrMergeFeature({
       id: "feature-gear-teeth-1",
       type: "gear_teeth",
-      label: teethCount ? `${teethCount} Gear Teeth` : "Gear Teeth",
+      label: teethLabel,
       description: FEATURE_DESCRIPTIONS.gear_teeth,
       source: "recipe",
       confidence: 1.0,
@@ -298,17 +303,17 @@ export function normalizeFeatures(analysis) {
       },
     });
   } else if (compType.includes("flange")) {
-    // Parametric flange has 6 mounting holes by default
+    const fCount = analysis?.boltCount || recipe?.flange?.boltCount || 4;
     addOrMergeFeature({
       id: "feature-mounting-holes-1",
       type: "mounting_hole",
-      label: "6 Mounting Holes",
+      label: `${fCount} Mounting Holes`,
       description: FEATURE_DESCRIPTIONS.mounting_hole,
       source: "derived",
       confidence: 0.9,
       geometryRef: "feature-mounting-holes-1",
       metadata: {
-        count: 6,
+        count: fCount,
       },
     });
   }

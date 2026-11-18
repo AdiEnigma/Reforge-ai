@@ -13,6 +13,7 @@
  */
 
 import React, { useState, useRef } from 'react';
+import { analyzeComponent } from '../lib/api.js';
 import {
   ROLE_TYPES,
   IMAGE_PURPOSES,
@@ -52,6 +53,7 @@ export function ManageComponentsTab({
   const [expandedImageId, setExpandedImageId] = useState(null); // imageId for note editing
   const [actionMenuOpenId, setActionMenuOpenId] = useState(null);
   const [dragOverSector, setDragOverSector] = useState(null); // 'primary' | 'companion' | 'gear-id' | 'assembly' | 'env'
+  const [analyzingCompIds, setAnalyzingCompIds] = useState(new Set());
 
   // Global File Input Reference
   const fileInputRef = useRef(null);
@@ -62,6 +64,39 @@ export function ManageComponentsTab({
   const additional = machineryState?.additionalComponents || [];
   const assemblyCtx = machineryState?.assemblyContext;
   const envCtx = machineryState?.environmentContext;
+
+  const triggerAutoAnalysis = async (targetId, files) => {
+    if (!files || !files.length || !targetId) return;
+    onSelectComponent?.(targetId);
+    setAnalyzingCompIds((prev) => new Set([...prev, targetId]));
+    try {
+      const payloadImages = Array.from(files).map((f) => ({ file: f, id: Math.random().toString() }));
+      const result = await analyzeComponent(payloadImages, {});
+      if (result) {
+        setMachineryState((prevState) => {
+          let next = { ...prevState };
+          if (prevState.primaryGear?.id === targetId) {
+            next.primaryGear = { ...prevState.primaryGear, analysis: result, isEstimated: false };
+          } else if (prevState.companionGear?.id === targetId) {
+            next.companionGear = { ...prevState.companionGear, analysis: result, isEstimated: false };
+          } else {
+            next.additionalComponents = (prevState.additionalComponents || []).map((c) =>
+              c.id === targetId ? { ...c, analysis: result, isEstimated: false } : c
+            );
+          }
+          return next;
+        });
+      }
+    } catch (err) {
+      console.warn('Auto-analysis encountered an issue:', err);
+    } finally {
+      setAnalyzingCompIds((prev) => {
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
+    }
+  };
 
   // Trigger File Dialogs for each sector
   const triggerAddImages = (targetId) => {
@@ -102,20 +137,29 @@ export function ManageComponentsTab({
     if (!files || !files.length || !uploadModeRef.current) return;
     const mode = uploadModeRef.current;
 
+    let targetCompId = mode.targetId;
     setMachineryState((prevState) => {
+      let nextState = prevState;
       if (mode.type === 'add_images') {
-        return addImagesToComponent(prevState, mode.targetId, files);
+        nextState = addImagesToComponent(prevState, mode.targetId, files);
       } else if (mode.type === 'replace_image') {
-        return replaceComponentImage(prevState, mode.targetId, mode.imageId, files[0]);
+        nextState = replaceComponentImage(prevState, mode.targetId, mode.imageId, files[0]);
       } else if (mode.type === 'add_companion') {
-        return addCompanionFromImages(prevState, files, 'Companion Gear');
+        nextState = addCompanionFromImages(prevState, files, 'Companion Gear');
+        targetCompId = nextState.companionGear?.id || 'comp-companion-gear';
       } else if (mode.type === 'add_gear') {
-        return addGearFromImages(prevState, files);
+        nextState = addGearFromImages(prevState, files);
+        const last = nextState.additionalComponents[nextState.additionalComponents.length - 1];
+        targetCompId = last?.id || targetCompId;
       }
-      return prevState;
+      return nextState;
     });
 
     e.target.value = '';
+
+    if (targetCompId && !targetCompId.includes('context') && !targetCompId.includes('surroundings')) {
+      triggerAutoAnalysis(targetCompId, files);
+    }
   };
 
   // Handle Drag and Drop on any card/sector
@@ -138,16 +182,25 @@ export function ManageComponentsTab({
     const files = e.dataTransfer.files;
     if (!files || !files.length) return;
 
+    let targetCompId = targetId;
     setMachineryState((prevState) => {
+      let nextState = prevState;
       if (modeType === 'add_images') {
-        return addImagesToComponent(prevState, targetId, files);
+        nextState = addImagesToComponent(prevState, targetId, files);
       } else if (modeType === 'add_companion') {
-        return addCompanionFromImages(prevState, files, 'Companion Gear');
+        nextState = addCompanionFromImages(prevState, files, 'Companion Gear');
+        targetCompId = nextState.companionGear?.id || 'comp-companion-gear';
       } else if (modeType === 'add_gear') {
-        return addGearFromImages(prevState, files);
+        nextState = addGearFromImages(prevState, files);
+        const last = nextState.additionalComponents[nextState.additionalComponents.length - 1];
+        targetCompId = last?.id || targetCompId;
       }
-      return prevState;
+      return nextState;
     });
+
+    if (targetCompId && !targetCompId.includes('context') && !targetCompId.includes('surroundings')) {
+      triggerAutoAnalysis(targetCompId, files);
+    }
   };
 
   const handleRemoveImage = (componentId, imageId) => {
@@ -239,7 +292,12 @@ export function ManageComponentsTab({
         {/* 1. PRIMARY GEAR                                                           */}
         {/* ========================================================================= */}
         <section
-          className={`comp-mgr-card primary-card ${dragOverSector === 'primary' ? 'drag-over' : ''}`}
+          className={`comp-mgr-card primary-card ${activeComponentId === (primary?.id || 'comp-primary-gear') ? 'active-viewing' : ''} ${dragOverSector === 'primary' ? 'drag-over' : ''}`}
+          onClick={(e) => {
+            if (!e.target.closest('button, input, select')) {
+              onSelectComponent?.(primary?.id || 'comp-primary-gear');
+            }
+          }}
           onDragOver={(e) => handleDragOver(e, 'primary')}
           onDragLeave={(e) => handleDragLeave(e, 'primary')}
           onDrop={(e) => handleDropFiles(e, primary?.id || 'comp-primary-gear', 'add_images')}
@@ -256,6 +314,12 @@ export function ManageComponentsTab({
                 >
                   <Icon>edit</Icon>
                 </button>
+                {activeComponentId === (primary?.id || 'comp-primary-gear') && (
+                  <span className="active-view-badge">● IN 3D VIEW</span>
+                )}
+                {analyzingCompIds.has(primary?.id || 'comp-primary-gear') && (
+                  <span className="analyzing-view-badge"><Icon className="spin">sync</Icon> ANALYZING…</span>
+                )}
               </div>
             </div>
             <span className="comp-count-pill">
@@ -310,7 +374,12 @@ export function ManageComponentsTab({
         {/* 2. COMPANION GEAR                                                         */}
         {/* ========================================================================= */}
         <section
-          className={`comp-mgr-card companion-card ${dragOverSector === 'companion' ? 'drag-over' : ''}`}
+          className={`comp-mgr-card companion-card ${companion && activeComponentId === companion.id ? 'active-viewing' : ''} ${dragOverSector === 'companion' ? 'drag-over' : ''}`}
+          onClick={(e) => {
+            if (companion && !e.target.closest('button, input, select')) {
+              onSelectComponent?.(companion.id);
+            }
+          }}
           onDragOver={(e) => handleDragOver(e, 'companion')}
           onDragLeave={(e) => handleDragLeave(e, 'companion')}
           onDrop={(e) => handleDropFiles(e, companion?.id || 'comp-companion-gear', companion ? 'add_images' : 'add_companion')}
@@ -328,6 +397,12 @@ export function ManageComponentsTab({
                   >
                     <Icon>edit</Icon>
                   </button>
+                  {activeComponentId === companion.id && (
+                    <span className="active-view-badge">● IN 3D VIEW</span>
+                  )}
+                  {analyzingCompIds.has(companion.id) && (
+                    <span className="analyzing-view-badge"><Icon className="spin">sync</Icon> ANALYZING…</span>
+                  )}
                 </div>
               ) : (
                 <h3>No Companion Gear</h3>
@@ -430,7 +505,12 @@ export function ManageComponentsTab({
             {additional.map((gear) => (
               <div
                 key={gear.id}
-                className={`additional-gear-block ${dragOverSector === gear.id ? 'drag-over' : ''}`}
+                className={`additional-gear-block ${activeComponentId === gear.id ? 'active-viewing' : ''} ${dragOverSector === gear.id ? 'drag-over' : ''}`}
+                onClick={(e) => {
+                  if (!e.target.closest('button, input, select')) {
+                    onSelectComponent?.(gear.id);
+                  }
+                }}
                 onDragOver={(e) => handleDragOver(e, gear.id)}
                 onDragLeave={(e) => handleDragLeave(e, gear.id)}
                 onDrop={(e) => handleDropFiles(e, gear.id, 'add_images')}
@@ -446,6 +526,12 @@ export function ManageComponentsTab({
                     >
                       <Icon>edit</Icon>
                     </button>
+                    {activeComponentId === gear.id && (
+                      <span className="active-view-badge">● IN 3D VIEW</span>
+                    )}
+                    {analyzingCompIds.has(gear.id) && (
+                      <span className="analyzing-view-badge"><Icon className="spin">sync</Icon> ANALYZING…</span>
+                    )}
                   </div>
 
                   <div className="comp-menu-wrap">

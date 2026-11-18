@@ -1,9 +1,13 @@
 import * as THREE from "three";
 import { executeRecipe, sanitizeRecipe } from "./recipe.js";
-import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape } from "./geo.js";
+import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup } from "./geo.js";
 
 export const COMPONENT_LABELS = {
+  "bevel gear": "BEVEL GEAR",
+  "stepped shaft": "STEPPED SHAFT",
   "spur gear": "SPUR GEAR",
+  "helical gear": "HELICAL GEAR",
+  "worm gear": "WORM GEAR",
   "cylinder/shaft": "CYLINDER / SHAFT",
   flange: "FLANGE",
   bearing: "BEARING",
@@ -13,6 +17,43 @@ export const COMPONENT_LABELS = {
 
 export function resolveComponentType(analysis) {
   const raw = String(analysis?.componentType || "other").toLowerCase();
+  const featuresStr = Array.isArray(analysis?.features) ? analysis.features.map(f => String(f).toLowerCase()).join(" ") : "";
+  const gearType = String(analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType || "").toLowerCase();
+
+  // 1. Detect Bevel Gear
+  if (
+    raw.includes("bevel") ||
+    raw.includes("miter") ||
+    raw.includes("conical") ||
+    gearType === "bevel" ||
+    featuresStr.includes("bevel") ||
+    featuresStr.includes("miter") ||
+    featuresStr.includes("conical")
+  ) {
+    return "bevel gear";
+  }
+
+  // 2. Detect Stepped Shaft / Spindle
+  if (
+    raw.includes("step") ||
+    raw.includes("spindle") ||
+    (raw.includes("shaft") && !raw.includes("crank")) ||
+    featuresStr.includes("step") ||
+    featuresStr.includes("spline") ||
+    featuresStr.includes("journal") ||
+    (analysis?.geometryRecipe?.style === "revolved" && Array.isArray(analysis?.geometryRecipe?.revolvedProfile) && analysis.geometryRecipe.revolvedProfile.length >= 4)
+  ) {
+    return "stepped shaft";
+  }
+
+  // 3. Detect Helical / Worm Gear
+  if (raw.includes("helical") || gearType === "helical" || (typeof analysis?.helixAngle === "number" && analysis.helixAngle > 0)) {
+    return "helical gear";
+  }
+  if (raw.includes("worm") || gearType === "worm") {
+    return "worm gear";
+  }
+
   const ordered = Object.keys(COMPONENT_LABELS).sort((a, b) => b.length - a.length);
   for (const key of ordered) {
     if (raw.includes(key)) return key;
@@ -40,10 +81,50 @@ export function computeParams(analysis) {
   const maxDim = Math.max(1, ...values.filter((v) => typeof v === "number" && isFinite(v) && v > 0));
   const scale = 6 / maxDim;
   const s = (v) => (typeof v === "number" && isFinite(v) && v > 0 ? v * scale : null);
+
+  let boltCount = null;
+  if (typeof analysis?.boltCount === "number" && analysis.boltCount >= 3) {
+    boltCount = Math.round(analysis.boltCount);
+  } else if (analysis?.geometryRecipe?.flange?.boltCount) {
+    boltCount = Math.round(analysis.geometryRecipe.flange.boltCount);
+  } else if (Array.isArray(analysis?.features)) {
+    for (const f of analysis.features) {
+      const match = String(f).match(/(\d+)\s*(?:bolt|mounting|mount|fastener|screw|drilled|\s)*holes?/i);
+      if (match && match[1]) {
+        boltCount = parseInt(match[1], 10);
+        break;
+      }
+    }
+  }
+
+  let spokeCount = null;
+  if (typeof analysis?.spokes === "number" && analysis.spokes >= 3) {
+    spokeCount = Math.round(analysis.spokes);
+  } else if (typeof analysis?.spokeCount === "number" && analysis.spokeCount >= 3) {
+    spokeCount = Math.round(analysis.spokeCount);
+  } else if (typeof analysis?.geometryRecipe?.gear?.spokes === "number") {
+    spokeCount = Math.round(analysis.geometryRecipe.gear.spokes);
+  } else if (Array.isArray(analysis?.features)) {
+    for (const f of analysis.features) {
+      const match = String(f).match(/(\d+)\s*(?:spoke|cutout|window|pocket|arm)/i);
+      if (match && match[1]) {
+        spokeCount = parseInt(match[1], 10);
+        break;
+      }
+      if (/spoke|lightening\s*cutout|web\s*pocket/i.test(String(f))) {
+        spokeCount = 6;
+      }
+    }
+  }
+
   return {
     type: resolveComponentType(analysis),
     scale,
     teeth: typeof analysis?.teeth === "number" && analysis.teeth > 0 ? Math.max(6, Math.round(analysis.teeth)) : null,
+    boltCount: boltCount || 4,
+    spokes: spokeCount,
+    coneAngle: typeof analysis?.coneAngle === "number" ? analysis.coneAngle : (analysis?.geometryRecipe?.gear?.coneAngle || 45),
+    gearType: analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType || null,
     outerDiameter: s(dims.outerDiameter),
     innerDiameter: s(dims.innerDiameter),
     height: s(dims.height),
@@ -60,22 +141,45 @@ function buildSpurGear(p) {
   const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.35;
   const height = p.height || p.thickness || outerR * 0.45;
   const toothHeight = outerR * 0.08;
-  const geo = extrude(gearShape(teeth, outerR, toothHeight, boreR), height);
+  const hubR = boreR * 1.65;
+  const hubH = height * 0.28;
+  const rimInnerR = outerR * 0.72;
+
+  const cutouts = [];
+  const spokes = p.spokes || (p.spokeCount ? p.spokeCount : null);
+  if (spokes && spokes >= 3) {
+    const N = Math.min(24, Math.max(3, spokes));
+    for (let i = 0; i < N; i++) {
+      const centerA = (i / N) * Math.PI * 2;
+      const halfSpan = (Math.PI / N) * 0.62;
+      const a1 = centerA - halfSpan;
+      const a2 = centerA + halfSpan;
+      const rIn = hubR * 1.12;
+      const rOut = rimInnerR * 0.95;
+
+      const path = new THREE.Path();
+      path.absarc(0, 0, rIn, a1, a2, false);
+      path.absarc(0, 0, rOut, a2, a1, true);
+      path.closePath();
+      cutouts.push(path);
+    }
+  }
+
+  const geo = extrude(gearShape(teeth, outerR, toothHeight, boreR, cutouts), height);
   geo.center();
   const mesh = new THREE.Mesh(geo, matBody);
   mesh.userData = { featureId: "feature-gear-teeth-1", featureType: "gear_teeth" };
   group.add(mesh);
-  const hubR = boreR * 1.7;
-  const hubH = height * 0.24;
+
   for (const z of [1, -1]) {
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(hubR, hubR, hubH, 32), matAccent);
     hub.rotation.x = Math.PI / 2;
-    hub.position.z = z * (height / 2 - hubH / 2);
+    hub.position.z = z * (height / 2 + hubH / 2);
     hub.userData = { featureId: "feature-boss-1", featureType: "boss" };
     group.add(hub);
   }
   if (boreR > 0) {
-    const boreHighlight = new THREE.Mesh(new THREE.CylinderGeometry(boreR * 0.99, boreR * 0.99, height * 1.05, 32), matHighlight);
+    const boreHighlight = new THREE.Mesh(new THREE.CylinderGeometry(boreR * 0.99, boreR * 0.99, (height + hubH * 2) * 1.05, 32), matHighlight);
     boreHighlight.rotation.x = Math.PI / 2;
     boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
     boreHighlight.visible = false;
@@ -125,9 +229,9 @@ function buildFlange(p) {
   const bossR = outerR * 0.62;
   const bossH = p.height ? Math.max(p.height - flangeT, flangeT * 0.4) : outerR * 0.4;
   const boltHoles = [];
-  const boltCount = 6;
+  const boltCount = Math.max(3, Math.min(64, Math.round(p.boltCount || 4)));
   const boltR = outerR * 0.78;
-  const holeR = outerR * 0.14;
+  const holeR = outerR * 0.12;
   for (let i = 0; i < boltCount; i++) {
     const a = (i / boltCount) * Math.PI * 2;
     const hole = new THREE.Path();
@@ -267,12 +371,83 @@ export function buildModel(analysis) {
     recipe.primitives.length === 1 &&
     recipe.primitives[0].kind === "box";
 
-  if (recipe && !isTrivialBoxFallback) {
+  // Detect if component is Bevel Gear
+  const isBevel =
+    p.type === "bevel gear" ||
+    String(analysis?.componentType || "").toLowerCase().includes("bevel") ||
+    recipe?.gear?.gearType === "bevel" ||
+    (recipe?.gear?.coneAngle && recipe.gear.coneAngle > 0);
+
+  // Detect if component is Stepped Shaft / Spindle
+  const isSteppedShaft =
+    p.type === "stepped shaft" ||
+    String(analysis?.componentType || "").toLowerCase().includes("step") ||
+    String(analysis?.componentType || "").toLowerCase().includes("spindle") ||
+    (recipe?.style === "revolved" && Array.isArray(recipe?.revolvedProfile) && recipe.revolvedProfile.length >= 4);
+
+  // Check if component is a flange (either by type or features containing flange/bolt holes)
+  const isFlange =
+    p.type === "flange" ||
+    String(analysis?.componentType || "").toLowerCase().includes("flange") ||
+    (Array.isArray(analysis?.features) && analysis.features.some((f) => /bolt\s*hole|mounting\s*hole|flange/i.test(String(f))));
+
+  // If component is a flange, but the recipe is 'revolved' (which CANNOT display off-axis bolt holes)
+  // or has no bolt holes in recipe, render the true flange geometry with bolt holes!
+  const flangeLacksHoles =
+    isFlange &&
+    (!recipe ||
+      recipe.style === "revolved" ||
+      (!recipe.flange && (!recipe.holes || recipe.holes.length <= 1)));
+
+  if (isBevel) {
+    const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.8;
+    const faceW = p.height || p.thickness || outerR * 0.45;
+    const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.30;
+    body = buildBevelGearGroup({
+      teeth: p.teeth || 20,
+      outerRadius: outerR,
+      faceWidth: faceW,
+      coneAngleDeg: p.coneAngle || 45,
+      boreRadius: boreR,
+    });
+    label = COMPONENT_LABELS["bevel gear"];
+  } else if (isSteppedShaft) {
+    const outerR = p.outerDiameter ? p.outerDiameter / 2 : 1.8;
+    const length = p.length || p.height || outerR * 4.0;
+    const boreR = p.innerDiameter ? p.innerDiameter / 2 : 0;
+    body = buildSteppedShaftGroup({
+      outerRadius: outerR,
+      length,
+      innerRadius: boreR,
+      profile: recipe?.revolvedProfile || null,
+    });
+    label = COMPONENT_LABELS["stepped shaft"];
+  } else if (flangeLacksHoles) {
+    body = buildFlange(p);
+    label = COMPONENT_LABELS.flange;
+  } else if (recipe && !isTrivialBoxFallback) {
     body = executeRecipe(recipe);
     label = String(analysis?.componentType || "other").trim().toUpperCase() || COMPONENT_LABELS.other;
   } else {
     switch (p.type) {
+      case "bevel gear":
+        body = buildBevelGearGroup({
+          teeth: p.teeth || 20,
+          outerRadius: (p.outerDiameter || 5.6) / 2,
+          faceWidth: p.height || p.thickness || 1.2,
+          coneAngleDeg: p.coneAngle || 45,
+          boreRadius: p.innerDiameter ? p.innerDiameter / 2 : 0.8,
+        });
+        break;
+      case "stepped shaft":
+        body = buildSteppedShaftGroup({
+          outerRadius: (p.outerDiameter || 3.6) / 2,
+          length: p.length || p.height || 6.5,
+          innerRadius: p.innerDiameter ? p.innerDiameter / 2 : 0,
+        });
+        break;
       case "spur gear":
+      case "helical gear":
         body = buildSpurGear(p);
         break;
       case "cylinder/shaft":
@@ -290,12 +465,27 @@ export function buildModel(analysis) {
       default:
         body = buildGeneric(p);
     }
-    label = COMPONENT_LABELS[p.type];
+    label = COMPONENT_LABELS[p.type] || COMPONENT_LABELS.other;
   }
   body.traverse((obj) => {
     if (obj.isMesh) obj.castShadow = true;
   });
   group.add(body);
+
+  // Universal Bounding Box Normalization & Origin Centering
+  // Guarantees all components (regardless of source or raw dimension units)
+  // fit cleanly inside the 3D viewport without camera clipping or runaway dimensions
+  const bbox = new THREE.Box3().setFromObject(group);
+  const bSize = bbox.getSize(new THREE.Vector3());
+  const maxExtent = Math.max(bSize.x, bSize.y, bSize.z, 0.001);
+  if (maxExtent > 6.5 || maxExtent < 2.0) {
+    const fitScale = 5.5 / maxExtent;
+    group.scale.setScalar(fitScale);
+  }
+  const updatedBbox = new THREE.Box3().setFromObject(group);
+  const updatedCenter = updatedBbox.getCenter(new THREE.Vector3());
+  group.position.sub(updatedCenter);
+
   return { group, params: p, label };
 }
 

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { extrude, gearShape, matAccent, matBody, matHighlight } from "./geo.js";
+import { extrude, gearShape, matAccent, matBody, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup } from "./geo.js";
 
 const RECIPE_LIMITS = {
   maxProfilePoints: 200,
@@ -8,7 +8,7 @@ const RECIPE_LIMITS = {
   maxPrimitives: 30,
   maxDimensionRatio: 1000,
 };
-const STYLES = ["revolved", "extruded", "gear", "combination"];
+const STYLES = ["revolved", "extruded", "gear", "flange", "combination"];
 const PRIMITIVE_KINDS = ["box", "cylinder", "sphere", "cone", "torus"];
 
 function num(value) {
@@ -65,12 +65,31 @@ export function sanitizeRecipe(analysis) {
   const gear = {
     teeth: num(g.teeth),
     module: num(g.module),
+    gearType: typeof g.gearType === "string" ? g.gearType : null,
+    coneAngle: num(g.coneAngle),
     pressureAngle: num(g.pressureAngle),
     helixAngle: num(g.helixAngle),
     faceWidth: num(g.faceWidth),
     boreRadius: num(g.boreRadius),
+    hubDiameter: num(g.hubDiameter),
+    hubLength: num(g.hubLength),
+    spokes: num(g.spokes),
   };
   if (Object.values(gear).some((v) => v != null)) recipe.gear = gear;
+
+  const f = raw.flange && typeof raw.flange === "object" ? raw.flange : {};
+  const flange = {
+    outerDiameter: num(f.outerDiameter),
+    innerDiameter: num(f.innerDiameter),
+    thickness: num(f.thickness),
+    height: num(f.height),
+    boltCount: num(f.boltCount),
+    boltCircleDiameter: num(f.boltCircleDiameter),
+    boltHoleDiameter: num(f.boltHoleDiameter),
+    bossDiameter: num(f.bossDiameter),
+    bossHeight: num(f.bossHeight),
+  };
+  if (Object.values(flange).some((v) => v != null)) recipe.flange = flange;
 
   const primitives = Array.isArray(raw.primitives) ? raw.primitives.slice(0, RECIPE_LIMITS.maxPrimitives) : [];
   const cleanPrimitives = [];
@@ -94,7 +113,8 @@ export function sanitizeRecipe(analysis) {
   if (cleanPrimitives.length) recipe.primitives = cleanPrimitives;
 
   if (!recipe.style) {
-    if (recipe.gear) recipe.style = "gear";
+    if (recipe.flange) recipe.style = "flange";
+    else if (recipe.gear) recipe.style = "gear";
     else if (recipe.revolvedProfile) recipe.style = "revolved";
     else if (recipe.outline) recipe.style = "extruded";
     else if (recipe.primitives) recipe.style = "combination";
@@ -144,7 +164,7 @@ export function sanitizeRecipe(analysis) {
   }
 
   if (!recipe.style) return null;
-  if (!(recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.primitives)) return null;
+  if (!(recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange || recipe.primitives)) return null;
   return recipe;
 }
 
@@ -236,9 +256,44 @@ function buildGearFromRecipe(gear) {
   }
   const height = faceWidth || outerR * 0.45;
   const bore = boreRadius || outerR * 0.35;
+  const spokes = gear.spokes && gear.spokes >= 3 ? Math.round(gear.spokes) : null;
+  const hubR = bore * 1.65;
+  const hubH = height * 0.28;
+  const rimInnerR = outerR * 0.72;
+
+  if (gear.gearType === "bevel" || gear.coneAngle) {
+    return buildBevelGearGroup({
+      teeth,
+      outerRadius: outerR,
+      faceWidth: height,
+      coneAngleDeg: gear.coneAngle || 45,
+      boreRadius: bore,
+      hubRadius: gear.hubDiameter ? gear.hubDiameter / 2 : hubR,
+      hubHeight: gear.hubLength || hubH,
+    });
+  }
+
+  const cutouts = [];
+  if (spokes && spokes >= 3) {
+    const N = Math.min(24, Math.max(3, spokes));
+    for (let i = 0; i < N; i++) {
+      const centerA = (i / N) * Math.PI * 2;
+      const halfSpan = (Math.PI / N) * 0.62;
+      const a1 = centerA - halfSpan;
+      const a2 = centerA + halfSpan;
+      const rIn = hubR * 1.12;
+      const rOut = rimInnerR * 0.95;
+
+      const path = new THREE.Path();
+      path.absarc(0, 0, rIn, a1, a2, false);
+      path.absarc(0, 0, rOut, a2, a1, true);
+      path.closePath();
+      cutouts.push(path);
+    }
+  }
 
   const group = new THREE.Group();
-  const shape = gearShape(teeth, outerR, toothHeight, bore);
+  const shape = gearShape(teeth, outerR, toothHeight, bore, cutouts);
 
   if (!helixAngle) {
     const geo = extrude(shape, height);
@@ -262,18 +317,16 @@ function buildGearFromRecipe(gear) {
     }
   }
 
-  const hubR = bore * 1.7;
-  const hubH = height * 0.24;
   for (const z of [1, -1]) {
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(hubR, hubR, hubH, 32), matAccent);
     hub.rotation.x = Math.PI / 2;
-    hub.position.z = z * (height / 2 - hubH / 2);
+    hub.position.z = z * (height / 2 + hubH / 2);
     hub.userData = { featureId: "feature-boss-1", featureType: "boss" };
     group.add(hub);
   }
 
   if (bore > 0) {
-    const boreHighlight = new THREE.Mesh(new THREE.CylinderGeometry(bore * 0.99, bore * 0.99, height * 1.05, 32), matHighlight);
+    const boreHighlight = new THREE.Mesh(new THREE.CylinderGeometry(bore * 0.99, bore * 0.99, (height + hubH * 2) * 1.05, 32), matHighlight);
     boreHighlight.rotation.x = Math.PI / 2;
     boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
     boreHighlight.visible = false;
@@ -330,13 +383,101 @@ function buildPrimitives(primitives) {
   return group;
 }
 
+function buildFlangeFromRecipe(flange, outline, holes, depth) {
+  const group = new THREE.Group();
+  const od = flange?.outerDiameter || (outline ? Math.max(...outline.map((p) => Math.hypot(p.x, p.y))) * 2 : 120);
+  const id = flange?.innerDiameter != null ? flange.innerDiameter : 35;
+  const th = flange?.thickness || depth || 18;
+  const h = flange?.height || th * 1.5;
+  const outerR = od / 2;
+  const boreR = id / 2;
+  const bCount = Math.max(3, Math.min(64, Math.round(flange?.boltCount || 4)));
+  const bcd = flange?.boltCircleDiameter || od * 0.76;
+  const bhd = flange?.boltHoleDiameter || Math.max(4, od * 0.11);
+  const boltR = bcd / 2;
+  const holeR = bhd / 2;
+  const bossR = (flange?.bossDiameter || od * 0.60) / 2;
+  const bossH = flange?.bossHeight || Math.max(2, h - th);
+
+  // Collect bolt holes (excluding center hole)
+  const boltHoles = [];
+  if (Array.isArray(holes) && holes.length > 1) {
+    for (const hItem of holes) {
+      const isCenter = Math.abs(hItem.cx || 0) < 0.01 && Math.abs(hItem.cy || 0) < 0.01;
+      if (!isCenter) {
+        const pathHole = new THREE.Path();
+        pathHole.absarc(hItem.cx, hItem.cy, hItem.radius, 0, Math.PI * 2, true);
+        boltHoles.push(pathHole);
+
+        const holeHighlight = new THREE.Mesh(new THREE.CylinderGeometry(hItem.radius * 0.98, hItem.radius * 0.98, th * 1.08, 16), matHighlight);
+        holeHighlight.rotation.x = Math.PI / 2;
+        holeHighlight.position.set(hItem.cx, hItem.cy, 0);
+        holeHighlight.userData = { featureId: "feature-mounting-holes-1", featureType: "mounting_hole", isHighlightOnly: true };
+        holeHighlight.visible = false;
+        group.add(holeHighlight);
+      }
+    }
+  } else {
+    for (let i = 0; i < bCount; i++) {
+      const a = (i / bCount) * Math.PI * 2;
+      const pathHole = new THREE.Path();
+      pathHole.absarc(Math.cos(a) * boltR, Math.sin(a) * boltR, holeR, 0, Math.PI * 2, true);
+      boltHoles.push(pathHole);
+
+      const holeHighlight = new THREE.Mesh(new THREE.CylinderGeometry(holeR * 0.98, holeR * 0.98, th * 1.08, 16), matHighlight);
+      holeHighlight.rotation.x = Math.PI / 2;
+      holeHighlight.position.set(Math.cos(a) * boltR, Math.sin(a) * boltR, 0);
+      holeHighlight.userData = { featureId: "feature-mounting-holes-1", featureType: "mounting_hole", isHighlightOnly: true };
+      holeHighlight.visible = false;
+      group.add(holeHighlight);
+    }
+  }
+
+  // Base flange plate with center bore AND all bolt holes
+  const baseGeo = extrude(ringShape(outerR, boreR, boltHoles), th);
+  baseGeo.center();
+  const baseMesh = new THREE.Mesh(baseGeo, matBody);
+  baseMesh.userData = { featureId: "feature-flange-1", featureType: "flange" };
+  group.add(baseMesh);
+
+  // Central bore highlight
+  if (boreR > 0) {
+    const totalH = th + (bossH > 0 ? bossH : 0);
+    const boreHighlight = new THREE.Mesh(new THREE.CylinderGeometry(boreR * 0.99, boreR * 0.99, totalH * 1.05, 32), matHighlight);
+    boreHighlight.rotation.x = Math.PI / 2;
+    boreHighlight.position.z = bossH > 0 ? bossH / 2 : 0;
+    boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
+    boreHighlight.visible = false;
+    group.add(boreHighlight);
+  }
+
+  // Raised face hub / boss
+  if (bossR > boreR && bossH > 0) {
+    const bossGeo = extrude(ringShape(bossR, boreR), bossH);
+    bossGeo.center();
+    const bossMesh = new THREE.Mesh(bossGeo, matAccent);
+    bossMesh.position.z = th / 2 + bossH / 2;
+    bossMesh.userData = { featureId: "feature-boss-1", featureType: "boss" };
+    group.add(bossMesh);
+  }
+
+  return group;
+}
+
 export function executeRecipe(recipe) {
   const style = recipe?.style;
   let body = null;
-  if (style === "revolved" && recipe.revolvedProfile) body = buildLathe(recipe.revolvedProfile);
-  else if (style === "extruded" && recipe.outline) body = buildExtruded(recipe.outline, recipe.holes, recipe.depth);
-  else if (style === "gear" && recipe.gear) body = buildGearFromRecipe(recipe.gear);
-  else if (style === "combination" && recipe.primitives) body = buildPrimitives(recipe.primitives);
+  if (style === "flange" || (recipe?.flange != null)) {
+    body = buildFlangeFromRecipe(recipe.flange, recipe.outline, recipe.holes, recipe.depth);
+  } else if (style === "revolved" && recipe.revolvedProfile) {
+    body = buildLathe(recipe.revolvedProfile);
+  } else if (style === "extruded" && recipe.outline) {
+    body = buildExtruded(recipe.outline, recipe.holes, recipe.depth);
+  } else if (style === "gear" && recipe.gear) {
+    body = buildGearFromRecipe(recipe.gear);
+  } else if (style === "combination" && recipe.primitives) {
+    body = buildPrimitives(recipe.primitives);
+  }
   if (!body) return new THREE.Group();
 
   const box = new THREE.Box3().setFromObject(body);
