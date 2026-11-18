@@ -36,9 +36,6 @@ export function InspectedDetailsPanel({
             <Icon>architecture</Icon>
             <strong>{label}</strong>
           </div>
-          {conf != null && (
-            <span className="inspection-conf-tag">{conf}% CONFIDENCE</span>
-          )}
         </div>
 
         {/* 2-Column Meta Grid */}

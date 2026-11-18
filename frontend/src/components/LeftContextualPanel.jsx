@@ -208,9 +208,6 @@ export function LeftContextualPanel({
                   {ready ? `${label}` : 'AWAITING COMPONENT'}
                 </span>
               </div>
-              {ready && conf != null && (
-                <span className="chat-conf-pill">{conf}% CONF</span>
-              )}
             </div>
 
             {/* Regenerate Alert Notice Banner when new visual context is staged */}
