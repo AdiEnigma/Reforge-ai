@@ -489,6 +489,49 @@ export function buildModel(analysis) {
   return { group, params: p, label };
 }
 
+/**
+ * Verifies that a generated model contains real, finite geometry before the
+ * reconstruction is allowed to report completion.
+ */
+export function validateReconstructedModel(model) {
+  const group = model?.group;
+  if (!group || !group.isObject3D) {
+    throw new Error('Reconstruction produced no 3D model.');
+  }
+
+  const meshes = [];
+  group.traverse((node) => {
+    if (node.isMesh && node.geometry) meshes.push(node);
+  });
+  if (!meshes.length) {
+    throw new Error('Reconstruction produced no renderable mesh.');
+  }
+
+  for (const mesh of meshes) {
+    const position = mesh.geometry.getAttribute('position');
+    if (!position || position.count === 0) {
+      throw new Error('Reconstruction produced an empty mesh.');
+    }
+    const values = position.array;
+    for (let i = 0; i < values.length; i += 1) {
+      if (!Number.isFinite(values[i])) {
+        throw new Error('Reconstruction produced invalid mesh coordinates.');
+      }
+    }
+  }
+
+  const bounds = new THREE.Box3().setFromObject(group);
+  if (bounds.isEmpty()) {
+    throw new Error('Reconstructed model has no measurable bounds.');
+  }
+  const size = bounds.getSize(new THREE.Vector3());
+  if (!Number.isFinite(size.x + size.y + size.z) || size.length() === 0) {
+    throw new Error('Reconstructed model has invalid dimensions.');
+  }
+
+  return { valid: true, meshCount: meshes.length, bounds, size };
+}
+
 
 export function buildAssemblyScene(machineryState, options = {}) {
   const group = new THREE.Group();

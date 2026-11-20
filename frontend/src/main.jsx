@@ -2,13 +2,25 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import './styles.css';
-import { analyzeComponent, sendChatMessage } from './lib/api.js';
+import { analyzeComponent, sendChatMessage, isCancellationError } from './lib/api.js';
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
 import { normalizeFeatures } from './lib/features.js';
 import { buildEngineeringContext, getEngineeringSuggestions } from './lib/engineering-context.js';
 import { buildDrawingModel, renderDrawingToSvg, exportSvg, exportPng, exportPdf } from './lib/drawing/index.js';
-import { buildModel, buildAssemblyScene, dimensionList, resolveLabel } from './lib/reconstruct.js';
+import { buildModel, buildAssemblyScene, dimensionList, resolveLabel, validateReconstructedModel } from './lib/reconstruct.js';
+import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from './lib/model-illumination.js';
+import { createThreeThemeSync } from './lib/three-theme.js';
+import {
+  applyReconstructionEvent,
+  createReconstructionProgress,
+  getReconstructionStageLabel,
+  RECONSTRUCTION_CANCELLED,
+  RECONSTRUCTION_COMPLETE,
+  RECONSTRUCTION_FAILED,
+  RECONSTRUCTION_IDLE,
+  RECONSTRUCTION_RUNNING,
+} from './lib/reconstruction-progress.js';
 import {
   createInitialMachineryState,
   getAllComponents,
@@ -24,6 +36,7 @@ import {
 import { ManageComponentsTab } from './components/ManageComponentsTab.jsx';
 import { MultiViewportGrid } from './components/MultiViewportGrid.jsx';
 import { PipWorkbench } from './components/PipWorkbench.jsx';
+import { DamageHeatmapOverlay } from './components/DamageHeatmapOverlay.jsx';
 import { ExportWorkWindow } from './components/ExportWorkWindow.jsx';
 import { TopRibbon } from './components/TopRibbon.jsx';
 import { FloatingPanelWrapper } from './components/FloatingPanelWrapper.jsx';
@@ -66,6 +79,59 @@ function ProgressStepper({ index }) {
   );
 }
 
+function ReconstructionProgress({ progress, onCancel, onRetry }) {
+  if (!progress || progress.status === RECONSTRUCTION_IDLE) return null;
+
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  const stageLabel = progress.status === RECONSTRUCTION_COMPLETE
+    ? 'Model Ready'
+    : getReconstructionStageLabel(progress.currentStage);
+  const detail = progress.message || (
+    progress.status === RECONSTRUCTION_FAILED
+      ? 'Reconstruction failed.'
+      : progress.status === RECONSTRUCTION_CANCELLED
+        ? 'Reconstruction cancelled.'
+        : `${stageLabel}…`
+  );
+
+  return (
+    <section className="reconstruction-progress" aria-label="Live reconstruction progress" aria-live="polite">
+      <div className="reconstruction-progress__head">
+        <span className="cad">RECONSTRUCTION PROGRESS</span>
+        <div className="reconstruction-progress__readout">
+          <strong className="reconstruction-progress__stage">{stageLabel}</strong>
+          <span className="reconstruction-progress__percent">{percent}%</span>
+        </div>
+      </div>
+      <div
+        className={`reconstruction-progress__track reconstruction-progress--${progress.status}`}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${percent}% — ${stageLabel}`}
+      >
+        <div className="reconstruction-progress__fill" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="reconstruction-progress__foot">
+        <span className="reconstruction-progress__detail">{detail}</span>
+        <div className="reconstruction-progress__actions">
+          {progress.status === RECONSTRUCTION_RUNNING && onCancel && (
+            <button type="button" className="reconstruction-progress__action" onClick={onCancel}>
+              <Icon>close</Icon> CANCEL
+            </button>
+          )}
+          {(progress.status === RECONSTRUCTION_FAILED || progress.status === RECONSTRUCTION_CANCELLED) && onRetry && (
+            <button type="button" className="reconstruction-progress__action primary" onClick={onRetry}>
+              <Icon>refresh</Icon> RETRY
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function GearCanvas() {
   const mount = useRef(null);
   useEffect(() => {
@@ -89,57 +155,11 @@ function GearCanvas() {
   return <div className="gear-canvas" ref={mount} aria-hidden="true" />;
 }
 
-function createStressMaterial() {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      minStress: { value: 0.0 },
-      maxStress: { value: 1.0 },
-    },
-    vertexShader: `
-      varying vec3 vPosition;
-      varying vec3 vNormal;
-      void main() {
-        vPosition = position;
-        vNormal = normalMatrix * normal;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vPosition;
-      varying vec3 vNormal;
-
-      // Turbo / Jet colormap approximation
-      vec3 jetHeatmap(float val) {
-        float v = clamp(val, 0.0, 1.0);
-        return clamp(vec3(
-          1.5 - abs(v * 4.0 - 3.0),
-          1.5 - abs(v * 4.0 - 2.0),
-          1.5 - abs(v * 4.0 - 1.0)
-        ), 0.0, 1.0);
-      }
-
-      void main() {
-        // Stress distribution based on distance from center & local curvature
-        float dist = length(vPosition.xy);
-        float curvature = length(cross(dFdx(vNormal), dFdy(vNormal))) * 5.0;
-        float stressFactor = clamp(sin(dist * 1.5) * 0.5 + 0.5 + curvature * 0.3, 0.0, 1.0);
-
-        // Simple directional lighting
-        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.8));
-        float diff = max(dot(normalize(vNormal), lightDir), 0.25);
-
-        vec3 heatColor = jetHeatmap(stressFactor);
-        gl_FragColor = vec4(heatColor * diff, 1.0);
-      }
-    `,
-  });
-}
-
-function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey, selectedFeatureId, hoveredFeatureId }) {
+function ReconstructedViewport({ analysis, images = [], wire, grid, stress, autoRotate, illumination = false, illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY, theme = 'dark', resetKey, selectedFeatureId, hoveredFeatureId }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId };
+  const options = useRef({ wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId });
+  options.current = { wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId };
 
   useEffect(() => {
     const host = mount.current;
@@ -148,11 +168,20 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     host.appendChild(renderer.domElement);
+    const themeSync = createThreeThemeSync({ scene, renderer });
+    themeSync.update(options.current.theme);
     const { group } = buildModel(analysis);
     scene.add(group);
+    const modelBounds = new THREE.Box3().setFromObject(group);
     scene.add(new THREE.AmbientLight('#7a4a38', 0.6));
     const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
     const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
+    const illuminationLight = createModelIllumination(scene, {
+      enabled: options.current.illumination,
+      intensity: options.current.illuminationIntensity,
+      bounds: modelBounds,
+      camera,
+    });
     const gridHelper = new THREE.GridHelper(10, 12, '#544337', '#3d332c'); gridHelper.position.z = -1.2; gridHelper.visible = false; scene.add(gridHelper);
 
     const originals = new Map();
@@ -174,7 +203,6 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
       roughness: 0.35,
     });
 
-    const stressMaterial = createStressMaterial();
     const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
     const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
     let pointerMode = null, lastPoint = null, appliedKey = null;
@@ -192,10 +220,12 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
       frame = requestAnimationFrame(animate);
       if (options.current.autoRotate) view.theta += .006;
       gridHelper.visible = options.current.grid;
+      themeSync.update(options.current.theme);
+      illuminationLight.update({ enabled: options.current.illumination, intensity: options.current.illuminationIntensity });
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
       const isSelected = Boolean(options.current.selectedFeatureId);
-      const materialKey = `${options.current.wire ? 'w' : ''}${options.current.stress ? 's' : ''}|${activeFeatureId ?? ''}`;
+      const materialKey = `${options.current.wire ? 'w' : ''}|${activeFeatureId ?? ''}`;
 
       if (materialKey !== appliedKey) {
         appliedKey = materialKey;
@@ -209,8 +239,6 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
             node.material = wireMaterial;
           } else if (activeFeatureId && (node.userData?.featureId === activeFeatureId || node.parent?.userData?.featureId === activeFeatureId)) {
             node.material = isSelected ? selectHighlightMat : hoverHighlightMat;
-          } else if (options.current.stress) {
-            node.material = stressMaterial;
           } else {
             node.material = originals.get(node.uuid) || node.material;
           }
@@ -236,14 +264,19 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
       wireMaterial.dispose();
       selectHighlightMat.dispose();
       hoverHighlightMat.dispose();
-      stressMaterial.dispose();
+      illuminationLight.dispose();
       renderer.dispose();
       host.replaceChildren();
     };
   }, [analysis]);
 
   useEffect(() => { resetViewRef.current?.(); }, [resetKey]);
-  return <div className="model-canvas" ref={mount} aria-label="Interactive reconstructed 3D model" />;
+  return (
+    <div className="model-canvas-wrapper">
+      <div className="model-canvas" ref={mount} aria-label="Interactive reconstructed 3D model" />
+      {stress && <DamageHeatmapOverlay analysis={analysis} images={images} compact />}
+    </div>
+  );
 }
 
 function Nav() {
@@ -1078,15 +1111,18 @@ function Upload() {
     setImages,
     setPage,
     stage,
-    setStage,
-    setAnalysis,
-    setLastAnalyzedSnapshot,
-    setActiveComponentId,
+    reconstructionReference,
+    setReconstructionReference,
+    reconstructionProgress,
+    startReconstruction,
+    cancelReconstruction,
+    retryReconstruction,
   } = useApp();
 
   const [activeUploadSlot, setActiveUploadSlot] = useState('primary'); // 'primary' | 'companion' | 'surroundings'
-  const [reference, setReference] = useState({});
   const [error, setError] = useState('');
+  const reference = reconstructionReference;
+  const setReference = setReconstructionReference;
   const busy = stage === 'analysing';
 
   const inputPrimary = useRef(null);
@@ -1127,49 +1163,13 @@ function Upload() {
     }
   };
 
-  const reconstruct = async () => {
-    const pImages = primary?.images || [];
-    if (!pImages.length) {
+  const reconstruct = () => {
+    if (!(primary?.images?.length)) {
       setError('Add at least one Primary Gear image to start reconstruction.');
       return;
     }
     setError('');
-    setStage('analysing');
-    try {
-      const primaryRef = buildReference(reference);
-      const pAnalysis = await analyzeComponent(pImages, primaryRef);
-
-      let cAnalysis = null;
-      if (companion?.images?.length) {
-        cAnalysis = await analyzeComponent(companion.images, {});
-      }
-
-      const updatedMachinery = {
-        ...machineryState,
-        primaryGear: {
-          ...machineryState.primaryGear,
-          analysis: pAnalysis,
-          reference: primaryRef,
-        },
-        companionGear: machineryState.companionGear
-          ? {
-            ...machineryState.companionGear,
-            analysis: cAnalysis,
-          }
-          : null,
-      };
-
-      const initialSnapshot = createMachinerySnapshot(updatedMachinery);
-      setMachineryState(updatedMachinery);
-      setLastAnalyzedSnapshot(initialSnapshot);
-      setAnalysis(pAnalysis);
-      setActiveComponentId(primary.id);
-      setStage('extracting');
-      setPage('workbench');
-    } catch (err) {
-      setError(err.message || 'Analysis failed. Please try again.');
-      setStage('idle');
-    }
+    startReconstruction();
   };
 
   const primaryCount = primary?.images?.length || 0;
@@ -1349,6 +1349,11 @@ function Upload() {
 
         {error && <p className="error" role="alert">{error}</p>}
         {busy && <ProgressStepper index={1} />}
+        <ReconstructionProgress
+          progress={reconstructionProgress}
+          onCancel={cancelReconstruction}
+          onRetry={retryReconstruction}
+        />
 
         {/* Previews Area */}
         <section className="preview-area">
@@ -2023,6 +2028,11 @@ function Workbench() {
     isRegenerating,
     isDirty,
     setLastAnalyzedSnapshot,
+    reconstructionProgress,
+    applyReconstructionProgress,
+    cancelReconstruction,
+    retryReconstruction,
+    isReconstructionCancelled,
     theme,
     toggleTheme,
   } = useApp();
@@ -2045,12 +2055,15 @@ function Workbench() {
   const [quantity, setQuantity] = useState(1);
   const [mfgData, setMfgData] = useState(null);
   const [autoRotate, setAutoRotate] = useState(true);
+  const [illumination, setIllumination] = useState(false);
+  const [illuminationIntensity, setIlluminationIntensity] = useState(DEFAULT_MODEL_ILLUMINATION_INTENSITY);
   const [resetKey, setResetKey] = useState(0);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const [thinking, setThinking] = useState(false);
   const historyRef = useRef([]);
   const thread = useRef(null);
+  const meshBuildStartedRef = useRef(null);
 
   // ─── Persistent Modular Workspace State ─────────────────────────────
   const [layoutState, setLayoutState] = useState(() => ({
@@ -2411,16 +2424,66 @@ function Workbench() {
   }, [messages, thinking]);
 
   useEffect(() => {
-    if (!analysis) return;
-    if (stage === 'extracting') {
-      const t = setTimeout(() => setStage('reconstructing'), 900);
-      return () => clearTimeout(t);
+    if (!analysis || stage !== 'extracting' || isReconstructionCancelled()) return;
+    if (meshBuildStartedRef.current === analysis) return;
+    meshBuildStartedRef.current = analysis;
+    applyReconstructionProgress({
+      stage: 'mesh-generation',
+      status: 'running',
+      completed: 0,
+      total: 1,
+      message: 'Building parametric mesh…',
+    });
+    setStage('reconstructing');
+  }, [stage, analysis, setStage, applyReconstructionProgress, isReconstructionCancelled]);
+
+  useEffect(() => {
+    if (!analysis || stage !== 'reconstructing' || isReconstructionCancelled()) return;
+
+    try {
+      const analysedComponents = getAllComponents(machineryState).filter((component) => component.analysis);
+      const targets = analysedComponents.length ? analysedComponents : [{ id: 'primary', analysis }];
+      const generated = targets.map((component, index) => {
+        const model = buildModel(component.analysis);
+        applyReconstructionProgress({
+          stage: 'mesh-generation',
+          status: 'running',
+          completed: index + 1,
+          total: targets.length,
+          message: `Generated mesh ${index + 1} of ${targets.length}.`,
+        });
+        return model;
+      });
+      if (isReconstructionCancelled()) return;
+
+      applyReconstructionProgress({ stage: 'mesh-generation', status: 'complete' });
+      applyReconstructionProgress({
+        stage: 'validation',
+        status: 'running',
+        message: 'Checking mesh geometry and model bounds…',
+      });
+
+      const validations = generated.map((model) => validateReconstructedModel(model));
+      if (!validations.length || !validations.every((result) => result.valid)) {
+        throw new Error('Reconstructed model failed geometry validation.');
+      }
+      if (isReconstructionCancelled()) return;
+
+      applyReconstructionProgress({
+        stage: 'validation',
+        status: 'complete',
+        message: 'Model generated and validated.',
+      });
+      setStage('ready');
+    } catch (error) {
+      applyReconstructionProgress({
+        type: 'failed',
+        stage: 'validation',
+        message: error.message || 'Model generation failed.',
+      });
+      setStage('idle');
     }
-    if (stage === 'reconstructing') {
-      const t = setTimeout(() => setStage('ready'), 1100);
-      return () => clearTimeout(t);
-    }
-  }, [stage, analysis, setStage]);
+  }, [stage, analysis, machineryState, setStage, applyReconstructionProgress, isReconstructionCancelled]);
 
   const features = useMemo(() => normalizeFeatures(analysis), [analysis]);
 
@@ -2710,6 +2773,10 @@ function Workbench() {
           onToggleGrid={() => setGrid(g => !g)}
           dims={dims}
           onToggleDims={() => setDims(d => !d)}
+          illumination={illumination}
+          onToggleIllumination={() => setIllumination(on => !on)}
+          illuminationIntensity={illuminationIntensity}
+          onChangeIlluminationIntensity={setIlluminationIntensity}
           onResetView={() => setResetKey(k => k + 1)}
           viewMode={viewMode}
           onChangeViewMode={setViewMode}
@@ -2888,6 +2955,12 @@ function Workbench() {
                     : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
                 </div>
 
+                <ReconstructionProgress
+                  progress={reconstructionProgress}
+                  onCancel={cancelReconstruction}
+                  onRetry={retryReconstruction}
+                />
+
                 {!analysis ? (
                   <div className="viewport-hint">
                     <Icon>view_in_ar</Icon>
@@ -2920,6 +2993,9 @@ function Workbench() {
                     grid={grid}
                     stress={stress}
                     autoRotate={autoRotate}
+                    illumination={illumination}
+                    illuminationIntensity={illuminationIntensity}
+                    theme={theme}
                     resetKey={resetKey}
                     selectedFeatureId={selectedFeatureId}
                     hoveredFeatureId={hoveredFeatureId}
@@ -3162,6 +3238,9 @@ function Workbench() {
                   setDims={setDims}
                   autoRotate={autoRotate}
                   setAutoRotate={setAutoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
                   resetKey={resetKey}
                   setResetKey={setResetKey}
                   selectedFeatureId={selectedFeatureId}
@@ -3427,6 +3506,13 @@ function App() {
   const [analysis, setAnalysis] = useState(null);
   const [stage, setStage] = useState('idle');
   const [analysisVersion, setAnalysisVersion] = useState(0);
+  const [reconstructionReference, setReconstructionReference] = useState({});
+  const [reconstructionProgress, setReconstructionProgress] = useState(
+    () => createReconstructionProgress(1, RECONSTRUCTION_IDLE)
+  );
+  const reconstructionControllerRef = useRef(null);
+  const reconstructionAttemptRef = useRef(0);
+  const reconstructionCancelledRef = useRef(false);
 
   // Machinery Context State
   const [machineryState, setMachineryState] = useState(() => createInitialMachineryState());
@@ -3435,6 +3521,116 @@ function App() {
   const [activeComponentId, setActiveComponentId] = useState('comp-primary-gear');
   const [selectedComponentIds, setSelectedComponentIds] = useState(['comp-primary-gear']);
   const [isRegenerating, setIsRegenerating] = useState(false);
+
+  const applyReconstructionProgress = useCallback((event) => {
+    setReconstructionProgress((previous) => applyReconstructionEvent(previous, event));
+  }, []);
+
+  const isReconstructionCancelled = useCallback(() => (
+    reconstructionCancelledRef.current || Boolean(reconstructionControllerRef.current?.signal.aborted)
+  ), []);
+
+  const cancelReconstruction = useCallback(() => {
+    reconstructionCancelledRef.current = true;
+    reconstructionControllerRef.current?.abort();
+    applyReconstructionProgress({ type: 'cancelled', message: 'Reconstruction cancelled.' });
+    setStage('idle');
+  }, [applyReconstructionProgress]);
+
+  const startReconstruction = useCallback(async () => {
+    const primary = machineryState?.primaryGear;
+    const companion = machineryState?.companionGear;
+    if (!primary?.images?.length) return;
+
+    reconstructionControllerRef.current?.abort();
+    const attempt = reconstructionAttemptRef.current + 1;
+    reconstructionAttemptRef.current = attempt;
+    reconstructionCancelledRef.current = false;
+
+    const controller = new AbortController();
+    reconstructionControllerRef.current = controller;
+    setReconstructionProgress(createReconstructionProgress(attempt, RECONSTRUCTION_RUNNING));
+    setStage('analysing');
+
+    try {
+      const primaryRef = buildReference(reconstructionReference);
+      const pAnalysis = await analyzeComponent(primary.images, primaryRef, {
+        onProgress: (event) => applyReconstructionProgress({ ...event, attempt }),
+        signal: controller.signal,
+        retries: 1,
+      });
+      if (reconstructionCancelledRef.current) return;
+
+      let cAnalysis = null;
+      if (companion?.images?.length) {
+        applyReconstructionProgress({
+          stage: 'dataset-matching',
+          status: 'running',
+          attempt,
+          message: 'Analysing companion gear…',
+        });
+        cAnalysis = await analyzeComponent(companion.images, {}, {
+          signal: controller.signal,
+          retries: 1,
+        });
+        if (reconstructionCancelledRef.current) return;
+        applyReconstructionProgress({
+          stage: 'dataset-matching',
+          status: 'complete',
+          attempt,
+          message: 'Companion gear matched.',
+        });
+      }
+      if (reconstructionCancelledRef.current) return;
+
+      const updatedMachinery = {
+        ...machineryState,
+        primaryGear: {
+          ...machineryState.primaryGear,
+          analysis: pAnalysis,
+          reference: primaryRef,
+        },
+        companionGear: machineryState.companionGear
+          ? { ...machineryState.companionGear, analysis: cAnalysis }
+          : null,
+      };
+      setMachineryState(updatedMachinery);
+      setLastAnalyzedSnapshot(createMachinerySnapshot(updatedMachinery));
+      setAnalysis(pAnalysis);
+      setActiveComponentId(primary.id);
+      setStage('extracting');
+      setPage('workbench');
+    } catch (error) {
+      if (isCancellationError(error) || controller.signal.aborted || reconstructionCancelledRef.current) {
+        reconstructionCancelledRef.current = true;
+        applyReconstructionProgress({ type: 'cancelled', attempt, message: 'Reconstruction cancelled.' });
+        setStage('idle');
+        return;
+      }
+      applyReconstructionProgress({
+        type: 'failed',
+        attempt,
+        message: error.message || 'Analysis failed. Please try again.',
+      });
+      setStage('idle');
+    }
+  }, [
+    machineryState,
+    reconstructionReference,
+    setMachineryState,
+    setLastAnalyzedSnapshot,
+    setAnalysis,
+    setActiveComponentId,
+    setStage,
+    setPage,
+    applyReconstructionProgress,
+  ]);
+
+  const retryReconstruction = useCallback(() => {
+    startReconstruction();
+  }, [startReconstruction]);
+
+  useEffect(() => () => reconstructionControllerRef.current?.abort(), []);
 
   const isDirty = useMemo(() => {
     return hasDirtyContext(machineryState, lastAnalyzedSnapshot);
@@ -3499,6 +3695,7 @@ function App() {
     setImages(next);
     setAnalysis(null);
     setStage('idle');
+    setReconstructionProgress(createReconstructionProgress(1, RECONSTRUCTION_IDLE));
   }, []);
 
   const updateAnalysis = useCallback((result) => {
@@ -3512,6 +3709,13 @@ function App() {
     analysis, setAnalysis: updateAnalysis,
     stage, setStage,
     analysisVersion,
+    reconstructionReference, setReconstructionReference,
+    reconstructionProgress,
+    applyReconstructionProgress,
+    startReconstruction,
+    cancelReconstruction,
+    retryReconstruction,
+    isReconstructionCancelled,
     machineryState, setMachineryState,
     lastAnalyzedSnapshot, setLastAnalyzedSnapshot,
     viewMode, setViewMode,
@@ -3524,6 +3728,8 @@ function App() {
     toggleTheme,
   }), [
     page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
+    reconstructionReference, reconstructionProgress, applyReconstructionProgress,
+    startReconstruction, cancelReconstruction, retryReconstruction, isReconstructionCancelled,
     machineryState, lastAnalyzedSnapshot, viewMode, activeComponentId,
     selectedComponentIds, handleRegenerate, isRegenerating, isDirty,
     theme, toggleTheme

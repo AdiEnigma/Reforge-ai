@@ -7,6 +7,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
 import { buildAssemblyScene, dimensionList, resolveLabel } from '../lib/reconstruct.js';
+import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from '../lib/model-illumination.js';
+import { createThreeThemeSync } from '../lib/three-theme.js';
 import { getAllComponents, ROLE_TYPES } from '../lib/machinery-context.js';
 
 const Icon = ({ children, className = '' }) => (
@@ -71,6 +73,9 @@ export function PipWorkbench({
   setDims,
   autoRotate,
   setAutoRotate,
+  illumination = false,
+  illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY,
+  theme = 'dark',
   resetKey,
   setResetKey,
   selectedFeatureId,
@@ -335,15 +340,22 @@ export function PipWorkbench({
                   grid={grid}
                   stress={stress}
                   autoRotate={autoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
                   resetKey={resetKey}
                 />
               ) : (
                 <ReconstructedViewport
                   analysis={currentAnalysis}
+                  images={activeComp?.images}
                   wire={wire}
                   grid={grid}
                   stress={stress}
                   autoRotate={autoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -384,11 +396,11 @@ export function PipWorkbench({
   );
 }
 
-function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, resetKey }) {
+function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, illumination = false, illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY, theme = 'dark', resetKey }) {
   const mount = useRef(null);
   const resetRef = useRef(null);
-  const options = useRef({ wire, grid, stress, autoRotate });
-  options.current = { wire, grid, stress, autoRotate };
+  const options = useRef({ wire, grid, stress, autoRotate, illumination, illuminationIntensity, theme });
+  options.current = { wire, grid, stress, autoRotate, illumination, illuminationIntensity, theme };
 
   useEffect(() => {
     const host = mount.current;
@@ -398,13 +410,22 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, res
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(typeof window !== 'undefined' ? window.devicePixelRatio : 1, 2));
     host.appendChild(renderer.domElement);
+    const themeSync = createThreeThemeSync({ scene, renderer });
+    themeSync.update(options.current.theme);
 
     const { group } = buildAssemblyScene(machineryState);
     scene.add(group);
+    const modelBounds = new THREE.Box3().setFromObject(group);
     scene.add(new THREE.AmbientLight('#7a4a38', 0.65));
     const key = new THREE.DirectionalLight('#ffb77f', 0.85);
     key.position.set(6, 8, 10);
     scene.add(key);
+    const illuminationLight = createModelIllumination(scene, {
+      enabled: options.current.illumination,
+      intensity: options.current.illuminationIntensity,
+      bounds: modelBounds,
+      camera,
+    });
 
     const view = { radius: 14, theta: 0.55, phi: 1.35 };
     const target = new THREE.Vector3();
@@ -468,6 +489,11 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, res
     const animate = () => {
       frame = requestAnimationFrame(animate);
       if (options.current.autoRotate) view.theta += 0.005;
+      themeSync.update(options.current.theme);
+      illuminationLight.update({
+        enabled: options.current.illumination,
+        intensity: options.current.illuminationIntensity,
+      });
       const r = view.radius * Math.sin(view.phi);
       camera.position.set(
         target.x + r * Math.cos(view.theta),
@@ -490,6 +516,7 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, res
       group.traverse((n) => {
         if (n.geometry) n.geometry.dispose();
       });
+      illuminationLight.dispose();
       renderer.dispose();
       host.replaceChildren();
     };

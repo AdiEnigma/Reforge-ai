@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveComponentType, computeParams, buildModel, COMPONENT_LABELS } from "./reconstruct.js";
+import * as THREE from "three";
+import { resolveComponentType, computeParams, buildModel, validateReconstructedModel, COMPONENT_LABELS } from "./reconstruct.js";
 
 test("resolveComponentType accurately detects bevel gears without defaulting to spur gear", () => {
   const bevelAnalysis = {
@@ -77,4 +78,24 @@ test("buildModel constructs authentic 3D Stepped Shaft group with multiple diame
   assert.ok(model.group);
   assert.equal(model.label, "STEPPED SHAFT");
   assert.ok(model.group.children.length >= 1);
+});
+
+test('validateReconstructedModel accepts a generated model', () => {
+  const model = buildModel({
+    componentType: 'spur gear',
+    teeth: 20,
+    dimensions: { outerDiameter: 80, innerDiameter: 20, height: 18 },
+  });
+  const result = validateReconstructedModel(model);
+  assert.equal(result.valid, true);
+  assert.ok(result.meshCount > 0);
+  assert.ok(result.size.length() > 0);
+});
+
+test('validateReconstructedModel rejects an empty model', () => {
+  assert.throws(
+    () => validateReconstructedModel({ group: new THREE.Group() }),
+    /no renderable mesh/
+  );
+  assert.throws(() => validateReconstructedModel(null), /no 3D model/);
 });

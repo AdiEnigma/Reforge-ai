@@ -1,4 +1,10 @@
 import React from 'react';
+import {
+  DEFAULT_MODEL_ILLUMINATION_INTENSITY,
+  MODEL_ILLUMINATION_MAX_INTENSITY,
+  MODEL_ILLUMINATION_MIN_INTENSITY,
+  MODEL_ILLUMINATION_INTENSITY_STEP,
+} from '../lib/model-illumination.js';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -23,6 +29,10 @@ export function TopRibbon({
   onToggleGrid,
   dims,
   onToggleDims,
+  illumination = false,
+  onToggleIllumination,
+  illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY,
+  onChangeIlluminationIntensity,
   onResetView,
   // View Modes
   viewMode,
@@ -178,8 +188,8 @@ export function TopRibbon({
             className={`ribbon-item mini ${stress ? 'active' : ''}`}
             onClick={onToggleStress}
             disabled={!ready}
-            title="Toggle FEA Stress Heatmap"
-            aria-label="Toggle Stress Heatmap"
+            title="Toggle Image-Based Damage Heatmap (detected defect regions)"
+            aria-label="Toggle Damage Heatmap"
           >
             <Icon>local_fire_department</Icon>
             {expanded && <span className="ribbon-label">Heatmap</span>}
@@ -206,6 +216,32 @@ export function TopRibbon({
             <Icon>straighten</Icon>
             {expanded && <span className="ribbon-label">Dims</span>}
           </button>
+
+          <button
+            className={`ribbon-item mini illumination-toggle-btn icon-only ${illumination ? 'active' : ''}`}
+            onClick={onToggleIllumination}
+            disabled={!ready || !onToggleIllumination}
+            title={illumination ? 'Turn Off 3D Model Illumination' : 'Turn On 3D Model Illumination (overhead light)'}
+            aria-label={illumination ? 'Turn Off 3D Model Illumination' : 'Turn On 3D Model Illumination'}
+            aria-pressed={illumination}
+          >
+            <Icon>lightbulb</Icon>
+          </button>
+
+          {illumination && (
+            <input
+              className="illumination-intensity"
+              type="range"
+              min={MODEL_ILLUMINATION_MIN_INTENSITY}
+              max={MODEL_ILLUMINATION_MAX_INTENSITY}
+              step={MODEL_ILLUMINATION_INTENSITY_STEP}
+              value={illuminationIntensity}
+              onChange={(event) => onChangeIlluminationIntensity?.(Number(event.target.value))}
+              disabled={!ready || !onChangeIlluminationIntensity}
+              title={`Overhead light intensity: ${Math.round(illuminationIntensity * 100)}%`}
+              aria-label="Overhead model light intensity"
+            />
+          )}
 
           <button
             className="ribbon-item mini"

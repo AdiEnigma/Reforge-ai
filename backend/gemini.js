@@ -676,3 +676,11 @@ export async function chatWithEngineer({ message, engineeringContext, analysis, 
   }
   throw new Error("Chat could not reach any available Gemini model.");
 }
+
+// Shared helpers for adjunct vision-based assessments (e.g. visual condition).
+export {
+  client as createGeminiClient,
+  getCandidateModels,
+  model as createGeminiModel,
+  stripFences,
+};

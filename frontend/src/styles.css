@@ -20,6 +20,11 @@
   --tenne: #b76308;
   --gold: #de822b;
   --lime: #c9f88d;
+  --viewport-bg: #140d07;
+  --viewport-panel-bg: rgba(20, 13, 7, .9);
+  --viewport-header-bg: rgba(39, 30, 24, .95);
+  --viewport-grid-major: #544337;
+  --viewport-grid-minor: #3d332c;
   font-family: 'Corpta DEMO', sans-serif;
   color: var(--text);
   background: var(--bg)
@@ -711,6 +716,12 @@ nav {
     top: 22px
   }
 
+  .viewport > .reconstruction-progress {
+    top: 64px;
+    left: 20px;
+    width: calc(100% - 40px)
+  }
+
   .viewport-empty {
     left: 20px;
     bottom: 22px
@@ -718,6 +729,13 @@ nav {
 }
 
 .model-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%
+}
+
+.model-canvas-wrapper {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -799,6 +817,129 @@ nav {
   }
 }
 
+.reconstruction-progress {
+  width: 100%;
+  max-width: 520px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace
+}
+
+.reconstruction-progress__head,
+.reconstruction-progress__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px
+}
+
+.reconstruction-progress__head {
+  margin-bottom: 9px
+}
+
+.reconstruction-progress__readout {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  white-space: nowrap
+}
+
+.reconstruction-progress__stage {
+  font-size: 10px;
+  color: var(--primary);
+  letter-spacing: .04em
+}
+
+.reconstruction-progress__percent {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--lime)
+}
+
+.reconstruction-progress__track {
+  height: 9px;
+  border: 1px solid var(--line);
+  background: var(--low);
+  overflow: hidden
+}
+
+.reconstruction-progress__fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--tenne), var(--lime));
+  transition: width .35s ease
+}
+
+.reconstruction-progress--failed .reconstruction-progress__fill {
+  background: #c5221f
+}
+
+.reconstruction-progress--cancelled .reconstruction-progress__fill {
+  background: var(--muted)
+}
+
+.reconstruction-progress__foot {
+  margin-top: 8px;
+  min-height: 20px
+}
+
+.reconstruction-progress__detail {
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.reconstruction-progress__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0
+}
+
+.reconstruction-progress__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  background: var(--low);
+  color: var(--muted);
+  font: 700 9px 'JetBrains Mono', monospace;
+  cursor: pointer
+}
+
+.reconstruction-progress__action:hover {
+  border-color: var(--primary);
+  color: var(--text)
+}
+
+.reconstruction-progress__action.primary {
+  border-color: var(--primary);
+  color: var(--primary)
+}
+
+.reconstruction-progress__action .icon {
+  font-size: 13px
+}
+
+.viewport > .reconstruction-progress {
+  position: absolute;
+  top: 76px;
+  left: 32px;
+  z-index: 3;
+  width: min(520px, calc(100% - 64px));
+  margin-top: 0
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reconstruction-progress__fill {
+    transition: none
+  }
+}
+
 .dims-overlay {
   position: absolute;
   top: 30px;
@@ -841,7 +982,12 @@ nav {
   justify-content: flex-start
 }
 
-.upload-page>.state-track+.preview-area {
+.upload-page>.state-track+.reconstruction-progress {
+  margin-top: 10px
+}
+
+.upload-page>.state-track+.reconstruction-progress+.preview-area,
+.upload-page>.reconstruction-progress+.preview-area {
   padding-top: 18px
 }
 
@@ -5789,6 +5935,43 @@ nav {
   cursor: not-allowed;
 }
 
+.ribbon-item.illumination-toggle-btn.icon-only {
+  width: 24px;
+  padding: 0;
+  justify-content: center;
+}
+
+.ribbon-item.illumination-toggle-btn.active {
+  background: var(--high);
+  border-color: var(--primary);
+  color: var(--primary);
+  box-shadow: 0 0 8px var(--line);
+}
+
+.ribbon-item.illumination-toggle-btn.active .icon {
+  color: var(--gold);
+  font-variation-settings: 'FILL' 1;
+}
+
+.illumination-intensity {
+  width: 58px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.illumination-intensity:focus-visible {
+  outline: 1px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.top-ribbon.collapsed .illumination-intensity {
+  display: none;
+}
+
 .top-ribbon.collapsed .ribbon-item {
   padding: 4px 6px;
 }
@@ -6441,6 +6624,193 @@ body,
 .risk-level-tag.med {
   background: rgba(222, 130, 43, .15);
   color: var(--gold)
+}
+
+.risk-level-tag.high {
+  background: rgba(255, 80, 80, .1);
+  color: #ff5050
+}
+
+/* ─── Image-based damage heatmap ───────────────────────────────────────────
+   The only painted layer is a pixel-level RGBA mask in the source image's
+   coordinate system. Transparent mask pixels leave the photo untouched.  */
+.damage-heatmap-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: #0c0805;
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  overflow: hidden
+}
+
+.damage-heatmap-topbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 34px 10px 7px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(20, 13, 7, .96);
+  flex-shrink: 0
+}
+
+.damage-heatmap-overlay.compact .damage-heatmap-topbar {
+  padding: 6px 8px
+}
+
+.damage-heatmap-topbar .icon {
+  color: var(--primary);
+  font-size: 15px
+}
+
+.damage-heatmap-title {
+  font: 700 9px 'JetBrains Mono';
+  letter-spacing: .08em;
+  color: var(--primary)
+}
+
+.damage-heatmap-subtitle {
+  margin-left: auto;
+  font-size: 8px;
+  color: var(--muted)
+}
+
+.damage-heatmap-thumbs {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0
+}
+
+.damage-heatmap-thumb {
+  width: 46px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  opacity: .55;
+  cursor: pointer;
+  overflow: hidden;
+  flex-shrink: 0
+}
+
+.damage-heatmap-thumb.active {
+  border-color: var(--primary);
+  opacity: 1
+}
+
+.damage-heatmap-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block
+}
+
+.damage-heatmap-image-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  overflow: auto;
+  position: relative
+}
+
+.damage-heatmap-image-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 100%;
+  line-height: 0
+}
+
+.damage-heatmap-image-wrap > img:first-child {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain
+}
+
+.damage-mask-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none
+}
+
+.damage-heatmap-view-note {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: var(--muted);
+  background: rgba(20, 13, 7, .9);
+  border: 1px solid var(--line);
+  padding: 3px 8px;
+  border-radius: 2px
+}
+
+.damage-heatmap-message {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5
+}
+
+.damage-heatmap-message .icon {
+  color: var(--primary);
+  font-size: 22px
+}
+
+.damage-heatmap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--line);
+  background: rgba(20, 13, 7, .96);
+  font-size: 8px;
+  flex-shrink: 0
+}
+
+.damage-legend-title {
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--muted)
+}
+
+.damage-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px
+}
+
+.damage-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block
+}
+
+.damage-legend-note {
+  margin-left: auto;
+  color: var(--muted)
 }
 
 .health-risk-item p {
@@ -10290,6 +10660,11 @@ body.theme-light {
   --tenne: #964203;
   --gold: #b76308;
   --lime: #1e7e34;
+  --viewport-bg: #f7f5f0;
+  --viewport-panel-bg: rgba(255, 255, 255, .94);
+  --viewport-header-bg: #ece7de;
+  --viewport-grid-major: #b8aa98;
+  --viewport-grid-minor: #d8d0c3;
   color: #191410;
   background-color: #f7f5f0;
 }
@@ -10426,6 +10801,13 @@ body.theme-light {
   color: var(--lime);
   border-color: var(--lime);
   box-shadow: 0 0 6px rgba(30, 126, 52, 0.15);
+}
+
+[data-theme="light"] .ribbon-item.illumination-toggle-btn.active {
+  background: var(--high);
+  color: var(--primary);
+  border-color: var(--primary);
+  box-shadow: none;
 }
 
 [data-theme="light"] .ribbon-toggle-btn {
@@ -11259,4 +11641,92 @@ body.theme-light {
   color: #c5221f;
   border-color: rgba(197, 34, 31, 0.4);
   background: rgba(197, 34, 31, 0.1);
+}
+
+/* Heatmap stays dark in light theme so the original photograph keeps contrast. */
+[data-theme="light"] .damage-heatmap-overlay {
+  color: #f2ebe2;
+}
+
+[data-theme="light"] .damage-heatmap-topbar,
+[data-theme="light"] .damage-heatmap-legend {
+  background: #160e08;
+  border-color: #3a2b20;
+}
+
+[data-theme="light"] .damage-heatmap-subtitle,
+[data-theme="light"] .damage-legend-title,
+[data-theme="light"] .damage-legend-note,
+[data-theme="light"] .damage-heatmap-message,
+[data-theme="light"] .damage-heatmap-view-note {
+  color: #b9a99a;
+}
+
+/* ─── Light theme: 3D workspace, viewport and canvas surfaces ──────────────── */
+[data-theme="light"] .workspace-main-area,
+[data-theme="light"] .workspace-center-column,
+[data-theme="light"] .multi-viewport-root,
+[data-theme="light"] .viewport-panes-container,
+[data-theme="light"] .single-viewport-pane,
+[data-theme="light"] .pip-canvas-area,
+[data-theme="light"] .model-canvas,
+[data-theme="light"] .model-canvas-wrapper,
+[data-theme="light"] .empty-viewport-pane {
+  background-color: var(--viewport-bg);
+  background-image: none;
+  color: var(--text);
+}
+
+[data-theme="light"] .viewport-top-toolbar,
+[data-theme="light"] .viewport-pane-header,
+[data-theme="light"] .viewport-controls-vertical,
+[data-theme="light"] .pip-controls-toolbar,
+[data-theme="light"] .pip-dims-overlay,
+[data-theme="light"] .mfg-panel,
+[data-theme="light"] .matcomp-panel,
+[data-theme="light"] .features-panel,
+[data-theme="light"] .floating-panel-container,
+[data-theme="light"] .floating-panel-header,
+[data-theme="light"] .drawing-viewport-wrap,
+[data-theme="light"] .verification-notice {
+  background-color: var(--viewport-panel-bg);
+  background-image: none;
+  border-color: var(--line);
+  color: var(--text);
+}
+
+[data-theme="light"] .view-mode-buttons,
+[data-theme="light"] .view-mode-btn,
+[data-theme="light"] .viewport-config-select,
+[data-theme="light"] .comp-pill-btn,
+[data-theme="light"] .config-pill,
+[data-theme="light"] .selector-label,
+[data-theme="light"] .pane-title,
+[data-theme="light"] .dims-overlay,
+[data-theme="light"] .dims-label,
+[data-theme="light"] .dims-value {
+  background-color: var(--surface);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+[data-theme="light"] .view-mode-btn.active,
+[data-theme="light"] .comp-pill-btn.active,
+[data-theme="light"] .viewport-controls-vertical button.active,
+[data-theme="light"] .pip-controls-toolbar button.active {
+  background-color: var(--high);
+  border-color: var(--primary);
+  color: var(--primary);
+  box-shadow: none;
+}
+
+[data-theme="light"] .viewport-status {
+  background-color: transparent;
+  color: var(--primary);
+  border-color: var(--line);
+}
+
+[data-theme="light"] .pip-dim-gear-title {
+  color: var(--primary);
+  border-bottom-color: var(--line);
 }
