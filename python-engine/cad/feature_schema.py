@@ -45,6 +45,7 @@ OPERATION_FINISH = "finish"
 
 #: Additive (material-adding) external mechanical features.
 ADDITIVE_FEATURE_TYPES: tuple = (
+    "axial_segment_assembly",
     "base_cylinder",
     "base_box",
     "revolve_profile",
@@ -71,6 +72,9 @@ SUBTRACTIVE_FEATURE_TYPES: tuple = (
     "cavity",
     "bolt_circle",
     "hole_pattern",
+    "keyway",
+    "slot",
+    "groove",
 )
 
 #: Finishing features applied to existing edges.

@@ -8,13 +8,24 @@ import { computeMaterialAlternatives } from "./material-comparison.js";
 import { simulateEngineeringChange, analyzeDimensionSensitivity } from "./engineering-analysis.js";
 import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from './vision-adapter.js';
 import { isReconstructionEnabled, callReconstructionService } from './reconstruction-adapter.js';
+import { storeSpatialEvidence, getSpatialEvidence } from './src/spatial-evidence-store.js';
 import {
   resolveGeometryFromVision,
   reconcileGeminiWithVision,
   fallbackDeterministicAnalysis,
+  extractVisionObservations,
 } from "./src/vision-geometry-resolver.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Auto-load environment configuration from .env.local or .env
+for (const envFile of [".env.local", ".env"]) {
+  const envPath = path.resolve(__dirname, envFile);
+  if (existsSync(envPath) && typeof process.loadEnvFile === 'function') {
+    try { process.loadEnvFile(envPath); } catch {}
+  }
+}
+
 const PORT = Number(process.env.PORT) || 8787;
 const MAX_IMAGES = 8;
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
@@ -63,11 +74,16 @@ function validateImages(images) {
   return clean;
 }
 
-const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle"];
+const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle", "boltCount"];
 
 function sanitizeReference(raw) {
   if (!raw || typeof raw !== "object") return {};
   const clean = {};
+  if (typeof raw.name === "string") clean.name = raw.name.slice(0, 150);
+  if (typeof raw.notes === "string") clean.notes = raw.notes.slice(0, 500);
+  if (typeof raw.componentType === "string") clean.componentType = raw.componentType.slice(0, 100);
+  if (typeof raw.role === "string") clean.role = raw.role.slice(0, 50);
+
   for (const key of REFERENCE_KEYS) {
     const value = raw[key];
     if (typeof value !== "number" || !isFinite(value)) continue;
@@ -77,6 +93,8 @@ function sanitizeReference(raw) {
       if (value >= 0 && value <= 60) clean[key] = value;
     } else if (key === "module") {
       if (value > 0 && value <= 100) clean[key] = value;
+    } else if (key === "boltCount") {
+      if (value >= 2 && value <= 64) clean[key] = Math.round(value);
     } else if (value > 0 && value <= 100000) {
       clean[key] = value;
     }
@@ -92,12 +110,14 @@ app.post("/api/analyze-component", async (req, res) => {
     // Optional vision preprocessing — fail-open by default (null if disabled/offline/error)
     let visionEvidence = null;
     let rawVisionResult = null;
+    let spatialEvidenceRef = null;
     if (isVisionEnabled()) {
       try {
         const visionResult = await callVisionService(images, reference);
         if (visionResult) {
           rawVisionResult = visionResult;
-          visionEvidence = buildVisionEvidenceSummary(visionResult);
+          spatialEvidenceRef = storeSpatialEvidence(visionResult);
+          visionEvidence = buildVisionEvidenceSummary(visionResult, spatialEvidenceRef);
         }
       } catch (visionError) {
         // callVisionService should never throw (resolves null on error), but guard anyway
@@ -126,8 +146,18 @@ app.post("/api/analyze-component", async (req, res) => {
       } catch (geminiError) {
         console.warn('[analyze-component] Gemini assist failed or unavailable (falling back to deterministic solver):', geminiError?.message);
         // 3. Guaranteed zero-crash fallback: synthesized engineering geometry adhering to ISO standards
-        analysis = fallbackDeterministicAnalysis(reference, geminiError?.message || 'Gemini assist offline');
+        analysis = fallbackDeterministicAnalysis(reference, geminiError?.message || 'Gemini assist offline', images);
         solverMode = "deterministic_fallback";
+      }
+    }
+
+    // Anchor spatial evidence to analysis object
+    if (analysis && typeof analysis === 'object') {
+      if (spatialEvidenceRef) {
+        analysis.spatialEvidenceRef = spatialEvidenceRef;
+      }
+      if (rawVisionResult) {
+        analysis.spatialObservations = extractVisionObservations(rawVisionResult);
       }
     }
 
@@ -135,6 +165,7 @@ app.post("/api/analyze-component", async (req, res) => {
     const responseBody = {
       analysis,
       solverMode,
+      spatialEvidenceRef,
     };
     if (visionEvidence) {
       responseBody.visionDiagnostics = {
@@ -157,6 +188,19 @@ app.post("/api/analyze-component", async (req, res) => {
     res.json(responseBody);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || "Analysis failed." });
+  }
+});
+
+app.get("/api/spatial-evidence/:evidenceId", async (req, res) => {
+  try {
+    const { evidenceId } = req.params;
+    const evidence = getSpatialEvidence(evidenceId);
+    if (!evidence) {
+      return res.status(404).json({ error: "Spatial evidence not found or expired." });
+    }
+    res.json(evidence);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Failed to retrieve spatial evidence." });
   }
 });
 

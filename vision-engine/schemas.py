@@ -64,6 +64,7 @@ class SegmentationResult(BaseModel):
     """SAM2 segmentation result."""
     status: str = Field(..., description="ok | low_confidence | needs_user_selection | unavailable")
     bbox_xyxy_px: Optional[List[float]] = Field(None, description="[x1, y1, x2, y2] in pixels")
+    boundary_polygon_px: Optional[List[List[float]]] = Field(None, description="Simplified 2D contour points [[x, y], ...] of primary component")
     mask_area_ratio: Optional[float] = Field(None, ge=0.0, le=1.0)
     candidate_count: int = Field(0)
     score: Optional[float] = Field(None)
@@ -134,6 +135,8 @@ class SymmetryHint(BaseModel):
     bilateral: bool = False
     rotational: bool = False
     rotational_order: Optional[int] = None
+    spectral_confidence: float = 0.0
+    detected_frequencies: List[dict] = Field(default_factory=list)
 
 
 class OpenCVResult(BaseModel):
@@ -144,6 +147,7 @@ class OpenCVResult(BaseModel):
     lines: List[LineCandidate] = Field(default_factory=list)
     bounding_box: Optional[BoundingBox] = None
     symmetry_hints: Optional[SymmetryHint] = None
+    radial_profile: Optional[dict] = None
     warnings: List[str] = Field(default_factory=list)
 
 
@@ -153,6 +157,7 @@ class DepthResult(BaseModel):
     depth_type: str = Field("relative", description="Always 'relative'")
     metric: bool = Field(False, description="Always False — relative depth only; not a measurement in mm")
     preview_ref: Optional[str] = Field(None, description="No large tensors in API responses")
+    depth_grid: Optional[List[List[float]]] = Field(None, description="Downsampled relative depth field grid (e.g. 64x64 or 128x128) normalized 0..1")
     warnings: List[str] = Field(default_factory=lambda: ["Relative depth only; not a measurement in millimetres."])
 
 

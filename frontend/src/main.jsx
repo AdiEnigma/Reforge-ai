@@ -175,8 +175,8 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
     });
 
     const stressMaterial = createStressMaterial();
-    const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
-    const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
+    const view = { radius: 11, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
+    const reset = () => { view.radius = 11; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
     let pointerMode = null, lastPoint = null, appliedKey = null;
     const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
     const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
@@ -2884,7 +2884,7 @@ function Workbench() {
 
                 <div className="cad viewport-status" aria-live="polite">
                   {ready
-                    ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                    ? <>● {label}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
                     : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
                 </div>
 
@@ -3451,13 +3451,21 @@ function App() {
       // Re-run analysis for primary if it has images
       let pAnalysis = primary?.analysis;
       if (primary?.images?.length) {
-        pAnalysis = await analyzeComponent(primary.images, primary.reference || {});
+        pAnalysis = await analyzeComponent(primary.images, {
+          ...(primary.reference || {}),
+          name: primary.name || '',
+          notes: primary.notes || '',
+        });
       }
 
       // Re-run analysis for companion if it has images
       let cAnalysis = companion?.analysis;
       if (companion?.images?.length) {
-        cAnalysis = await analyzeComponent(companion.images, companion.reference || {});
+        cAnalysis = await analyzeComponent(companion.images, {
+          ...(companion.reference || {}),
+          name: companion.name || '',
+          notes: companion.notes || '',
+        });
       }
 
       // Re-run analysis for additions that have images
@@ -3465,7 +3473,11 @@ function App() {
         additions.map(async (comp) => {
           if (comp.images?.length) {
             try {
-              const compAnalysis = await analyzeComponent(comp.images, comp.reference || {});
+              const compAnalysis = await analyzeComponent(comp.images, {
+                ...(comp.reference || {}),
+                name: comp.name || '',
+                notes: comp.notes || '',
+              });
               return { ...comp, analysis: compAnalysis };
             } catch {
               return comp;

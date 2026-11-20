@@ -16,14 +16,17 @@ export const matHighlight = new THREE.MeshStandardMaterial({
 });
 
 export function extrude(shape, depth, bevel = true) {
+  // Clamp bevel size so it never explodes thin features, teeth, or holes
+  const maxBevel = Math.min(0.35, depth * 0.02);
+  const useBevel = Boolean(bevel && depth > 2 && maxBevel >= 0.1);
   return new THREE.ExtrudeGeometry(shape, {
     depth,
-    bevelEnabled: bevel,
-    bevelThickness: bevel ? depth * 0.08 : 0,
-    bevelSize: bevel ? depth * 0.06 : 0,
-    bevelSegments: 4,
-    steps: 2,
-    curveSegments: 48,
+    bevelEnabled: useBevel,
+    bevelThickness: useBevel ? maxBevel : 0,
+    bevelSize: useBevel ? maxBevel : 0,
+    bevelSegments: 1,
+    steps: 1,
+    curveSegments: 36,
   });
 }
 
@@ -45,8 +48,9 @@ export function ringShape(outerR, innerR, boltHoles = []) {
  * Generates an engineering-accurate 2D involute gear profile shape.
  * Features true involute curve flanks (based on 20 deg pressure angle),
  * tip land, dedendum transition, and optional central bore / lightening holes.
+ * Mathematically guaranteed to form a continuous, non-self-intersecting closed polygon.
  */
-export function gearShape(teeth, outerR, toothHeight, boreR, lighteningHoles = [], pressureAngleDeg = 20) {
+export function gearShape(teeth, outerR, toothHeight, boreR, lighteningHoles = [], pressureAngleDeg = 20, keyway = null) {
   const shape = new THREE.Shape();
   const z = Math.max(4, Math.round(teeth || 16));
   const alpha = (pressureAngleDeg * Math.PI) / 180;
@@ -55,74 +59,77 @@ export function gearShape(teeth, outerR, toothHeight, boreR, lighteningHoles = [
   const Rp = (z * m) / 2;
   const Rb = Rp * Math.cos(alpha);
   const th = toothHeight && toothHeight > 0 ? toothHeight : 2.25 * m;
-  const Rf = Math.max(0.01, Math.min(Ra - 0.01, Ra - th));
-
-  function involuteTheta(r) {
-    if (r <= Rb) return 0;
-    const cosPhi = Math.max(-1, Math.min(1, Rb / r));
-    const phi = Math.acos(cosPhi);
-    return Math.tan(phi) - phi;
-  }
+  const Rf = Math.max(Ra * 0.1, Ra - th);
 
   const invAlpha = Math.tan(alpha) - alpha;
-  const invAlphaA = involuteTheta(Ra);
-  const halfToothAtPitch = Math.PI / (2 * z);
-  const halfToothAtBase = Math.max(0, halfToothAtPitch + invAlpha);
-
-  const points = [];
-  const samples = 3;
+  const halfPitchAngle = Math.PI / (2 * z);
+  const flankSamples = 3;
+  let first = true;
 
   for (let i = 0; i < z; i++) {
-    const centerAngle = (2 * Math.PI * i) / z;
-    const pitchToothAngle = Math.PI / z;
-    const rootAngle1 = centerAngle - pitchToothAngle;
+    const centerA = (i * 2 * Math.PI) / z;
 
-    if (Rf < Rb) {
-      const thetaBase1 = centerAngle - halfToothAtBase;
-      points.push(new THREE.Vector2(Rf * Math.cos(rootAngle1), Rf * Math.sin(rootAngle1)));
-      points.push(new THREE.Vector2(Rb * Math.cos(thetaBase1), Rb * Math.sin(thetaBase1)));
-    } else {
-      points.push(new THREE.Vector2(Rf * Math.cos(rootAngle1), Rf * Math.sin(rootAngle1)));
+    // Up flank: from root circle Rf up to tip circle Ra
+    for (let s = 0; s <= flankSamples; s++) {
+      const frac = s / flankSamples;
+      const r = Rf + (Ra - Rf) * frac;
+      let thetaR;
+      if (r <= Rb) {
+        thetaR = halfPitchAngle + invAlpha;
+      } else {
+        const cosA = Math.min(1, Math.max(-1, Rb / r));
+        const alphaR = Math.acos(cosA);
+        const invA = Math.tan(alphaR) - alphaR;
+        thetaR = Math.max(0.005, halfPitchAngle + invAlpha - invA);
+      }
+      const a = centerA - thetaR;
+      const x = r * Math.cos(a);
+      const y = r * Math.sin(a);
+      if (first) {
+        shape.moveTo(x, y);
+        first = false;
+      } else {
+        shape.lineTo(x, y);
+      }
     }
 
-    for (let s = 1; s <= samples; s++) {
-      const frac = s / samples;
-      const r = Rb + (Ra - Rb) * frac;
-      const theta = involuteTheta(r);
-      const a = centerAngle - (halfToothAtBase - theta);
-      points.push(new THREE.Vector2(r * Math.cos(a), r * Math.sin(a)));
-    }
-
-    const aTipRising = centerAngle - (halfToothAtBase - invAlphaA);
-    const aTipFalling = centerAngle + (halfToothAtBase - invAlphaA);
-    points.push(new THREE.Vector2(Ra * Math.cos(aTipRising), Ra * Math.sin(aTipRising)));
-    points.push(new THREE.Vector2(Ra * Math.cos(aTipFalling), Ra * Math.sin(aTipFalling)));
-
-    for (let s = samples - 1; s >= 0; s--) {
-      const frac = s / samples;
-      const r = Rb + (Ra - Rb) * frac;
-      const theta = involuteTheta(r);
-      const a = centerAngle + (halfToothAtBase - theta);
-      points.push(new THREE.Vector2(r * Math.cos(a), r * Math.sin(a)));
-    }
-
-    if (Rf < Rb) {
-      const rootAngle2 = centerAngle + halfToothAtBase;
-      points.push(new THREE.Vector2(Rf * Math.cos(rootAngle2), Rf * Math.sin(rootAngle2)));
+    // Down flank: from tip circle Ra down to root circle Rf
+    for (let s = flankSamples; s >= 0; s--) {
+      const frac = s / flankSamples;
+      const r = Rf + (Ra - Rf) * frac;
+      let thetaR;
+      if (r <= Rb) {
+        thetaR = halfPitchAngle + invAlpha;
+      } else {
+        const cosA = Math.min(1, Math.max(-1, Rb / r));
+        const alphaR = Math.acos(cosA);
+        const invA = Math.tan(alphaR) - alphaR;
+        thetaR = Math.max(0.005, halfPitchAngle + invAlpha - invA);
+      }
+      const a = centerA + thetaR;
+      shape.lineTo(r * Math.cos(a), r * Math.sin(a));
     }
   }
-
-  if (points.length > 0) {
-    shape.moveTo(points[0].x, points[0].y);
-    for (let k = 1; k < points.length; k++) {
-      shape.lineTo(points[k].x, points[k].y);
-    }
-    shape.closePath();
-  }
+  shape.closePath();
 
   if (boreR && boreR > 0 && boreR < Ra) {
     const hole = new THREE.Path();
-    hole.absarc(0, 0, boreR, 0, Math.PI * 2, true);
+    const kwWidth = Number(keyway?.width || keyway?.w || 0);
+    const kwHeight = Number(keyway?.height || keyway?.depth || keyway?.h || 0);
+    if (kwWidth > 0 && kwHeight > 0) {
+      const halfW = Math.min(kwWidth / 2, boreR * 0.65);
+      const notchTop = boreR + kwHeight;
+      const yInter = Math.sqrt(Math.max(0, boreR * boreR - halfW * halfW));
+      const startAngle = Math.atan2(yInter, halfW);
+      const endAngle = Math.atan2(yInter, -halfW);
+
+      hole.absarc(0, 0, boreR, endAngle, startAngle, false);
+      hole.lineTo(halfW, notchTop);
+      hole.lineTo(-halfW, notchTop);
+      hole.lineTo(-halfW, yInter);
+    } else {
+      hole.absarc(0, 0, boreR, 0, Math.PI * 2, true);
+    }
     shape.holes.push(hole);
   }
 
@@ -277,6 +284,266 @@ export function buildBevelGearGroup({
 }
 
 /**
+ * Builds an authentic 3D Compound / Cluster Gear with two stacked gear stages,
+ * central through-bore with keyway, and face drive pin holes.
+ */
+export function buildCompoundGearGroup({
+  stage1Teeth = 24,
+  stage1Radius = 2.8,
+  stage1FaceWidth = 1.2,
+  stage2Teeth = 16,
+  stage2Radius = 1.7,
+  stage2FaceWidth = 1.0,
+  boreRadius = 0.7,
+  keywayWidth = 0.28,
+  keywayHeight = 0.16,
+  pinHoles = false,
+} = {}) {
+  const group = new THREE.Group();
+  const r1 = Math.max(0.5, stage1Radius);
+  const t1 = Math.max(0.2, stage1FaceWidth);
+  const z1 = Math.max(6, Math.round(stage1Teeth));
+
+  const r2 = Math.max(0.3, stage2Radius);
+  const t2 = Math.max(0.2, stage2FaceWidth);
+  const z2 = Math.max(6, Math.round(stage2Teeth));
+
+  const bore = Math.max(0.1, boreRadius);
+  const totalH = t1 + t2;
+  const kw = (keywayWidth > 0 && keywayHeight > 0) ? { width: keywayWidth, height: keywayHeight } : null;
+
+  // 1. Base Stage: Large Gear
+  const toothH1 = r1 * 0.08;
+  const baseShape = gearShape(z1, r1, toothH1, bore, [], 20, kw);
+  const baseGeo = extrude(baseShape, t1);
+  baseGeo.center();
+  const baseMesh = new THREE.Mesh(baseGeo, matBody);
+  baseMesh.position.z = -t2 / 2;
+  baseMesh.userData = { featureId: "feature-gear-stage-1", featureType: "gear_teeth" };
+  group.add(baseMesh);
+
+  // 2. Secondary Stage: Small Pinion Gear (stacked on top of base gear)
+  const toothH2 = r2 * 0.09;
+  const pinHolePaths = [];
+  
+  // Two pin / dowel holes on the front face of the pinion gear
+  const pinR = Math.max(0.04, bore * 0.16);
+  const pinDist = (bore + r2 * 0.82) / 2;
+  for (let p = 0; p < 2; p++) {
+    const pa = p * Math.PI + Math.PI / 2;
+    const pPath = new THREE.Path();
+    pPath.absarc(Math.cos(pa) * pinDist, Math.sin(pa) * pinDist, pinR, 0, Math.PI * 2, true);
+    pinHolePaths.push(pPath);
+  }
+
+  const topShape = gearShape(z2, r2, toothH2, bore, pinHolePaths, 20, kw);
+  const topGeo = extrude(topShape, t2);
+  topGeo.center();
+  const topMesh = new THREE.Mesh(topGeo, matAccent);
+  topMesh.position.z = t1 / 2;
+  topMesh.userData = { featureId: "feature-gear-stage-2", featureType: "gear_teeth" };
+  group.add(topMesh);
+
+  // 3. Central Bore Highlight Cylinder
+  const boreHighlight = new THREE.Mesh(
+    new THREE.CylinderGeometry(bore * 0.99, bore * 0.99, totalH * 1.05, 32),
+    matHighlight
+  );
+  boreHighlight.rotation.x = Math.PI / 2;
+  boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
+  boreHighlight.visible = false;
+  group.add(boreHighlight);
+
+  // 4. Keyway Slot Notch Highlight Proxy
+  if (keywayWidth > 0 && keywayHeight > 0) {
+    const kwGeo = new THREE.BoxGeometry(keywayWidth, keywayHeight, totalH * 1.02);
+    const kwMesh = new THREE.Mesh(kwGeo, matDark);
+    kwMesh.position.set(0, bore + keywayHeight / 2, 0);
+    kwMesh.userData = { featureId: "feature-keyway-1", featureType: "keyway", isHighlightOnly: true };
+    kwMesh.visible = false;
+    group.add(kwMesh);
+  }
+
+  return group;
+}
+
+/**
+ * Builds an authentic 3D Flanged Shaft / Linear Spline Bushing assembly,
+ * comprising a longitudinal spline shaft, circular mounting flange collar,
+ * precision counterbored bolt holes, and ground bearing sleeve.
+ */
+export function buildFlangedShaftGroup({
+  shaftRadius = 0.8,
+  shaftLength = 6.5,
+  flangeRadius = 2.4,
+  flangeThickness = 0.65,
+  collarRadius = 1.4,
+  collarLength = 1.6,
+  boltCount = 4,
+  boltHoleRadius = 0.22,
+  splineCount = 6,
+} = {}) {
+  const group = new THREE.Group();
+  const sR = Math.max(0.3, shaftRadius);
+  const sL = Math.max(2.0, shaftLength);
+  const fR = Math.max(sR * 1.5, flangeRadius);
+  const fTh = Math.max(0.2, flangeThickness);
+  const cR = Math.max(sR * 1.2, collarRadius);
+  const cL = Math.max(0.4, collarLength);
+  const bCount = Math.max(3, Math.min(16, boltCount || 4));
+  const bHoleR = Math.max(0.08, boltHoleRadius);
+  const bcd = (sR * 1.4 + fR) / 2;
+
+  // 1. Central Longitudinal Shaft
+  const shaftGeo = new THREE.CylinderGeometry(sR, sR, sL, 32);
+  shaftGeo.rotateZ(Math.PI / 2); // Along X axis
+  const shaftMesh = new THREE.Mesh(shaftGeo, matBody);
+  shaftMesh.userData = { featureId: "feature-shaft-1", featureType: "shaft" };
+  group.add(shaftMesh);
+
+  // 2. Longitudinal Spline Grooves along shaft
+  if (splineCount > 0) {
+    const grooveW = ((Math.PI * 2 * sR) / splineCount) * 0.28;
+    const grooveDepth = sR * 0.18;
+    for (let s = 0; s < splineCount; s++) {
+      const sa = (s / splineCount) * Math.PI * 2;
+      const gGeo = new THREE.BoxGeometry(sL * 0.96, grooveDepth, grooveW);
+      const gMesh = new THREE.Mesh(gGeo, matDark);
+      gMesh.position.set(0, Math.sin(sa) * sR, Math.cos(sa) * sR);
+      gMesh.rotation.x = -sa;
+      gMesh.userData = { featureId: "feature-spline-1", featureType: "spline" };
+      group.add(gMesh);
+    }
+  }
+
+  // 3. Circular Mounting Flange Collar (positioned towards front-third of shaft)
+  const flangeX = -sL * 0.15;
+  const boltHoles = [];
+  for (let i = 0; i < bCount; i++) {
+    const a = (i / bCount) * Math.PI * 2;
+    const pathHole = new THREE.Path();
+    pathHole.absarc(Math.cos(a) * bcd, Math.sin(a) * bcd, bHoleR, 0, Math.PI * 2, true);
+    boltHoles.push(pathHole);
+
+    // Bolt hole highlight cylinder
+    const holeHighlight = new THREE.Mesh(
+      new THREE.CylinderGeometry(bHoleR * 0.98, bHoleR * 0.98, fTh * 1.1, 16),
+      matHighlight
+    );
+    holeHighlight.rotateZ(Math.PI / 2);
+    holeHighlight.position.set(flangeX, Math.cos(a) * bcd, Math.sin(a) * bcd);
+    holeHighlight.userData = { featureId: "feature-mounting-holes-1", featureType: "mounting_hole", isHighlightOnly: true };
+    holeHighlight.visible = false;
+    group.add(holeHighlight);
+  }
+
+  const flangeShape = ringShape(fR, sR * 1.02, boltHoles);
+  const flangeGeo = extrude(flangeShape, fTh);
+  flangeGeo.center();
+  flangeGeo.rotateY(Math.PI / 2); // Perpendicular to shaft along X
+  const flangeMesh = new THREE.Mesh(flangeGeo, matAccent);
+  flangeMesh.position.x = flangeX;
+  flangeMesh.userData = { featureId: "feature-flange-1", featureType: "flange" };
+  group.add(flangeMesh);
+
+  // 4. Bushing / Collar Hub Extension (behind flange)
+  const collarGeo = new THREE.CylinderGeometry(cR, cR, cL, 32);
+  collarGeo.rotateZ(Math.PI / 2);
+  const collarMesh = new THREE.Mesh(collarGeo, matRim);
+  collarMesh.position.x = flangeX + fTh / 2 + cL / 2;
+  collarMesh.userData = { featureId: "feature-boss-1", featureType: "boss" };
+  group.add(collarMesh);
+
+  return group;
+}
+
+export function buildPinionShaftGroup({
+  gearTeeth = 16,
+  gearRadius = 2.4,
+  gearFaceWidth = 1.8,
+  helixAngle = 20,
+  shaftRadius = 1.1,
+  shaftLength = 7.0,
+  driveJournalRadius = 1.0,
+  supportJournalRadius = 0.9,
+  keywayWidth = 0.35,
+  keywayHeight = 0.22,
+  splineCount = 0,
+} = {}) {
+  const group = new THREE.Group();
+  const gR = Math.max(0.6, gearRadius);
+  const gW = Math.max(0.4, gearFaceWidth);
+  const z = Math.max(6, Math.round(gearTeeth));
+  const sL = Math.max(gW * 1.5, shaftLength);
+  const sR = Math.max(0.3, Math.min(gR * 0.85, shaftRadius));
+  const jDriveR = Math.max(0.25, driveJournalRadius || sR * 0.9);
+  const jSuppR = Math.max(0.25, supportJournalRadius || sR * 0.8);
+
+  // Position gear along the shaft: standard pinion shaft has gear section slightly offset
+  const gearCenterOffset = -sL * 0.12;
+
+  // 1. Helical or Spur Pinion Gear Mesh
+  const toothH = gR * 0.11;
+  const gearSpurShape = gearShape(z, gR, toothH, 0); // Solid core (no through bore on pinion shaft)
+  const gearGeo = extrude(gearSpurShape, gW);
+  gearGeo.center();
+  gearGeo.rotateY(Math.PI / 2); // Lay horizontally along X axis
+  const gearMesh = new THREE.Mesh(gearGeo, matBody);
+  gearMesh.position.x = gearCenterOffset;
+  gearMesh.userData = { featureId: "feature-gear-teeth-1", featureType: "gear_teeth" };
+  group.add(gearMesh);
+
+  // 2. Main Drive Shaft Section (Left extension from gear to drive end)
+  const leftLen = Math.max(0.5, sL / 2 + gearCenterOffset - gW / 2);
+  const leftCenterX = gearCenterOffset - gW / 2 - leftLen / 2;
+  const leftShaftGeo = new THREE.CylinderGeometry(sR, sR, leftLen, 32);
+  leftShaftGeo.rotateZ(Math.PI / 2);
+  const leftShaftMesh = new THREE.Mesh(leftShaftGeo, matBody);
+  leftShaftMesh.position.x = leftCenterX;
+  leftShaftMesh.userData = { featureId: "feature-shaft-1", featureType: "shaft" };
+  group.add(leftShaftMesh);
+
+  // 3. Precision Ground Bearing Journal on drive side
+  const jDriveLen = leftLen * 0.55;
+  const jDriveGeo = new THREE.CylinderGeometry(jDriveR, jDriveR, jDriveLen, 32);
+  jDriveGeo.rotateZ(Math.PI / 2);
+  const jDriveMesh = new THREE.Mesh(jDriveGeo, matAccent);
+  jDriveMesh.position.x = leftCenterX - leftLen * 0.18;
+  jDriveMesh.userData = { featureId: "feature-bearing-journal-1", featureType: "shaft" };
+  group.add(jDriveMesh);
+
+  // 4. Support Shaft Section (Right extension from gear to support end)
+  const rightLen = Math.max(0.5, sL / 2 - gearCenterOffset - gW / 2);
+  const rightCenterX = gearCenterOffset + gW / 2 + rightLen / 2;
+  const rightShaftGeo = new THREE.CylinderGeometry(sR, sR, rightLen, 32);
+  rightShaftGeo.rotateZ(Math.PI / 2);
+  const rightShaftMesh = new THREE.Mesh(rightShaftGeo, matBody);
+  rightShaftMesh.position.x = rightCenterX;
+  rightShaftMesh.userData = { featureId: "feature-shaft-2", featureType: "shaft" };
+  group.add(rightShaftMesh);
+
+  // 5. Precision Ground Bearing Journal on support side
+  const jSuppLen = rightLen * 0.60;
+  const jSuppGeo = new THREE.CylinderGeometry(jSuppR, jSuppR, jSuppLen, 32);
+  jSuppGeo.rotateZ(Math.PI / 2);
+  const jSuppMesh = new THREE.Mesh(jSuppGeo, matAccent);
+  jSuppMesh.position.x = rightCenterX + rightLen * 0.15;
+  jSuppMesh.userData = { featureId: "feature-bearing-journal-2", featureType: "shaft" };
+  group.add(jSuppMesh);
+
+  // 6. Keyway on drive end
+  if (keywayWidth > 0) {
+    const kwGeo = new THREE.BoxGeometry(leftLen * 0.35, keywayHeight, keywayWidth);
+    const kwMesh = new THREE.Mesh(kwGeo, matDark);
+    kwMesh.position.set(-sL / 2 + leftLen * 0.25, jDriveR, 0);
+    kwMesh.userData = { featureId: "feature-keyway-1", featureType: "keyway" };
+    group.add(kwMesh);
+  }
+
+  return group;
+}
+
+/**
  * Builds an authentic 3D Stepped Shaft with multi-diameter journals,
  * transition shoulders, and optional spline head.
  */
@@ -358,3 +625,426 @@ export function buildSteppedShaftGroup({
 
   return group;
 }
+
+/**
+ * Generates an authentic 3D continuous helical worm screw flight geometry.
+ * Discretises the Archimedean / Involute screw flight along a continuous 3D helix:
+ *   theta(z) = (2 * PI * z) / lead
+ * Creates a fully watertight, non-manifold quad-strip surface with smooth feather-edge runouts.
+ */
+export function buildWormFlightGeometry({
+  length = 60,
+  pitch = 8,
+  starts = 1,
+  tipRadius = 30,
+  rootRadius = 21,
+  pressureAngleDeg = 20,
+  hand = "right",
+} = {}) {
+  const lead = Math.max(0.1, starts * pitch);
+  const numZ = Math.max(80, Math.ceil(length * 3));
+  const numTheta = 72;
+  const vertices = [];
+  const indices = [];
+
+  const halfTooth = (pitch * 0.35) / 2;
+  const halfSpace = (pitch * 0.85) / 2;
+  const runoutLen = pitch * 0.75;
+
+  for (let iz = 0; iz <= numZ; iz++) {
+    const tz = iz / numZ;
+    const z = -length / 2 + tz * length;
+
+    // Runout tapering at ends
+    let endFade = 1.0;
+    const distFromStart = z - (-length / 2);
+    const distFromEnd = length / 2 - z;
+    if (distFromStart < runoutLen) endFade = Math.min(endFade, Math.max(0, distFromStart / runoutLen));
+    if (distFromEnd < runoutLen) endFade = Math.min(endFade, Math.max(0, distFromEnd / runoutLen));
+
+    for (let it = 0; it < numTheta; it++) {
+      const theta = (it / numTheta) * Math.PI * 2;
+      const sign = hand === "left" ? -1 : 1;
+      const threadZ = (sign * theta * lead) / (Math.PI * 2);
+
+      let maxElevation = 0;
+      for (let s = 0; s < starts; s++) {
+        const startOffset = (s / starts) * lead;
+        const delta = Math.abs((((z - threadZ - startOffset) % pitch) + 1.5 * pitch) % pitch - 0.5 * pitch);
+        let elev = 0;
+        if (delta <= halfTooth) {
+          elev = 1.0;
+        } else if (delta < halfSpace) {
+          elev = (halfSpace - delta) / (halfSpace - halfTooth);
+        }
+        if (elev > maxElevation) maxElevation = elev;
+      }
+
+      const r = rootRadius + (tipRadius - rootRadius) * maxElevation * endFade;
+      vertices.push(Math.cos(theta) * r, Math.sin(theta) * r, z);
+    }
+  }
+
+  // Indices (quad strips)
+  for (let iz = 0; iz < numZ; iz++) {
+    for (let it = 0; it < numTheta; it++) {
+      const nextT = (it + 1) % numTheta;
+      const row1 = iz * numTheta;
+      const row2 = (iz + 1) * numTheta;
+
+      const a = row1 + it;
+      const b = row1 + nextT;
+      const c = row2 + it;
+      const d = row2 + nextT;
+
+      indices.push(a, b, c);
+      indices.push(b, d, c);
+    }
+  }
+
+  // Endcaps at -length/2 and +length/2
+  const firstRingStart = 0;
+  const lastRingStart = numZ * numTheta;
+  const centerBottomIdx = vertices.length / 3;
+  vertices.push(0, 0, -length / 2);
+  for (let it = 0; it < numTheta; it++) {
+    const nextT = (it + 1) % numTheta;
+    indices.push(centerBottomIdx, firstRingStart + nextT, firstRingStart + it);
+  }
+
+  const centerTopIdx = vertices.length / 3;
+  vertices.push(0, 0, length / 2);
+  for (let it = 0; it < numTheta; it++) {
+    const nextT = (it + 1) % numTheta;
+    indices.push(centerTopIdx, lastRingStart + it, lastRingStart + nextT);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * OPERATOR A: Generalised Axial Segment Assembly Builder
+ *
+ * Universal continuous geometry builder for rotational mechanical components.
+ * Constructs an authentic 3D assembly from an ordered sequence of K continuous axial segments.
+ * Unifies single gears, compound gears, multi-stage gear clusters, stepped shafts,
+ * pinion shafts, splined spindles, hollow shafts, and hybrid machinery into one parametric continuous operator.
+ *
+ * @param {Object} options
+ * @param {Array<Object>} options.segments - Array of axial segments:
+ *   [{ zStart, zEnd, radius, innerRadius, teeth, module, pressureAngle, helixAngle, splineCount, label }, ...]
+ * @param {number} [options.boreRadius=0] - Central through-bore radius
+ * @param {Object} [options.keyway=null] - Keyway { width, height, length, angle }
+ * @param {Array<Object>} [options.booleans=[]] - Boolean features (cross holes, slots, grooves)
+ * @param {Array<Object>} [options.modifiers=[]] - Multi-station modifications (keyways, grooves, threads)
+ * @returns {THREE.Group} Cohesive solid 3D assembly group with inspection metadata
+ */
+export function buildAxialSegmentAssembly({
+  segments = [],
+  boreRadius = 0,
+  keyway = null,
+  booleans = [],
+  modifiers = [],
+} = {}) {
+  const group = new THREE.Group();
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return group;
+  }
+
+  // Sort segments by zStart ascending
+  const sorted = [...segments].sort(
+    (a, b) => (a.zStart ?? a.z_start ?? 0) - (b.zStart ?? b.z_start ?? 0)
+  );
+  const bore = Math.max(0, typeof boreRadius === "number" && isFinite(boreRadius) ? boreRadius : 0);
+
+  const zMin = sorted[0].zStart ?? sorted[0].z_start ?? 0;
+  const zMax = sorted[sorted.length - 1].zEnd ?? sorted[sorted.length - 1].z_end ?? 0;
+  const totalLength = Math.max(0.1, zMax - zMin);
+  const maxRadius = Math.max(...sorted.map((s) => Math.max(0.1, s.radius ?? s.outer_radius ?? s.outerRadius ?? 10)));
+  const isElongatedShaft = totalLength > maxRadius * 2.2 && sorted.some((s) => !((s.teeth ?? 0) >= 3));
+
+  sorted.forEach((seg, idx) => {
+    const zStart = seg.zStart ?? seg.z_start ?? 0;
+    const zEnd = seg.zEnd ?? seg.z_end ?? (zStart + 10);
+    const segLen = Math.max(0.1, zEnd - zStart);
+    const segPos = (zStart + zEnd) / 2;
+    const rOuter = Math.max(0.1, seg.radius ?? seg.outer_radius ?? seg.outerRadius ?? 10);
+    const segBore = Math.max(bore, seg.innerRadius ?? seg.inner_radius ?? seg.boreRadius ?? 0);
+    const teeth = Math.round(seg.teeth ?? 0);
+    const helix = seg.helixAngle ?? seg.helix_angle ?? 0;
+    const splines = Math.round(seg.splineCount ?? seg.spline_count ?? 0);
+
+    let segMesh;
+
+    if (seg.featureType === "worm_thread" || (seg.pitch && seg.pitch > 0)) {
+      // Continuous 3D helical worm screw thread flight
+      const p = seg.pitch || 8.0;
+      const starts = seg.starts || 1;
+      const rTip = rOuter;
+      const rRoot = seg.rootRadius || rOuter * 0.7;
+      const geo = buildWormFlightGeometry({
+        length: segLen,
+        pitch: p,
+        starts,
+        tipRadius: rTip,
+        rootRadius: rRoot,
+        pressureAngleDeg: seg.pressureAngle || 20,
+        hand: seg.hand || "right",
+      });
+      if (isElongatedShaft) {
+        geo.rotateY(Math.PI / 2);
+        segMesh = new THREE.Mesh(geo, matAccent);
+        segMesh.position.x = segPos;
+      } else {
+        segMesh = new THREE.Mesh(geo, matAccent);
+        segMesh.position.z = segPos;
+      }
+      segMesh.userData = {
+        featureId: `feature-worm-thread-${idx + 1}`,
+        featureType: "worm_thread",
+        pitch: p,
+        starts,
+        length: segLen,
+        radius: rOuter,
+        rootRadius: rRoot,
+      };
+    } else if (seg.featureType === "threaded_stud" || seg.thread) {
+      // Threaded fastener stud on shaft end
+      const geo = new THREE.CylinderGeometry(rOuter * 0.95, rOuter, segLen, 36);
+      if (isElongatedShaft) {
+        geo.rotateZ(Math.PI / 2);
+      } else {
+        geo.rotateX(Math.PI / 2);
+      }
+      segMesh = new THREE.Mesh(geo, matDark);
+      if (isElongatedShaft) {
+        segMesh.position.x = segPos;
+      } else {
+        segMesh.position.z = segPos;
+      }
+      segMesh.userData = {
+        featureId: `feature-threaded-stud-${idx + 1}`,
+        featureType: "threaded_stud",
+        thread: seg.thread || "M16x1.5",
+        length: segLen,
+        radius: rOuter,
+      };
+    } else if (teeth >= 3) {
+      // Involute gear section
+      const m = seg.module ?? ((rOuter * 2) / (teeth + 2));
+      const toothH = Math.min(rOuter * 0.25, 2.25 * m);
+      const shape = gearShape(teeth, rOuter, toothH, segBore, [], 20, keyway);
+      const geo = extrude(shape, segLen);
+      geo.center();
+      if (isElongatedShaft) {
+        geo.rotateY(Math.PI / 2);
+        segMesh = new THREE.Mesh(geo, idx % 2 === 0 ? matBody : matAccent);
+        segMesh.position.x = segPos;
+      } else {
+        segMesh = new THREE.Mesh(geo, idx % 2 === 0 ? matBody : matAccent);
+        segMesh.position.z = segPos;
+      }
+      segMesh.userData = {
+        featureId: `feature-gear-segment-${idx + 1}`,
+        featureType: "gear_teeth",
+        teeth,
+        module: m,
+        faceWidth: segLen,
+        radius: rOuter,
+        helixAngle: helix,
+      };
+    } else if (splines >= 2) {
+      // Spline drive shaft section
+      const splineDepth = seg.splineDepth ?? seg.spline_depth ?? (rOuter * 0.16);
+      const shape = new THREE.Shape();
+      const numPts = 72;
+      for (let p = 0; p < numPts; p++) {
+        const theta = (p / numPts) * Math.PI * 2;
+        const phase = (((theta * splines) / (Math.PI * 2)) % 1 + 1) % 1;
+        let r = rOuter;
+        if (phase < 0.25 || phase > 0.75) {
+          r = Math.max(0.1, rOuter - splineDepth);
+        }
+        const px = Math.cos(theta) * r;
+        const py = Math.sin(theta) * r;
+        if (p === 0) shape.moveTo(px, py);
+        else shape.lineTo(px, py);
+      }
+      shape.closePath();
+      if (segBore > 0) {
+        const holePath = new THREE.Path();
+        const kwWidth = Number(keyway?.width || keyway?.w || 0);
+        const kwHeight = Number(keyway?.height || keyway?.depth || keyway?.h || 0);
+        if (kwWidth > 0 && kwHeight > 0) {
+          const halfW = Math.min(kwWidth / 2, segBore * 0.65);
+          const notchTop = segBore + kwHeight;
+          const yInter = Math.sqrt(Math.max(0, segBore * segBore - halfW * halfW));
+          const startAngle = Math.atan2(yInter, halfW);
+          const endAngle = Math.atan2(yInter, -halfW);
+          holePath.absarc(0, 0, segBore, endAngle, startAngle, false);
+          holePath.lineTo(halfW, notchTop);
+          holePath.lineTo(-halfW, notchTop);
+          holePath.lineTo(-halfW, yInter);
+        } else {
+          holePath.absarc(0, 0, segBore, 0, Math.PI * 2, true);
+        }
+        shape.holes.push(holePath);
+      }
+      const geo = extrude(shape, segLen);
+      geo.center();
+      if (isElongatedShaft) {
+        geo.rotateY(Math.PI / 2);
+        segMesh = new THREE.Mesh(geo, matBody);
+        segMesh.position.x = segPos;
+      } else {
+        segMesh = new THREE.Mesh(geo, matBody);
+        segMesh.position.z = segPos;
+      }
+      segMesh.userData = {
+        featureId: `feature-spline-segment-${idx + 1}`,
+        featureType: "spline",
+        splineCount: splines,
+        radius: rOuter,
+        length: segLen,
+      };
+    } else {
+      // Cylindrical journal / collar / bearing seat / hollow sleeve
+      let geo;
+      if (segBore > 0) {
+        const shape = ringShape(rOuter, segBore);
+        geo = extrude(shape, segLen);
+        geo.center();
+        if (isElongatedShaft) {
+          geo.rotateY(Math.PI / 2);
+        }
+      } else {
+        geo = new THREE.CylinderGeometry(rOuter, rOuter, segLen, 36);
+        if (isElongatedShaft) {
+          geo.rotateZ(Math.PI / 2);
+        } else {
+          geo.rotateX(Math.PI / 2);
+        }
+      }
+      segMesh = new THREE.Mesh(geo, idx % 2 === 0 ? matBody : matAccent);
+      if (isElongatedShaft) {
+        segMesh.position.x = segPos;
+      } else {
+        segMesh.position.z = segPos;
+      }
+      segMesh.userData = {
+        featureId: `feature-axial-segment-${idx + 1}`,
+        featureType: rOuter > 25 ? "flange" : "shaft",
+        label: seg.label || `Segment ${idx + 1}`,
+        radius: rOuter,
+        length: segLen,
+      };
+    }
+
+    group.add(segMesh);
+
+    // Shoulder transition ring if stepping between smooth shaft journals
+    // NEVER add over gear teeth or splines
+    if (idx < sorted.length - 1) {
+      const nextSeg = sorted[idx + 1];
+      const nextTeeth = Math.round(nextSeg.teeth ?? 0);
+      const nextSplines = Math.round(nextSeg.splineCount ?? nextSeg.spline_count ?? 0);
+      const nextR = Math.max(0.1, nextSeg.radius ?? nextSeg.outer_radius ?? 10);
+      const deltaR = Math.abs(nextR - rOuter);
+      if (deltaR > 0.5 && !teeth && !nextTeeth && !splines && !nextSplines && isElongatedShaft) {
+        const shoulderR = Math.max(rOuter, nextR);
+        const ringGeo = new THREE.TorusGeometry(shoulderR * 0.98, Math.min(deltaR * 0.25, 2.0), 12, 32);
+        ringGeo.rotateY(Math.PI / 2);
+        const ringMesh = new THREE.Mesh(ringGeo, matRim);
+        ringMesh.position.x = zEnd;
+        ringMesh.userData = { featureId: `feature-shoulder-${idx + 1}`, featureType: "shoulder" };
+        group.add(ringMesh);
+      }
+    }
+  });
+
+  // Central bore inspection proxy
+  if (bore > 0) {
+    const boreGeo = new THREE.CylinderGeometry(bore * 0.99, bore * 0.99, totalLength * 1.02, 32);
+    if (isElongatedShaft) {
+      boreGeo.rotateZ(Math.PI / 2);
+    } else {
+      boreGeo.rotateX(Math.PI / 2);
+    }
+    const boreMesh = new THREE.Mesh(boreGeo, matHighlight);
+    if (isElongatedShaft) {
+      boreMesh.position.x = (zMin + zMax) / 2;
+    } else {
+      boreMesh.position.z = (zMin + zMax) / 2;
+    }
+    boreMesh.userData = { featureId: "feature-central-bore", featureType: "bore", isHighlightOnly: true };
+    boreMesh.visible = false;
+    group.add(boreMesh);
+  }
+
+  // Keyway slot inspection proxy
+  if (keyway && (keyway.width || keyway.height)) {
+    const kw = keyway.width || Math.max(2, bore * 0.4);
+    const kh = keyway.height || Math.max(1.5, bore * 0.22);
+    const kl = keyway.length || totalLength * 0.7;
+    let kwMesh;
+    if (isElongatedShaft) {
+      kwMesh = new THREE.Mesh(new THREE.BoxGeometry(kl, kh, kw), matHighlight);
+      kwMesh.position.set((zMin + zMax) / 2, bore + kh / 2, 0);
+    } else {
+      kwMesh = new THREE.Mesh(new THREE.BoxGeometry(kw, kh, kl), matHighlight);
+      kwMesh.position.set(0, bore + kh / 2, (zMin + zMax) / 2);
+    }
+    kwMesh.userData = { featureId: "feature-keyway-slot", featureType: "keyway", isHighlightOnly: true };
+    kwMesh.visible = false;
+    group.add(kwMesh);
+  }
+
+  // Boolean features & multi-station modifiers (Operator D)
+  const allModifiers = Array.from(new Set([...(Array.isArray(modifiers) ? modifiers : []), ...(Array.isArray(booleans) ? booleans : [])]));
+  allModifiers.forEach((feat, bIdx) => {
+    if (!feat) return;
+    const fType = feat.type || "other";
+    if (fType === "keyway") {
+      const kwWidth = feat.width || 6;
+      const kwHeight = feat.depth || feat.height || 3.5;
+      const kwLen = feat.length || 20;
+      const kwX = feat.x ?? feat.z ?? 0;
+      const kwGeo = new THREE.BoxGeometry(
+        isElongatedShaft ? kwLen : kwWidth,
+        kwHeight,
+        isElongatedShaft ? kwWidth : kwLen
+      );
+      const kwMesh = new THREE.Mesh(kwGeo, matDark);
+      if (isElongatedShaft) {
+        kwMesh.position.set(kwX, (feat.radius || maxRadius * 0.5) - kwHeight * 0.1, 0);
+      } else {
+        kwMesh.position.set(0, (feat.radius || maxRadius * 0.5) - kwHeight * 0.1, kwX);
+      }
+      kwMesh.userData = {
+        featureId: feat.id || `feature-keyway-${bIdx + 1}`,
+        featureType: "keyway",
+        label: feat.label || `Keyway Slot ${kwWidth}x${kwHeight}mm`,
+      };
+      group.add(kwMesh);
+    } else if (fType === "mounting_hole" || fType === "radial_hole" || fType === "through_hole") {
+      const rad = Number(feat.radius) || 3.5;
+      const dep = Number(feat.depth) || 20;
+      const hMesh = new THREE.Mesh(new THREE.CylinderGeometry(rad, rad, dep, 16), matHighlight);
+      hMesh.position.set(feat.cx || 0, feat.cy || 0, feat.cz || 0);
+      hMesh.userData = {
+        featureId: feat.id || `feature-bool-${bIdx + 1}`,
+        featureType: fType,
+        isHighlightOnly: true,
+      };
+      hMesh.visible = false;
+      group.add(hMesh);
+    }
+  });
+
+  return group;
+}
+

@@ -1,8 +1,11 @@
 import * as THREE from "three";
 import { executeRecipe, sanitizeRecipe } from "./recipe.js";
-import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup } from "./geo.js";
+import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup, buildCompoundGearGroup, buildFlangedShaftGroup, buildPinionShaftGroup } from "./geo.js";
 
 export const COMPONENT_LABELS = {
+  "pinion shaft": "HELICAL PINION SHAFT",
+  "compound gear": "COMPOUND GEAR",
+  "flanged shaft": "FLANGED SPLINE SHAFT",
   "bevel gear": "BEVEL GEAR",
   "stepped shaft": "STEPPED SHAFT",
   "spur gear": "SPUR GEAR",
@@ -19,59 +22,121 @@ export function resolveComponentType(analysis) {
   const raw = String(analysis?.componentType || "other").toLowerCase();
   const featuresStr = Array.isArray(analysis?.features) ? analysis.features.map(f => String(f).toLowerCase()).join(" ") : "";
   const gearType = String(analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType || "").toLowerCase();
+  const isGear = raw.includes("gear") || featuresStr.includes("gear") || featuresStr.includes("teeth") || (typeof analysis?.teeth === "number" && analysis.teeth > 0) || analysis?.geometryRecipe?.style === "gear" || analysis?.geometryRecipe?.gear;
 
-  // 1. Detect Bevel Gear
+  // 1. Detect Compound / Cluster Multi-Stage Gear (EXCLUDE pinion shafts and single gears)
+  const isExplicitPinionShaft =
+    raw.includes("pinion shaft") ||
+    raw.includes("gear shaft") ||
+    raw.includes("helical shaft") ||
+    featuresStr.includes("pinion shaft") ||
+    featuresStr.includes("gear shaft");
+
   if (
-    raw.includes("bevel") ||
-    raw.includes("miter") ||
-    raw.includes("conical") ||
-    gearType === "bevel" ||
-    featuresStr.includes("bevel") ||
-    featuresStr.includes("miter") ||
-    featuresStr.includes("conical")
+    isGear &&
+    !isExplicitPinionShaft &&
+    (raw.includes("compound") ||
+      raw.includes("cluster") ||
+      raw.includes("double gear") ||
+      raw.includes("dual gear") ||
+      raw.includes("two-stage") ||
+      raw.includes("two stage") ||
+      featuresStr.includes("compound") ||
+      featuresStr.includes("cluster") ||
+      featuresStr.includes("two-stage") ||
+      featuresStr.includes("double gear") ||
+      featuresStr.includes("dual gear") ||
+      (analysis?.geometryRecipe?.gear?.stages && analysis.geometryRecipe.gear.stages.length >= 2))
+  ) {
+    return "compound gear";
+  }
+
+  // 2. Detect Integral Pinion Shaft / Gear Shaft
+  if (
+    isGear &&
+    (isExplicitPinionShaft ||
+      (analysis?.geometryRecipe?.shaft && analysis?.geometryRecipe?.gear) ||
+      ((analysis?.dimensions?.length || analysis?.dimensions?.height || 0) >= ((analysis?.dimensions?.outerDiameter || 30) * 1.5) &&
+        (raw.includes("shaft") || featuresStr.includes("bearing journal") || featuresStr.includes("ground journal"))))
+  ) {
+    return "pinion shaft";
+  }
+
+  // 3. Detect Flanged Shaft / Linear Spline Bushing
+  if (
+    (raw.includes("flanged") && raw.includes("shaft")) ||
+    raw.includes("ball spline") ||
+    raw.includes("spline bushing") ||
+    raw.includes("linear shaft") ||
+    analysis?.geometryRecipe?.style === "flanged_shaft" ||
+    ((raw.includes("flange") || featuresStr.includes("bolt hole") || featuresStr.includes("mounting hole")) &&
+      (raw.includes("spline") || (raw.includes("shaft") && !raw.includes("shaft bore")) || featuresStr.includes("spline")))
+  ) {
+    return "flanged shaft";
+  }
+
+  // 4. Detect Bevel Gear
+  if (
+    isGear &&
+    (raw.includes("bevel") ||
+      raw.includes("miter") ||
+      raw.includes("conical") ||
+      gearType === "bevel" ||
+      featuresStr.includes("bevel") ||
+      featuresStr.includes("miter") ||
+      featuresStr.includes("conical"))
   ) {
     return "bevel gear";
   }
 
-  // 2. Detect Stepped Shaft / Spindle
-  if (
-    raw.includes("step") ||
-    raw.includes("spindle") ||
-    (raw.includes("shaft") && !raw.includes("crank")) ||
-    featuresStr.includes("step") ||
-    featuresStr.includes("spline") ||
-    featuresStr.includes("journal") ||
-    (analysis?.geometryRecipe?.style === "revolved" && Array.isArray(analysis?.geometryRecipe?.revolvedProfile) && analysis.geometryRecipe.revolvedProfile.length >= 4)
-  ) {
-    return "stepped shaft";
-  }
-
-  // 3. Detect Helical / Worm Gear
-  if (raw.includes("helical") || gearType === "helical" || (typeof analysis?.helixAngle === "number" && analysis.helixAngle > 0)) {
+  // 5. Detect Helical / Worm Gear
+  if (isGear && (raw.includes("helical") || gearType === "helical" || (typeof analysis?.helixAngle === "number" && analysis.helixAngle > 0))) {
     return "helical gear";
   }
-  if (raw.includes("worm") || gearType === "worm") {
+  if (isGear && (raw.includes("worm") || gearType === "worm")) {
     return "worm gear";
+  }
+
+  // 6. Detect Spur Gear (Standard)
+  if (isGear) {
+    return "spur gear";
+  }
+
+  // 7. Detect Stepped Shaft / Spindle (ONLY if NOT a gear and NOT a flanged shaft!)
+  if (
+    !isGear &&
+    (raw.includes("step") ||
+      raw.includes("spindle") ||
+      (raw.includes("shaft") && !raw.includes("crank") && !raw.includes("shaft bore")) ||
+      featuresStr.includes("shoulder") ||
+      featuresStr.includes("bearing journal") ||
+      (analysis?.geometryRecipe?.style === "revolved" && Array.isArray(analysis?.geometryRecipe?.revolvedProfile) && analysis.geometryRecipe.revolvedProfile.length >= 4))
+  ) {
+    return "stepped shaft";
   }
 
   const ordered = Object.keys(COMPONENT_LABELS).sort((a, b) => b.length - a.length);
   for (const key of ordered) {
     if (raw.includes(key)) return key;
   }
-  if (
-    raw.includes("gear") ||
-    (typeof analysis?.teeth === "number" && analysis.teeth > 0) ||
-    analysis?.geometryRecipe?.style === "gear" ||
-    analysis?.geometryRecipe?.gear
-  ) {
-    return "spur gear";
-  }
-  if (raw.includes("shaft") || raw.includes("cylinder") || analysis?.geometryRecipe?.style === "revolved") {
+  if (raw.includes("shaft") || raw.includes("cylinder") || (analysis?.geometryRecipe?.style === "revolved" && !raw.includes("bracket"))) {
     return "cylinder/shaft";
   }
   if (raw.includes("flange")) return "flange";
   if (raw.includes("bearing")) return "bearing";
-  if (raw.includes("bracket")) return "simple bracket";
+  if (
+    raw.includes("bracket") ||
+    raw.includes("lever") ||
+    raw.includes("arm") ||
+    raw.includes("rod") ||
+    raw.includes("link") ||
+    raw.includes("plate") ||
+    raw.includes("mount") ||
+    raw.includes("housing") ||
+    analysis?.geometryRecipe?.style === "extruded"
+  ) {
+    return "simple bracket";
+  }
   return "other";
 }
 
@@ -340,19 +405,40 @@ function buildBracket(p) {
 
 function buildGeneric(p) {
   const group = new THREE.Group();
-  const w = p.width || p.length || 2.4;
-  const h = p.height || 2.4;
-  const d = p.thickness || p.length || 1.6;
-  const geo = new THREE.BoxGeometry(w, h, d);
+  const w = p.width || 2.4;
+  const l = p.length || w * 1.5;
+  const t = p.thickness || p.height || 0.6;
+  const boreR = p.innerDiameter ? p.innerDiameter / 2 : 0;
+
+  const shape = new THREE.Shape();
+  const hw = w / 2;
+  const hl = l / 2;
+  shape.moveTo(-hl, -hw);
+  shape.lineTo(hl, -hw);
+  shape.lineTo(hl, hw);
+  shape.lineTo(-hl, hw);
+  shape.closePath();
+
+  if (boreR > 0 && boreR < Math.min(hw, hl)) {
+    const hole = new THREE.Path();
+    hole.absarc(0, 0, boreR, 0, Math.PI * 2, true);
+    shape.holes.push(hole);
+
+    const boreHighlight = new THREE.Mesh(
+      new THREE.CylinderGeometry(boreR * 0.98, boreR * 0.98, t * 1.05, 32),
+      matHighlight
+    );
+    boreHighlight.rotation.x = Math.PI / 2;
+    boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
+    boreHighlight.visible = false;
+    group.add(boreHighlight);
+  }
+
+  const geo = extrude(shape, t);
+  geo.center();
   const mesh = new THREE.Mesh(geo, matBody);
-  mesh.userData = { featureId: "feature-other-1", featureType: "other" };
+  mesh.userData = { featureId: "feature-body-1", featureType: "other" };
   group.add(mesh);
-  const envelope = new THREE.LineSegments(
-    new THREE.EdgesGeometry(geo),
-    new THREE.LineBasicMaterial({ color: "#de822b" })
-  );
-  envelope.scale.setScalar(1.25);
-  group.add(envelope);
   return group;
 }
 
@@ -371,25 +457,71 @@ export function buildModel(analysis) {
     recipe.primitives.length === 1 &&
     recipe.primitives[0].kind === "box";
 
+  // Check if component is an extruded planar / prismatic part with a valid outline
+  const isCustomExtruded =
+    recipe &&
+    (recipe.style === "extruded" || (Array.isArray(recipe.outline) && recipe.outline.length >= 3)) &&
+    !isTrivialBoxFallback;
+
+  const rawType = String(analysis?.componentType || "").toLowerCase();
+  const featuresStr = Array.isArray(analysis?.features) ? analysis.features.map(f => String(f).toLowerCase()).join(" ") : "";
+  const isGear = p.type === "compound gear" || p.type === "pinion shaft" || p.type === "bevel gear" || p.type === "helical gear" || p.type === "spur gear" || p.type === "worm gear" || rawType.includes("gear") || featuresStr.includes("gear") || featuresStr.includes("teeth") || (typeof analysis?.teeth === "number" && analysis.teeth > 0) || recipe?.gear != null;
+
+  // Detect if component is Pinion Shaft / Gear Shaft
+  const isPinionShaft =
+    p.type === "pinion shaft" ||
+    rawType.includes("pinion shaft") ||
+    rawType.includes("gear shaft") ||
+    rawType.includes("helical shaft") ||
+    (recipe?.shaft != null && recipe?.gear != null);
+
+  // Detect if component is Compound Gear
+  const isCompoundGear =
+    !isPinionShaft &&
+    (p.type === "compound gear" ||
+      rawType.includes("compound") ||
+      rawType.includes("double gear") ||
+      rawType.includes("dual gear") ||
+      rawType.includes("cluster gear") ||
+      recipe?.style === "compound_gear");
+
+  // Detect if component is Flanged Shaft / Linear Spline Bushing
+  const isFlangedShaft =
+    p.type === "flanged shaft" ||
+    recipe?.style === "flanged_shaft" ||
+    ((p.type === "flange" || (Array.isArray(analysis?.features) && analysis.features.some((f) => /bolt\s*hole|mounting\s*hole|flange/i.test(String(f))))) &&
+      (rawType.includes("shaft") ||
+        rawType.includes("spline") ||
+        rawType.includes("bushing") ||
+        (Array.isArray(analysis?.features) && analysis.features.some((f) => /spline|linear\s*shaft|drive\s*shaft/i.test(String(f))))));
+
   // Detect if component is Bevel Gear
   const isBevel =
     p.type === "bevel gear" ||
-    String(analysis?.componentType || "").toLowerCase().includes("bevel") ||
+    rawType.includes("bevel") ||
     recipe?.gear?.gearType === "bevel" ||
     (recipe?.gear?.coneAngle && recipe.gear.coneAngle > 0);
 
-  // Detect if component is Stepped Shaft / Spindle
+  // Detect if component is Stepped Shaft / Spindle (NEVER a gear or flanged shaft!)
   const isSteppedShaft =
-    p.type === "stepped shaft" ||
-    String(analysis?.componentType || "").toLowerCase().includes("step") ||
-    String(analysis?.componentType || "").toLowerCase().includes("spindle") ||
-    (recipe?.style === "revolved" && Array.isArray(recipe?.revolvedProfile) && recipe.revolvedProfile.length >= 4);
+    !isGear &&
+    !isCompoundGear &&
+    !isPinionShaft &&
+    !isFlangedShaft &&
+    !isCustomExtruded &&
+    (p.type === "stepped shaft" ||
+      rawType.includes("step") ||
+      rawType.includes("spindle"));
 
   // Check if component is a flange (either by type or features containing flange/bolt holes)
   const isFlange =
-    p.type === "flange" ||
-    String(analysis?.componentType || "").toLowerCase().includes("flange") ||
-    (Array.isArray(analysis?.features) && analysis.features.some((f) => /bolt\s*hole|mounting\s*hole|flange/i.test(String(f))));
+    !isGear &&
+    !isPinionShaft &&
+    !isFlangedShaft &&
+    !isCustomExtruded &&
+    (p.type === "flange" ||
+      rawType.includes("flange") ||
+      (Array.isArray(analysis?.features) && analysis.features.some((f) => /bolt\s*hole|mounting\s*hole/i.test(String(f)))));
 
   // If component is a flange, but the recipe is 'revolved' (which CANNOT display off-axis bolt holes)
   // or has no bolt holes in recipe, render the true flange geometry with bolt holes!
@@ -399,7 +531,72 @@ export function buildModel(analysis) {
       recipe.style === "revolved" ||
       (!recipe.flange && (!recipe.holes || recipe.holes.length <= 1)));
 
-  if (isBevel) {
+  // Primary Route: Execute exact engineering recipe (meshData, compound_gear, flanged_shaft, gear, revolved, extruded, combination)
+  if (recipe && !isTrivialBoxFallback) {
+    body = executeRecipe(recipe);
+    const rawComp = String(analysis?.componentType || "").trim();
+    if (rawComp && rawComp.toLowerCase() !== "other") {
+      label = rawComp.toUpperCase();
+    } else if (p.type && COMPONENT_LABELS[p.type]) {
+      label = COMPONENT_LABELS[p.type];
+    } else {
+      label = "ENGINEERED COMPONENT";
+    }
+  } else if (isCompoundGear) {
+    const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.8;
+    const stage2R = outerR * 0.60;
+    const faceW = p.height || p.thickness || 2.2;
+    const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.25;
+    body = buildCompoundGearGroup({
+      stage1Teeth: p.teeth || 24,
+      stage1Radius: outerR,
+      stage1FaceWidth: faceW * 0.55,
+      stage2Teeth: Math.max(8, Math.round((p.teeth || 24) * 0.65)),
+      stage2Radius: stage2R,
+      stage2FaceWidth: faceW * 0.45,
+      boreRadius: boreR,
+      keywayWidth: boreR * 0.4,
+      keywayHeight: boreR * 0.22,
+    });
+    label = COMPONENT_LABELS["compound gear"];
+  } else if (isPinionShaft) {
+    const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.5;
+    const faceW = p.thickness || (p.outerDiameter ? p.outerDiameter * 0.65 : 2.0);
+    const length = p.length || p.height || outerR * 4.5;
+    const shaftR = p.innerDiameter && p.innerDiameter > 0 ? p.innerDiameter / 2 : outerR * 0.45;
+    body = buildPinionShaftGroup({
+      gearTeeth: p.teeth || 16,
+      gearRadius: outerR,
+      gearFaceWidth: faceW,
+      helixAngle: p.helixAngle || 20,
+      shaftRadius: shaftR,
+      shaftLength: length,
+      driveJournalRadius: shaftR * 0.9,
+      supportJournalRadius: shaftR * 0.8,
+      keywayWidth: shaftR * 0.35,
+      keywayHeight: shaftR * 0.22,
+    });
+    label = COMPONENT_LABELS["pinion shaft"] || "HELICAL PINION SHAFT";
+  } else if (isFlangedShaft) {
+    const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.4;
+    const shaftR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.35;
+    const length = p.length || p.height || outerR * 4.0;
+    body = buildFlangedShaftGroup({
+      shaftRadius: shaftR,
+      shaftLength: length,
+      flangeRadius: outerR,
+      flangeThickness: Math.max(0.5, outerR * 0.28),
+      collarRadius: shaftR * 1.5,
+      collarLength: outerR * 0.7,
+      boltCount: p.boltCount || 4,
+      boltHoleRadius: Math.max(0.12, outerR * 0.09),
+      splineCount: 6,
+    });
+    label = COMPONENT_LABELS["flanged shaft"];
+  } else if (isCustomExtruded) {
+    body = executeRecipe(recipe);
+    label = String(analysis?.componentType || "other").trim().toUpperCase() || COMPONENT_LABELS.other;
+  } else if (isBevel) {
     const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.8;
     const faceW = p.height || p.thickness || outerR * 0.45;
     const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.30;
@@ -425,11 +622,14 @@ export function buildModel(analysis) {
   } else if (flangeLacksHoles) {
     body = buildFlange(p);
     label = COMPONENT_LABELS.flange;
-  } else if (recipe && !isTrivialBoxFallback) {
-    body = executeRecipe(recipe);
-    label = String(analysis?.componentType || "other").trim().toUpperCase() || COMPONENT_LABELS.other;
   } else {
     switch (p.type) {
+      case "compound gear":
+        body = buildCompoundGearGroup();
+        break;
+      case "flanged shaft":
+        body = buildFlangedShaftGroup();
+        break;
       case "bevel gear":
         body = buildBevelGearGroup({
           teeth: p.teeth || 20,
@@ -682,16 +882,90 @@ export function resolveLabel(analysis) {
 export function dimensionList(analysis) {
   const dims = analysis?.dimensions || {};
   const teeth = analysis?.teeth;
+  const paramConf = analysis?.parameterConfidence || {};
+
   const rows = [
-    { label: "OUTER Ø", value: dims.outerDiameter },
-    { label: "INNER Ø", value: dims.innerDiameter },
-    { label: "HEIGHT", value: dims.height },
-    { label: "WIDTH", value: dims.width },
-    { label: "LENGTH", value: dims.length },
-    { label: "THICKNESS", value: dims.thickness },
-    { label: "TEETH", value: teeth },
-    { label: "MODULE", value: analysis?.module },
-    { label: "HELIX ANGLE", value: analysis?.helixAngle },
+    {
+      label: "OUTER Ø",
+      key: "outerDiameter",
+      value: dims.outerDiameter,
+      status: paramConf.outerDiameter?.status || (dims.outerDiameter ? "ESTIMATED" : "UNKNOWN"),
+      source: paramConf.outerDiameter?.source || null,
+      confidence: paramConf.outerDiameter?.confidence || null,
+      reason: paramConf.outerDiameter?.reason || null,
+    },
+    {
+      label: "INNER Ø",
+      key: "innerDiameter",
+      value: dims.innerDiameter,
+      status: paramConf.innerDiameter?.status || (dims.innerDiameter != null && dims.innerDiameter > 0 ? "ESTIMATED" : "UNKNOWN"),
+      source: paramConf.innerDiameter?.source || null,
+      confidence: paramConf.innerDiameter?.confidence || null,
+      reason: paramConf.innerDiameter?.reason || null,
+    },
+    {
+      label: "HEIGHT",
+      key: "height",
+      value: dims.height,
+      status: paramConf.thickness?.status || paramConf.height?.status || "ESTIMATED",
+      source: paramConf.thickness?.source || paramConf.height?.source || null,
+      confidence: paramConf.thickness?.confidence || null,
+      reason: paramConf.thickness?.reason || null,
+    },
+    {
+      label: "WIDTH",
+      key: "width",
+      value: dims.width,
+      status: paramConf.outerDiameter?.status || "ESTIMATED",
+      source: paramConf.outerDiameter?.source || null,
+      confidence: paramConf.outerDiameter?.confidence || null,
+      reason: paramConf.outerDiameter?.reason || null,
+    },
+    {
+      label: "LENGTH",
+      key: "length",
+      value: dims.length,
+      status: paramConf.length?.status || paramConf.thickness?.status || "ESTIMATED",
+      source: paramConf.length?.source || null,
+      confidence: paramConf.length?.confidence || null,
+      reason: paramConf.length?.reason || null,
+    },
+    {
+      label: "THICKNESS",
+      key: "thickness",
+      value: dims.thickness,
+      status: paramConf.thickness?.status || "ESTIMATED",
+      source: paramConf.thickness?.source || null,
+      confidence: paramConf.thickness?.confidence || null,
+      reason: paramConf.thickness?.reason || null,
+    },
+    {
+      label: "TEETH",
+      key: "teeth",
+      value: teeth,
+      status: paramConf.teeth?.status || (teeth ? "ESTIMATED" : "UNKNOWN"),
+      source: paramConf.teeth?.source || null,
+      confidence: paramConf.teeth?.confidence || null,
+      reason: paramConf.teeth?.reason || null,
+    },
+    {
+      label: "MODULE",
+      key: "module",
+      value: analysis?.module,
+      status: paramConf.module?.status || (analysis?.module ? "ESTIMATED" : "UNKNOWN"),
+      source: paramConf.module?.source || null,
+      confidence: paramConf.module?.confidence || null,
+      reason: paramConf.module?.reason || null,
+    },
+    {
+      label: "HELIX ANGLE",
+      key: "helixAngle",
+      value: analysis?.helixAngle,
+      status: analysis?.helixAngle != null && analysis.helixAngle > 0 ? "ESTIMATED" : "MEASURED",
+      source: null,
+      confidence: null,
+      reason: null,
+    },
   ];
   return rows.filter((row) => typeof row.value === "number" && isFinite(row.value));
 }

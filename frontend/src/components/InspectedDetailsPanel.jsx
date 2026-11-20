@@ -45,14 +45,22 @@ export function InspectedDetailsPanel({
           <span className="meta-pill"><strong>PROC:</strong> {analysis.manufacturingProcess || 'CNC Hobbing'}</span>
         </div>
 
-        {/* Dimension Chips Row */}
+        {/* Dimension Chips Row with Confidence & Provenance Badges (Phase 3) */}
         <div className="inspection-dims-chips">
-          {dims.map(d => (
-            <div className="dim-chip-compact" key={d.label}>
-              <span className="dim-chip-k">{d.label}:</span>
-              <span className="dim-chip-v">{d.value}</span>
-            </div>
-          ))}
+          {dims.map(d => {
+            const statusLower = (d.status || 'ESTIMATED').toLowerCase();
+            const badgeLabel = d.status === 'MEASURED' ? 'M' : (d.status === 'UNKNOWN' ? '?' : 'EST');
+            const tooltip = d.reason || (d.status === 'MEASURED' ? 'Directly measured or calibrated' : (d.status === 'UNKNOWN' ? 'Unobservable / occluded in image' : 'Estimated parameter'));
+            return (
+              <div className={`dim-chip-compact status-${statusLower}`} key={d.label} title={tooltip}>
+                <span className="dim-chip-k">{d.label}:</span>
+                <span className="dim-chip-v">{d.value}</span>
+                <span className={`dim-conf-badge status-${statusLower}`}>
+                  {badgeLabel}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
 

@@ -8958,6 +8958,36 @@ body,
   font-weight: 700;
 }
 
+.dim-conf-badge {
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+  margin-left: 4px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  display: inline-block;
+  line-height: 1.1;
+}
+
+.dim-conf-badge.status-measured {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.15);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+}
+
+.dim-conf-badge.status-estimated {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+}
+
+.dim-conf-badge.status-unknown {
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.15);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
 .inspection-features-block {
   flex: 1;
   min-height: 0;

@@ -2,7 +2,19 @@ import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from "@google/ge
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
-const COMPONENT_STYLES = ["revolved", "extruded", "gear", "flange", "combination"];
+const COMPONENT_STYLES = [
+  "axial_segments",
+  "extruded",
+  "revolved",
+  "composition",
+  "gear",
+  "compound_gear",
+  "flanged_shaft",
+  "pinion_shaft",
+  "flange",
+  "combination",
+  "mesh",
+];
 const PRIMITIVE_KINDS = ["box", "cylinder", "sphere", "cone", "torus"];
 
 const ANALYSIS_SCHEMA = {
@@ -78,6 +90,33 @@ const ANALYSIS_SCHEMA = {
             hubDiameter: { type: "NUMBER" },
             hubLength: { type: "NUMBER" },
             spokes: { type: "NUMBER" },
+            stages: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  teeth: { type: "NUMBER" },
+                  module: { type: "NUMBER" },
+                  outerDiameter: { type: "NUMBER" },
+                  faceWidth: { type: "NUMBER" },
+                },
+              },
+            },
+            keyway: {
+              type: "OBJECT",
+              properties: {
+                width: { type: "NUMBER" },
+                height: { type: "NUMBER" },
+              },
+            },
+          },
+        },
+        shaft: {
+          type: "OBJECT",
+          properties: {
+            diameter: { type: "NUMBER" },
+            length: { type: "NUMBER" },
+            splineCount: { type: "NUMBER" },
           },
         },
         flange: {
@@ -166,12 +205,13 @@ function getCandidateModels() {
   const custom = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : null;
   const list = [
     custom,
-    "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview",
+    "gemini-2.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
     "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-3.7-flash",
-    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
   ].filter(Boolean);
   return Array.from(new Set(list));
 }
@@ -317,14 +357,22 @@ function analysisPrompt(reference, visionEvidence) {
     "- reasoning: 1-3 sentences justifying the classification and measurements.",
     "- uncertainties: list the specific measurements you could not determine and why.",
     "Prefer leaving a value as null over guessing a wrong number.",
+    "- CRITICAL GEOMETRIC DISTINCTIONS:",
+    "  * A component can be a composite junction of multiple mechanical features arranged along an axis or in 3D: for example, a precision transmission spindle can integrate a threaded nose stud, bearing journals, locator shoulders, a worm flight / screw thread, and keyway drive slots! Do NOT force such multi-feature parts into a plain single spur gear or flat disc.",
+    "  * For parts with an Archimedean worm flight or continuous helical thread along a stepped spindle: classify as 'precision worm drive shaft' or 'worm spindle', set geometryRecipe style: 'axial_segments'.",
+    "  * A component with gear teeth or cogs (single stage, double stage, cluster) is a gear ('compound gear', 'spur gear', 'helical gear', 'bevel gear').",
+    "  * A cylindrical shaft with an integrated round mounting flange collar and bolt holes (ball spline, linear guide shaft, flanged bushing) is a 'flanged spline shaft' or 'flanged linear shaft', NEVER just a plain 'flange' or flat disk.",
     "",
-    "GEOMETRY RECIPE (geometryRecipe): produce a construction recipe the renderer can execute. Pick ONE style and fill only its fields:",
+    "GEOMETRY RECIPE (geometryRecipe): produce a precise construction recipe matching the uploaded photo. Pick the style that best represents the physical geometry:",
+    '- "axial_segments": For multi-feature transmission shafts, worm spindles, or stepped shafts with junctions. Provide axialSegments: [{ zStart, zEnd, radius, featureType?: "worm_thread"|"threaded_stud"|"plain", pitch?, starts?, thread?, label }], modifiers: [{ type: "keyway"|"hole"|"groove", x, z, width, depth, length, radius, label }].',
+    '- "compound_gear": For multi-stage, cluster, or double gears (two or more gear diameters/pinions stacked axially): set componentType to "compound gear", provide gear = { stages: [{ teeth, module, outerDiameter, faceWidth }, { teeth, module, outerDiameter, faceWidth }], boreRadius, keyway: { width, height } }.',
+    '- "flanged_shaft": For linear spline shafts, ball splines, or shafts with integral mounting flange collars: set componentType to "flanged spline shaft", provide shaft = { diameter, length, splineCount }, flange = { outerDiameter, thickness, boltCount, boltCircleDiameter, boltHoleDiameter, bossDiameter, bossHeight }.',
+    '- "extruded": For ANY planar, prismatic, or milled parts: brackets, connecting rods, levers, links, arms, plates, housings, mounts, custom blocks. Provide outline as a closed 2D polygon of 4-24 points {x, y} centered around (0,0) in mm tracing the component perimeter. List ALL through-holes, eyelets, and bores in holes: [{cx, cy, radius}] with their positions relative to (0,0) in mm. Set depth as the component thickness in mm.',
+    '- "revolved": continuous axisymmetric solid/hollow parts (shafts, pins, bushings, stepped spindles, pulleys, sleeves, turned collars, turned nozzles). Provide revolvedProfile with 4-16 points {z, radius} in mm tracing the cross-section from one end to the other. If hollow, inner radius > 0.',
     '- "flange": circular mounting plates, pipe flanges with bolt holes, companion flanges. Provide flange = { outerDiameter, innerDiameter (bore), thickness (flange plate thickness), height (total height including hub/boss), boltCount (count the bolt holes, e.g. 4, 6, 8, 12), boltCircleDiameter (PCD), boltHoleDiameter, bossDiameter, bossHeight }. Always include all bolt holes in the features array (e.g. "4 Mounting Bolt Holes").',
-    '- "revolved": continuous axisymmetric solid/hollow parts (shafts, pins, bushings, stepped spindles, simple sleeves). For stepped shafts with multiple diameters along their length, provide revolvedProfile with 4-12 points {z, radius} tracing each journal step and shoulder from one axial end to the other. NOTE: Do NOT use "revolved" for flanges with bolt holes — use "flange" instead.',
-    '- "extruded": plates, brackets, housings, levers. Provide outline as a closed polygon of 3-12 points {x, y} plus optional holes [{cx, cy, radius}] for through-holes, and depth (extrude thickness).',
     '- "gear": toothed wheels. Set gear.gearType: "bevel" for conical gears with angled/tapered teeth on a cone surface, "spur" for standard cylindrical gears, "helical" for angled teeth. For bevel gears, provide coneAngle (e.g. 45 degrees), teeth, module, faceWidth, boreRadius, hubDiameter, hubLength. Also set componentType to "bevel gear" and include "bevel gear" in features. For spoked gears, mirror spokes into top-level.',
-    '- "combination": complex or ambiguous parts. Compose from up to ~8 additive primitives (kind: box | cylinder | sphere | cone | torus), each with its size fields, position and rotation.',
-    "All recipe lengths are in mm, angles in degrees, counts as integers. Use sane, bounded magnitudes — never extreme values like 50000 or 0.0001. IMPORTANT: Do NOT fall back to a single plain box primitive. If you cannot determine the exact recipe, make your best geometric approximation using the component type — for example, use cylinders for shafts, the 'revolved' style for axisymmetric parts, or the 'gear' style for toothed wheels. A single box is never an acceptable fallback.",
+    '- "combination": complex multi-body parts. Compose from 2-8 additive primitives (kind: box | cylinder | sphere | cone | torus), each with its dimensions, position and rotation.',
+    "All recipe lengths are in mm, angles in degrees, counts as integers. Use sane, bounded magnitudes — never extreme values like 50000 or 0.0001. IMPORTANT: Do NOT fall back to a single plain box primitive. If you cannot determine the exact recipe, make your best geometric approximation using the component type (e.g. extruded polygon with holes for brackets/links, revolved profile for turned parts, flange with bolt holes for circular plates). A single box is never an acceptable fallback.",
   ];
 
   const visionText = visionEvidenceBlock(visionEvidence);
@@ -396,6 +444,55 @@ export function sanitizeRecipe(rawRecipe) {
   if (!rawRecipe || typeof rawRecipe !== "object") return null;
   const recipe = {};
   recipe.style = COMPONENT_STYLES.includes(rawRecipe.style) ? rawRecipe.style : null;
+
+  // OPERATOR A: Continuous Axial Segments
+  const rawSegments = rawRecipe.axialSegments || rawRecipe.segments;
+  if (Array.isArray(rawSegments) && rawSegments.length > 0) {
+    const cleanSegments = [];
+    for (const seg of rawSegments) {
+      if (!seg || typeof seg !== "object") continue;
+      const zStart = cleanNumber(seg.zStart ?? seg.z_start);
+      const zEnd = cleanNumber(seg.zEnd ?? seg.z_end);
+      const radius = cleanNumber(seg.radius ?? seg.outer_radius ?? seg.outerRadius);
+      if (zStart == null || zEnd == null || radius == null || radius <= 0 || zEnd <= zStart) continue;
+      const cleanSeg = {
+        zStart,
+        zEnd,
+        radius,
+        innerRadius: Math.max(0, cleanNumber(seg.innerRadius ?? seg.inner_radius ?? seg.boreRadius) || 0),
+        label: String(seg.label || `Segment ${cleanSegments.length + 1}`),
+      };
+      const teeth = cleanNumber(seg.teeth);
+      if (teeth && teeth >= 3) {
+        cleanSeg.teeth = Math.round(teeth);
+        cleanSeg.module = cleanNumber(seg.module) || (radius * 2) / (cleanSeg.teeth + 2);
+        cleanSeg.helixAngle = cleanNumber(seg.helixAngle ?? seg.helix_angle) || 0;
+        cleanSeg.pressureAngle = cleanNumber(seg.pressureAngle ?? seg.pressure_angle) || 20;
+      }
+      const splines = cleanNumber(seg.splineCount ?? seg.spline_count);
+      if (splines && splines >= 2) {
+        cleanSeg.splineCount = Math.round(splines);
+        cleanSeg.splineDepth = cleanNumber(seg.splineDepth ?? seg.spline_depth) || radius * 0.16;
+      }
+      cleanSegments.push(cleanSeg);
+    }
+    if (cleanSegments.length > 0) {
+      recipe.axialSegments = cleanSegments;
+      if (!recipe.style || recipe.style === "mesh" || rawRecipe.operator === "axial_segments") {
+        recipe.style = "axial_segments";
+      }
+    }
+  }
+
+  // Boolean features
+  const rawBooleans = rawRecipe.booleans || rawRecipe.features;
+  if (Array.isArray(rawBooleans) && rawBooleans.length > 0) {
+    recipe.booleans = rawBooleans.filter((b) => b && typeof b === "object");
+  }
+
+  if (rawRecipe.meshData && typeof rawRecipe.meshData === "object") {
+    recipe.meshData = rawRecipe.meshData;
+  }
 
   const profile = Array.isArray(rawRecipe.revolvedProfile) ? rawRecipe.revolvedProfile.slice(0, RECIPE_LIMITS.maxProfilePoints) : [];
   const cleanProfile = [];
@@ -545,7 +642,10 @@ export function sanitizeRecipe(rawRecipe) {
   }
 
   if (!recipe.style) {
-    if (recipe.flange) recipe.style = "flange";
+    if (recipe.axialSegments && recipe.axialSegments.length > 0) recipe.style = "axial_segments";
+    else if (recipe.gear?.stages && recipe.gear.stages.length >= 2) recipe.style = "compound_gear";
+    else if (recipe.shaft && recipe.flange) recipe.style = "flanged_shaft";
+    else if (recipe.flange) recipe.style = "flange";
     else if (recipe.gear) recipe.style = "gear";
     else if (recipe.revolvedProfile) recipe.style = "revolved";
     else if (recipe.outline) recipe.style = "extruded";
@@ -553,7 +653,7 @@ export function sanitizeRecipe(rawRecipe) {
   }
 
   if (!recipe.style) return null;
-  if (!(recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange || recipe.primitives)) return null;
+  if (!(recipe.axialSegments || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange || recipe.primitives || recipe.shaft || recipe.meshData)) return null;
   return recipe;
 }
 

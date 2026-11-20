@@ -1,15 +1,45 @@
 /**
  * vision-adapter.js
- * Communicates with the optional Python vision preprocessing service.
- * Falls open by default: if the service is unavailable or disabled,
- * returns null so the existing Gemini-only path continues unchanged.
+ * Communicates with the Python vision preprocessing service.
+ * Supports dual-mode execution:
+ * 1. Fast HTTP call to running vision service at VISION_SERVICE_URL (default http://127.0.0.1:8765)
+ * 2. Automatic Direct CLI fallback (python cli_process.py) and background daemon auto-spawn if HTTP is offline.
+ * Always resolves (never throws) adhering to fail-open safety.
  */
 import { request } from 'node:http';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const VISION_ENGINE_DIR = path.resolve(__dirname, '../vision-engine');
 
 const VISION_PIPELINE_ENABLED = process.env.VISION_PIPELINE_ENABLED === 'true';
 const VISION_SERVICE_URL = process.env.VISION_SERVICE_URL || 'http://127.0.0.1:8765';
-const VISION_FAIL_OPEN = process.env.VISION_FAIL_OPEN !== 'false'; // default true
+const VISION_FAIL_OPEN = process.env.VISION_FAIL_OPEN !== 'false';
 const VISION_REQUEST_TIMEOUT_MS = (Number(process.env.VISION_REQUEST_TIMEOUT_SECONDS) || 60) * 1000;
+
+let isServerAutoSpawning = false;
+
+/**
+ * Spawns the python uvicorn vision engine in the background if not already running.
+ */
+export function ensureVisionServiceBackground() {
+  if (isServerAutoSpawning) return;
+  isServerAutoSpawning = true;
+  try {
+    const srv = spawn('python', ['-m', 'uvicorn', 'app:app', '--host', '127.0.0.1', '--port', '8765'], {
+      cwd: VISION_ENGINE_DIR,
+      detached: true,
+      stdio: 'ignore',
+    });
+    srv.unref();
+  } catch (err) {
+    console.warn('[vision-adapter] Background uvicorn spawn notice:', err.message);
+  }
+}
 
 /** @returns {boolean} Whether vision pipeline is enabled */
 export function isVisionEnabled() {
@@ -17,10 +47,90 @@ export function isVisionEnabled() {
 }
 
 /**
- * Call POST /process on the Python vision service.
- * Always resolves (never rejects) — returns null on any failure when VISION_FAIL_OPEN=true.
- * @param {Array<{data: string, mimeType: string}>} images - validated images
- * @param {Object} reference - sanitized reference dimensions
+ * Direct CLI fallback: executes python cli_process.py via child process IPC.
+ */
+export async function executeDirectVisionCli(images, reference) {
+  return new Promise((resolve) => {
+    let tmpIn = null;
+    let tmpOut = null;
+    try {
+      const payload = JSON.stringify({
+        images: images.map((img, idx) => ({
+          data: img.data,
+          mimeType: img.mimeType,
+          image_index: idx,
+        })),
+        reference: reference || {},
+      });
+
+      const tmpDir = os.tmpdir();
+      const runId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      tmpIn = path.join(tmpDir, `reforge_vis_in_${runId}.json`);
+      tmpOut = path.join(tmpDir, `reforge_vis_out_${runId}.json`);
+      fs.writeFileSync(tmpIn, payload, 'utf-8');
+
+      const child = spawn('python', ['cli_process.py', tmpIn, tmpOut], {
+        cwd: VISION_ENGINE_DIR,
+        env: { ...process.env, VISION_DEVICE: process.env.VISION_DEVICE || 'cpu', PYTHONIOENCODING: 'utf-8' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += d; });
+
+      const timeout = setTimeout(() => {
+        try { child.kill(); } catch {}
+        try { if (tmpIn && fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch {}
+        try { if (tmpOut && fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
+        console.warn('[vision-adapter] Direct CLI timed out');
+        resolve(null);
+      }, VISION_REQUEST_TIMEOUT_MS);
+
+      child.on('close', (code) => {
+        clearTimeout(timeout);
+        let result = null;
+        try {
+          if (tmpOut && fs.existsSync(tmpOut)) {
+            const raw = fs.readFileSync(tmpOut, 'utf-8');
+            const parsed = JSON.parse(raw);
+            if (parsed && Array.isArray(parsed.images)) {
+              result = parsed;
+            }
+          }
+        } catch (e) {
+          console.warn('[vision-adapter] Direct CLI parse error:', e.message);
+        } finally {
+          try { if (tmpIn && fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch {}
+          try { if (tmpOut && fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
+        }
+
+        if (code !== 0 && !result) {
+          console.warn('[vision-adapter] Direct CLI exited with code', code, stderr);
+          return resolve(null);
+        }
+        resolve(result);
+      });
+
+      child.on('error', (err) => {
+        clearTimeout(timeout);
+        try { if (tmpIn && fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch {}
+        try { if (tmpOut && fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
+        console.warn('[vision-adapter] Failed to spawn python cli_process:', err.message);
+        resolve(null);
+      });
+    } catch (err) {
+      try { if (tmpIn && fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch {}
+      try { if (tmpOut && fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
+      console.warn('[vision-adapter] Direct CLI invocation error:', err.message);
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * Call POST /process on the Python vision service with transparent CLI fallback.
+ * @param {Array<{data: string, mimeType: string}>} images
+ * @param {Object} reference
  * @returns {Promise<Object|null>}
  */
 export async function callVisionService(images, reference) {
@@ -35,7 +145,7 @@ export async function callVisionService(images, reference) {
     reference: reference || {},
   });
 
-  return new Promise((resolve) => {
+  const httpResult = await new Promise((resolve) => {
     let url;
     try {
       url = new URL('/process', VISION_SERVICE_URL);
@@ -64,11 +174,9 @@ export async function callVisionService(images, reference) {
             if (parsed && parsed.schema_version && Array.isArray(parsed.images)) {
               resolve(parsed);
             } else {
-              console.warn('[vision-adapter] Malformed vision service response (missing schema_version or images)');
               resolve(null);
             }
-          } catch (e) {
-            console.warn('[vision-adapter] Invalid JSON from vision service:', e.message);
+          } catch {
             resolve(null);
           }
         });
@@ -76,38 +184,44 @@ export async function callVisionService(images, reference) {
     );
 
     req.setTimeout(VISION_REQUEST_TIMEOUT_MS, () => {
-      console.warn('[vision-adapter] Vision service request timed out after', VISION_REQUEST_TIMEOUT_MS, 'ms');
       req.destroy();
       resolve(null);
     });
 
     req.on('error', (e) => {
-      if (!VISION_FAIL_OPEN) {
-        console.error('[vision-adapter] VISION_FAIL_OPEN=false but service is unreachable:', e.message);
-      } else {
-        console.warn('[vision-adapter] Vision service unreachable (continuing without vision):', e.message);
-      }
+      // Service offline — trigger background spawn and resolve null for CLI fallback
+      ensureVisionServiceBackground();
       resolve(null);
     });
 
     req.write(body);
     req.end();
   });
+
+  if (httpResult) {
+    return httpResult;
+  }
+
+  // Fallback to direct Python CLI invocation
+  return await executeDirectVisionCli(images, reference);
 }
 
+import { storeSpatialEvidence } from './src/spatial-evidence-store.js';
+
 /**
- * Build a compact summary of vision evidence for Gemini prompt injection.
- * Strips large arrays to counts only. Safe to JSON.stringify.
- * @param {Object|null} visionResult - full vision service response
- * @returns {Object|null}
+ * Build a compact summary of vision evidence for Gemini prompt injection,
+ * while anchoring it to the full uncompressed spatial evidence artifact ID.
  */
-export function buildVisionEvidenceSummary(visionResult) {
+export function buildVisionEvidenceSummary(visionResult, evidenceRef = null) {
   if (!visionResult || !Array.isArray(visionResult.images)) return null;
+
+  const actualRef = evidenceRef || storeSpatialEvidence(visionResult);
 
   return {
     schema_version: visionResult.schema_version,
     status: visionResult.status,
     device: visionResult.device,
+    evidenceRef: actualRef,
     images: visionResult.images.map((img) => ({
       image_index: img.image_index,
       width: img.width,

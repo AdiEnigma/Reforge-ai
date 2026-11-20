@@ -12,7 +12,8 @@ from vision.image_io import decode_and_validate_image
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 
 def test_adversarial_random_bytes():

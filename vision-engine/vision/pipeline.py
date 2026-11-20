@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import List, Optional
 
 import numpy as np
@@ -40,7 +41,8 @@ _semaphore: Optional[asyncio.Semaphore] = None
 
 def _get_semaphore() -> asyncio.Semaphore:
     global _semaphore
-    if _semaphore is None:
+    loop = asyncio.get_running_loop()
+    if _semaphore is None or getattr(_semaphore, "_loop", None) is not loop:
         _semaphore = asyncio.Semaphore(config.VISION_MAX_CONCURRENCY)
     return _semaphore
 
@@ -49,6 +51,7 @@ def _build_segmentation_result(seg_dict: dict) -> SegmentationResult:
     return SegmentationResult(
         status=seg_dict.get("status", "unavailable"),
         bbox_xyxy_px=seg_dict.get("bbox_xyxy_px"),
+        boundary_polygon_px=seg_dict.get("boundary_polygon_px"),
         mask_area_ratio=seg_dict.get("mask_area_ratio"),
         candidate_count=seg_dict.get("candidate_count", 0),
         score=seg_dict.get("score"),
@@ -134,6 +137,8 @@ def _build_opencv_result(cv_dict: dict) -> OpenCVResult:
             bilateral=sh_raw.get("bilateral", False),
             rotational=sh_raw.get("rotational", False),
             rotational_order=sh_raw.get("rotational_order"),
+            spectral_confidence=float(sh_raw.get("spectral_confidence", 0.0)),
+            detected_frequencies=sh_raw.get("detected_frequencies", []),
         )
     return OpenCVResult(
         contours=contours,
@@ -142,6 +147,7 @@ def _build_opencv_result(cv_dict: dict) -> OpenCVResult:
         lines=lines,
         bounding_box=bounding_box,
         symmetry_hints=symmetry_hints,
+        radial_profile=cv_dict.get("radial_profile"),
         warnings=cv_dict.get("warnings", []),
     )
 
@@ -153,6 +159,7 @@ def _build_depth_result(depth_dict: dict) -> DepthResult:
         depth_type=depth_dict.get("depth_type", "relative"),
         metric=False,  # strictly non-metric
         preview_ref=depth_dict.get("preview_ref"),
+        depth_grid=depth_dict.get("depth_grid"),
         warnings=warnings,
     )
 
@@ -248,7 +255,14 @@ def _process_single_image(image_input: ImageInput, reference: Optional[dict]) ->
         mask = np.zeros((h, w), dtype=np.uint8)
         mask[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 255
 
-    cv_dict = extract_features(rgb, mask=mask, image_index=image_input.image_index)
+    cv_dict = {"contours": [], "circles": [], "ellipses": [], "lines": [], "bounding_boxes": [], "symmetry_hints": [], "warnings": []}
+    try:
+        cv_dict = extract_features(rgb, mask=mask, image_index=image_input.image_index)
+    except Exception as exc:
+        if config.VISION_FAIL_OPEN:
+            warnings.append(f"OpenCV features extraction warning: {exc}")
+        else:
+            raise
 
     # --- depth ---
     depth_dict = {
@@ -315,38 +329,40 @@ async def process_images(
     """
     registry.initialize()
 
-    sem = _get_semaphore()
     warnings: List[str] = []
-    loop = asyncio.get_running_loop()
-
-    async def _run_one(img_input: ImageInput) -> ImageResult:
-        async with sem:
-            try:
-                return await asyncio.wait_for(
-                    loop.run_in_executor(None, _process_single_image, img_input, reference),
-                    timeout=config.VISION_REQUEST_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                raise TimeoutError(
-                    f"Image {img_input.image_index} timed out after {config.VISION_REQUEST_TIMEOUT_SECONDS}s"
-                )
-
-    tasks = [_run_one(img) for img in images]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
     image_results: List[ImageResult] = []
-    for img, result in zip(images, results):
-        if isinstance(result, Exception):
-            if isinstance(result, ValueError):
-                # Input validation errors (bad base64, corrupt bytes, excessive dimensions) raise 4xx
-                raise result
-            if config.VISION_FAIL_OPEN:
-                warnings.append(f"Image {img.image_index} failed: {result}")
-                image_results.append(_make_error_result(img.image_index, str(result)))
-            else:
-                raise result
-        else:
+
+    for img in images:
+        try:
+            start_t = time.perf_counter()
+            result = _process_single_image(img, reference)
+            elapsed = time.perf_counter() - start_t
+            if elapsed > config.VISION_REQUEST_TIMEOUT_SECONDS:
+                timeout_msg = f"Image {img.image_index} timed out after {config.VISION_REQUEST_TIMEOUT_SECONDS}s"
+                if config.VISION_FAIL_OPEN:
+                    logger.warning(timeout_msg)
+                    warnings.append(timeout_msg)
+                    image_results.append(_make_error_result(img.image_index, timeout_msg))
+                    continue
+                else:
+                    raise TimeoutError(timeout_msg)
             image_results.append(result)
+        except ValueError as val_err:
+            raise val_err
+        except TimeoutError as to_err:
+            if config.VISION_FAIL_OPEN:
+                timeout_msg = str(to_err)
+                warnings.append(timeout_msg)
+                image_results.append(_make_error_result(img.image_index, timeout_msg))
+            else:
+                raise
+        except Exception as exc:
+            if config.VISION_FAIL_OPEN:
+                logger.warning("Image %d failed (fail-open): %s", img.image_index, exc)
+                warnings.append(f"Image {img.image_index} failed: {exc}")
+                image_results.append(_make_error_result(img.image_index, str(exc)))
+            else:
+                raise exc
 
     image_results.sort(key=lambda r: r.image_index)
 

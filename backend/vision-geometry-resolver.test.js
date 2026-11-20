@@ -292,3 +292,227 @@ test("fallbackDeterministicAnalysis produces stepped shaft and bevel gear accord
   assert.equal(shaftFallback.geometryRecipe.style, "revolved");
   assert.ok(shaftFallback.geometryRecipe.revolvedProfile.length >= 8);
 });
+
+test("reconcileGeminiWithVision accurately resolves and preserves prismatic extruded components (brackets/links)", () => {
+  const geminiProposal = {
+    componentType: "mounting bracket",
+    dimensions: { width: 60, length: 140, thickness: 15, innerDiameter: 18 },
+    features: ["Center Mounting Bore Ø18mm", "Dual Perimeter Holes Ø8mm", "Machined Aluminium Plate"],
+    geometryRecipe: {
+      style: "extruded",
+      outline: [
+        { x: -70, y: -30 },
+        { x: 70, y: -30 },
+        { x: 70, y: 30 },
+        { x: -70, y: 30 },
+      ],
+      holes: [
+        { cx: 0, cy: 0, radius: 9 },
+        { cx: -45, cy: 0, radius: 4 },
+        { cx: 45, cy: 0, radius: 4 },
+      ],
+      depth: 15,
+    },
+  };
+
+  const reconciled = reconcileGeminiWithVision(geminiProposal, null, {});
+  assert.equal(reconciled.componentType, "mounting bracket");
+  assert.equal(reconciled.geometryType, "prismatic_extruded");
+  assert.equal(reconciled.geometryRecipe.style, "extruded");
+  assert.equal(reconciled.geometryRecipe.outline.length, 4);
+  assert.equal(reconciled.geometryRecipe.holes.length, 3);
+  assert.equal(reconciled.dimensions.thickness, 15);
+});
+
+test("fallbackDeterministicAnalysis produces extruded bracket when prismatic reference is given", () => {
+  const bracketFallback = fallbackDeterministicAnalysis({ componentType: "bracket", width: 50, length: 120, thickness: 12 }, "Gemini offline");
+  assert.equal(bracketFallback.componentType, "bracket");
+  assert.equal(bracketFallback.geometryType, "prismatic_extruded");
+  assert.equal(bracketFallback.geometryRecipe.style, "extruded");
+  assert.ok(bracketFallback.geometryRecipe.outline.length >= 4);
+  assert.ok(bracketFallback.geometryRecipe.holes.length >= 1);
+  assert.equal(bracketFallback.dimensions.width, 50);
+  assert.equal(bracketFallback.dimensions.length, 120);
+});
+
+test("reconcileGeminiWithVision accurately resolves compound gear without turning into stepped shaft", () => {
+  const geminiProposal = {
+    componentType: "Compound Gear",
+    teeth: 28,
+    dimensions: { outerDiameter: 140, innerDiameter: 30, thickness: 50 },
+    features: ["Stage 1 Spur Gear 28T", "Stage 2 Pinion Gear 16T", "Keyway Slot", "Central Bore"],
+    geometryRecipe: {
+      style: "compound_gear",
+      gear: {
+        stages: [
+          { teeth: 28, module: 4.5, faceWidth: 28 },
+          { teeth: 16, module: 4.5, faceWidth: 22 },
+        ],
+        boreRadius: 15,
+        keyway: { width: 8, depth: 4 },
+      },
+    },
+  };
+
+  const reconciled = reconcileGeminiWithVision(geminiProposal, null, {});
+  assert.equal(reconciled.componentType, "compound gear");
+  assert.equal(reconciled.geometryType, "compound_gear_cluster");
+  assert.equal(reconciled.geometryRecipe.style, "compound_gear");
+  assert.equal(reconciled.geometryRecipe.gear.stages.length, 2);
+  assert.equal(reconciled.geometryRecipe.gear.stages[0].teeth, 28);
+  assert.equal(reconciled.geometryRecipe.gear.stages[1].teeth, 16);
+  assert.ok(reconciled.geometryRecipe.gear.keyway);
+});
+
+test("reconcileGeminiWithVision accurately resolves flanged linear spline shaft without collapsing to flat flange", () => {
+  const geminiProposal = {
+    componentType: "linear spline shaft with flange",
+    dimensions: { outerDiameter: 80, innerDiameter: 25, length: 220, thickness: 18 },
+    features: ["4-Hole Circular Mounting Flange", "Longitudinal Spline Grooves", "Precision Linear Shaft"],
+  };
+
+  const reconciled = reconcileGeminiWithVision(geminiProposal, null, { outerDiameter: 80, innerDiameter: 25, length: 220 });
+  assert.equal(reconciled.componentType, "flanged spline shaft");
+  assert.equal(reconciled.geometryType, "flanged_linear_shaft");
+  assert.equal(reconciled.geometryRecipe.style, "flanged_shaft");
+  assert.ok(reconciled.geometryRecipe.shaft);
+  assert.equal(reconciled.geometryRecipe.shaft.splineCount, 6);
+  assert.ok(reconciled.geometryRecipe.flange);
+  assert.equal(reconciled.geometryRecipe.flange.boltCount, 4);
+  assert.ok(reconciled.geometryRecipe.meshData);
+  assert.ok(reconciled.geometryRecipe.meshData.vertices.length > 100);
+});
+
+test("reconcileGeminiWithVision prevents shaft bore from turning compound gear into gear shaft", () => {
+  const proposal = {
+    componentType: "Compound Gear",
+    teeth: 28,
+    dimensions: { outerDiameter: 140, innerDiameter: 30, thickness: 50 },
+    features: ["Stage 1 Spur Gear 28T", "Stage 2 Pinion Gear 16T", "Keyway for drive shaft", "Shaft mounting bore"],
+  };
+  const reconciled = reconcileGeminiWithVision(proposal, null, {});
+  assert.equal(reconciled.componentType, "compound gear");
+  assert.equal(reconciled.geometryType, "compound_gear_cluster");
+  assert.equal(reconciled.geometryRecipe.style, "compound_gear");
+  assert.equal(reconciled.geometryRecipe.gear.stages.length, 2);
+});
+
+test("reconcileGeminiWithVision accurately resolves helical pinion shaft without becoming compound gear or flat disc", () => {
+  const proposal = {
+    componentType: "helical pinion shaft",
+    teeth: 18,
+    helixAngle: 22.5,
+    dimensions: { outerDiameter: 65, length: 240, thickness: 45 },
+    features: ["Integral Helical Pinion", "Precision Ground Bearing Journals", "Drive Shaft Extension"],
+  };
+  const reconciled = reconcileGeminiWithVision(proposal, null, {});
+  assert.equal(reconciled.componentType, "helical pinion shaft");
+  assert.equal(reconciled.geometryType, "integral_pinion_shaft");
+  assert.equal(reconciled.geometryRecipe.style, "pinion_shaft");
+  assert.equal(reconciled.geometryRecipe.shaft.length, 240);
+  assert.ok(reconciled.geometryRecipe.meshData);
+});
+
+test("fallbackDeterministicAnalysis produces authentic compound gear and flanged spline shaft", () => {
+  const compFallback = fallbackDeterministicAnalysis({ componentType: "compound gear", teeth: 30, outerDiameter: 150 }, "Gemini offline");
+  assert.equal(compFallback.componentType, "compound gear");
+  assert.equal(compFallback.geometryRecipe.style, "compound_gear");
+  assert.equal(compFallback.geometryRecipe.gear.stages.length, 2);
+
+  const shaftFallback = fallbackDeterministicAnalysis({ componentType: "flanged spline shaft", outerDiameter: 76, length: 200, boltCount: 4 }, "Gemini offline");
+  assert.equal(shaftFallback.componentType, "flanged spline shaft");
+  assert.equal(shaftFallback.geometryRecipe.style, "flanged_shaft");
+  assert.equal(shaftFallback.geometryRecipe.shaft.splineCount, 6);
+  assert.equal(shaftFallback.geometryRecipe.flange.boltCount, 4);
+});
+
+test("PHASE 3: buildParameterConfidence classifies MEASURED vs ESTIMATED vs UNKNOWN correctly", () => {
+  const proposal = {
+    componentType: "helical pinion shaft",
+    teeth: 18,
+    helixAngle: 22.5,
+    dimensions: { outerDiameter: 65, length: 240, thickness: 45 },
+    features: ["Integral Helical Pinion", "Precision Ground Bearing Journals"],
+  };
+  // User provided verified outerDiameter and length
+  const reference = { outerDiameter: 65, length: 240 };
+  const reconciled = reconcileGeminiWithVision(proposal, null, reference);
+
+  assert.ok(reconciled.parameterConfidence);
+  assert.equal(reconciled.parameterConfidence.outerDiameter.status, "MEASURED");
+  assert.equal(reconciled.parameterConfidence.outerDiameter.source, "user_reference");
+  assert.equal(reconciled.parameterConfidence.length.status, "MEASURED");
+  assert.equal(reconciled.parameterConfidence.length.source, "user_reference");
+  assert.equal(reconciled.parameterConfidence.innerDiameter.status, "UNKNOWN");
+  assert.ok(reconciled.uncertainties.length > 0);
+});
+
+test("OPERATOR A: reconcileGeminiWithVision outputs continuous axialSegments and avoids visualMesh hijacking", () => {
+  const visionWithBoundary = {
+    images: [{
+      width: 640,
+      height: 480,
+      segmentation: {
+        boundary_polygon_px: [{ x: 50, y: 50 }, { x: 300, y: 50 }, { x: 300, y: 200 }, { x: 50, y: 200 }],
+        candidate_count: 1,
+      },
+      depth: { depth_grid: [[0.5, 0.5], [0.5, 0.5]] }
+    }]
+  };
+  const proposal = {
+    componentType: "compound gear",
+    teeth: 28,
+    dimensions: { outerDiameter: 140, innerDiameter: 30, thickness: 50 },
+    features: ["Stage 1 Bull Gear 28T", "Stage 2 Pinion 16T"],
+  };
+  const reconciled = reconcileGeminiWithVision(proposal, visionWithBoundary, {});
+  // Must NOT be hijacked to 'mesh'
+  assert.notEqual(reconciled.geometryRecipe.style, "mesh");
+  assert.ok(Array.isArray(reconciled.geometryRecipe.axialSegments));
+  assert.equal(reconciled.geometryRecipe.axialSegments.length, 2);
+  assert.equal(reconciled.geometryRecipe.operator, "axial_segments");
+});
+
+test("OPERATOR A: resolveGeometryFromVision detects elongated pinion shaft from aspect ratio", () => {
+  const visionWithElongatedShaft = {
+    images: [{
+      width: 640,
+      height: 480,
+      opencv: {
+        symmetry_hints: ["teeth: 16"],
+        bounding_box: {
+          rotated_size_px: [320, 75], // 4.26:1 aspect ratio
+        },
+      },
+    }],
+  };
+  const res = resolveGeometryFromVision(visionWithElongatedShaft, {});
+  assert.equal(res.canResolveWithoutGemini, true);
+  assert.equal(res.analysis.componentType, "helical pinion shaft");
+  assert.equal(res.analysis.geometryType, "integral_pinion_shaft");
+  assert.ok(res.analysis.geometryRecipe.axialSegments.length >= 3);
+});
+
+test("OPERATOR A: fallbackDeterministicAnalysis detects elongated shaft image without falling back to spur gear", () => {
+  // A mock PNG with width 256 and height 64 (4:1 aspect ratio)
+  const samplePngBase64 = Buffer.from('89504e470d0a1a0a0000000d4948445200000100000000400806000000', 'hex').toString('base64');
+  const res = fallbackDeterministicAnalysis({}, "offline", [{ data: samplePngBase64, mimeType: "image/png" }]);
+  assert.equal(res.componentType, "helical pinion shaft");
+  assert.equal(res.geometryType, "integral_pinion_shaft");
+  assert.ok(res.geometryRecipe.axialSegments.length >= 3);
+  assert.equal(res.dimensions.innerDiameter, 0); // solid core
+});
+
+test("OPERATOR A: fallbackDeterministicAnalysis produces multi-junction precision worm drive shaft", () => {
+  const samplePngBase64 = Buffer.from('89504e470d0a1a0a0000000d4948445200000100000000400806000000', 'hex').toString('base64');
+  const res = fallbackDeterministicAnalysis({ name: "Worm Screw Shaft" }, "offline", [{ data: samplePngBase64, mimeType: "image/png" }]);
+  assert.equal(res.componentType, "precision worm drive shaft");
+  assert.equal(res.geometryType, "worm_drive_spindle");
+  assert.equal(res.geometryRecipe.style, "axial_segments");
+  assert.equal(res.geometryRecipe.axialSegments.length, 7);
+  assert.equal(res.geometryRecipe.modifiers.length, 2);
+  const wormFlight = res.geometryRecipe.axialSegments.find(s => s.featureType === "worm_thread");
+  assert.ok(wormFlight);
+  assert.equal(wormFlight.starts, 1);
+  assert.equal(wormFlight.pitch, 8.0);
+});
