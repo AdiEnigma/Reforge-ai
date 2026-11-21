@@ -2,6 +2,18 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import './styles.css';
+import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import { RequireAuth } from './components/RequireAuth.jsx';
+import { LoginPage, RegisterPage } from './pages/AuthPages.jsx';
+import { HomePage } from './pages/HomePage.jsx';
+import {
+  createWorkbenchApi,
+  getWorkbenchApi,
+  saveSnapshotApi,
+  uploadWorkbenchImageApi,
+  serializeWorkbenchState,
+  deserializeWorkbenchState,
+} from './lib/workbench-api.js';
 import { analyzeComponent, sendChatMessage } from './lib/api.js';
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
@@ -247,14 +259,55 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
 }
 
 function Nav() {
-  const { setPage, theme, toggleTheme } = useApp();
+  const { page, setPage, theme, toggleTheme, saveStatus, currentWorkbenchName } = useApp();
+  const { user, organization, role, logout } = useAuth();
+  const isAdmin = role === 'admin';
+  const orgName = organization?.name || 'Indus Valley';
+
   return (
-    <nav>
-      <button className="brand" onClick={() => setPage('home')}>ReForge AI</button>
-      <div className="navlinks">
-        <button onClick={() => setPage('workbench')}>Workbench</button>
+    <nav className="reforge-top-nav">
+      <div className="nav-brand-section">
+        <button className="brand" onClick={() => setPage('home')}>ReForge AI</button>
+        <span className="nav-sys-indicator">SYS: ONLINE</span>
+        {saveStatus && saveStatus !== 'idle' && (
+          <span className={`workbench-save-pill ${saveStatus}`} title={currentWorkbenchName || 'Workbench'}>
+            <span className="workbench-save-dot" />
+            {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved' : 'Save Failed'}
+          </span>
+        )}
       </div>
+
+      <div className="navlinks">
+        <button className={page === 'home' ? 'active' : ''} onClick={() => setPage('home')}>Dashboard</button>
+        <button className={page === 'workbench' ? 'active' : ''} onClick={() => setPage('workbench')}>Workbench</button>
+      </div>
+
       <div className="nav-actions">
+        {user ? (
+          <div className="nav-user-meta">
+            <span className="nav-user-badge">
+              <span className="nav-username">{user.username}</span>
+              <span className="nav-role-tag">
+                {isAdmin ? orgName : 'PERSONAL'}
+              </span>
+            </span>
+            <button
+              className="secondary nav-logout-btn"
+              onClick={() => logout().then(() => setPage('login'))}
+              title="Sign Out of ReForge AI"
+            >
+              Sign Out
+            </button>
+          </div>
+        ) : (
+          <button
+            className="secondary"
+            style={{ padding: '6px 14px', fontSize: '12px' }}
+            onClick={() => setPage('login')}
+          >
+            Sign In
+          </button>
+        )}
         <button
           className="theme-toggle-btn icon-only"
           onClick={toggleTheme}
@@ -263,7 +316,7 @@ function Nav() {
         >
           <Icon>{theme === 'light' ? 'dark_mode' : 'light_mode'}</Icon>
         </button>
-        <button className="navcta" onClick={() => setPage('upload')}>Upload Component</button>
+        <button className="navcta" onClick={() => setPage('upload')}>New Reconstruction</button>
       </div>
     </nav>
   );
@@ -1082,6 +1135,9 @@ function Upload() {
     setAnalysis,
     setLastAnalyzedSnapshot,
     setActiveComponentId,
+    currentWorkbenchId,
+    ensureWorkbench,
+    saveCurrentWorkbench,
   } = useApp();
 
   const [activeUploadSlot, setActiveUploadSlot] = useState('primary'); // 'primary' | 'companion' | 'surroundings'
@@ -1125,6 +1181,19 @@ function Upload() {
         return addImagesToComponent(prevState, 'environment-context', accepted);
       });
     }
+
+    if (ensureWorkbench) {
+      ensureWorkbench(primary?.name || 'Reconstruction', primary?.name).then(async (wbId) => {
+        if (!wbId) return;
+        for (const file of accepted) {
+          try {
+            await uploadWorkbenchImageApi(wbId, file);
+          } catch (e) {
+            console.warn("Failed to persist uploaded image:", e);
+          }
+        }
+      });
+    }
   };
 
   const reconstruct = async () => {
@@ -1166,6 +1235,16 @@ function Upload() {
       setActiveComponentId(primary.id);
       setStage('extracting');
       setPage('workbench');
+
+      if (saveCurrentWorkbench) {
+        saveCurrentWorkbench({
+          analysis: pAnalysis,
+          reference: primaryRef,
+          machineryState: updatedMachinery,
+          stage: 'ready',
+          activeComponentId: primary.id,
+        });
+      }
     } catch (err) {
       setError(err.message || 'Analysis failed. Please try again.');
       setStage('idle');
@@ -2025,7 +2104,44 @@ function Workbench() {
     setLastAnalyzedSnapshot,
     theme,
     toggleTheme,
+    saveCurrentWorkbench,
+    saveStatus,
   } = useApp();
+
+  const [isSavingAndReturning, setIsSavingAndReturning] = useState(false);
+  const [saveReturnError, setSaveReturnError] = useState('');
+
+  const handleSaveAndReturnHome = async () => {
+    if (isSavingAndReturning) return;
+    setIsSavingAndReturning(true);
+    setSaveReturnError('');
+    try {
+      const result = await saveCurrentWorkbench();
+      if (result?.success) {
+        setPage('home');
+      } else {
+        setSaveReturnError(result?.error || 'Failed to persist workbench. Please retry.');
+      }
+    } catch (err) {
+      setSaveReturnError(err.message || 'An unexpected error occurred while saving.');
+    } finally {
+      setIsSavingAndReturning(false);
+    }
+  };
+
+  const autosaveTimerRef = useRef(null);
+  useEffect(() => {
+    if (!analysis) return;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => {
+      if (saveCurrentWorkbench) {
+        saveCurrentWorkbench();
+      }
+    }, 2500);
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  }, [analysis, machineryState, saveCurrentWorkbench]);
 
   const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
   const [copilotTab, setCopilotTab] = useState('chat'); // 'chat' | 'components'
@@ -3177,6 +3293,42 @@ function Workbench() {
             </div>
           );
         })()}
+
+        {/* Workbench Bottom Bar with Save & Return Home */}
+        <footer className="workbench-bottom-bar" aria-label="Workbench actions">
+          <div className="workbench-bottom-left">
+            <span className="workbench-bottom-meta">
+              <span className={`workbench-bottom-status-dot ${ready ? 'active' : ''}`} />
+              <span>{ready ? 'GEOMETRY READY' : 'RECONSTRUCTION IN PROGRESS'}</span>
+            </span>
+          </div>
+
+          <div className="workbench-bottom-right">
+            {saveReturnError && (
+              <span className="workbench-bottom-error" role="alert">
+                <Icon style={{ fontSize: '14px' }}>error</Icon> {saveReturnError}
+              </span>
+            )}
+            <button
+              type="button"
+              className="btn-save-return-home"
+              onClick={handleSaveAndReturnHome}
+              disabled={isSavingAndReturning}
+            >
+              {isSavingAndReturning ? (
+                <>
+                  <span className="save-btn-spinner" />
+                  SAVING...
+                </>
+              ) : (
+                <>
+                  <Icon style={{ fontSize: '16px' }}>save</Icon>
+                  SAVE &amp; RETURN HOME
+                </>
+              )}
+            </button>
+          </div>
+        </footer>
       </main>
 
       {/* Engineering Report Editor Dialog Modal */}
@@ -3422,7 +3574,62 @@ function App() {
     }
   }, [theme]);
 
-  const [page, setPage] = useState('home');
+  const { authState, user } = useAuth();
+
+  // Initial page sync from window.location.pathname
+  const getInitialPage = () => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      if (path === '/register') return 'register';
+      if (path === '/login') return 'login';
+      if (path === '/workbench') return 'workbench';
+      if (path === '/upload') return 'upload';
+      if (path === '/home') return 'home';
+    }
+    return 'home';
+  };
+
+  const [page, setPageState] = useState(getInitialPage);
+
+  // Synchronize browser history / URL path
+  const setPage = useCallback((nextPage) => {
+    setPageState(nextPage);
+    if (typeof window !== 'undefined' && window.history?.pushState) {
+      const targetPath = nextPage === 'home' ? '/home' : `/${nextPage}`;
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState(null, '', targetPath);
+      }
+    }
+  }, []);
+
+  // Listen to popstate (back/forward buttons)
+  useEffect(() => {
+    const onPopState = () => {
+      const path = window.location.pathname;
+      if (path === '/register') setPageState('register');
+      else if (path === '/login') setPageState('login');
+      else if (path === '/workbench') setPageState('workbench');
+      else if (path === '/upload') setPageState('upload');
+      else setPageState('home');
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  // Route protection and redirection rules:
+  // - Unauthenticated '/' or '/home' -> redirect to '/login'
+  // - Authenticated '/' or '/login' -> redirect to '/home'
+  useEffect(() => {
+    if (authState === 'unauthenticated') {
+      if (page === 'home' || page === 'upload' || page === 'workbench') {
+        setPage('login');
+      }
+    } else if (authState === 'authenticated') {
+      if (page === 'login') {
+        setPage('home');
+      }
+    }
+  }, [authState, page, setPage]);
   const [images, setImages] = useState([]);
   const [analysis, setAnalysis] = useState(null);
   const [stage, setStage] = useState('idle');
@@ -3435,6 +3642,188 @@ function App() {
   const [activeComponentId, setActiveComponentId] = useState('comp-primary-gear');
   const [selectedComponentIds, setSelectedComponentIds] = useState(['comp-primary-gear']);
   const [isRegenerating, setIsRegenerating] = useState(false);
+
+  // Persistence State
+  const [currentWorkbenchId, setCurrentWorkbenchId] = useState(() => {
+    if (typeof window !== 'undefined') return window.__REFORGE_CURRENT_WB_ID__ || null;
+    return null;
+  });
+  const [currentWorkbenchName, setCurrentWorkbenchName] = useState('New Reconstruction');
+  const [saveStatus, setSaveStatus] = useState('idle'); // 'idle' | 'saving' | 'saved' | 'error'
+  const creationPromiseRef = useRef(null);
+
+  const ensureWorkbench = useCallback(async (name = null, componentName = null) => {
+    if (currentWorkbenchId) return currentWorkbenchId;
+    if (creationPromiseRef.current) return creationPromiseRef.current;
+
+    creationPromiseRef.current = (async () => {
+      try {
+        setSaveStatus('saving');
+        const wb = await createWorkbenchApi({ name, componentName });
+        if (wb?.id) {
+          setCurrentWorkbenchId(wb.id);
+          setCurrentWorkbenchName(wb.name);
+          if (typeof window !== 'undefined') {
+            window.__REFORGE_CURRENT_WB_ID__ = wb.id;
+          }
+          setSaveStatus('saved');
+          return wb.id;
+        }
+      } catch (err) {
+        console.warn('Could not auto-create workbench:', err);
+        setSaveStatus('error');
+      } finally {
+        creationPromiseRef.current = null;
+      }
+      return null;
+    })();
+
+    return creationPromiseRef.current;
+  }, [currentWorkbenchId]);
+
+  const saveCurrentWorkbench = useCallback(async (forcedState = null) => {
+    let wbId = currentWorkbenchId;
+    if (!wbId) {
+      wbId = await ensureWorkbench();
+    }
+    if (!wbId) {
+      setSaveStatus('error');
+      return { success: false, error: 'Could not create or find workbench session.' };
+    }
+
+    setSaveStatus('saving');
+    try {
+      const rawState = forcedState || {
+        workbenchName: currentWorkbenchName,
+        analysis,
+        machineryState,
+        stage,
+        viewMode,
+        activeComponentId,
+      };
+
+      // Upload any pending unpersisted image files
+      const uploadPromises = [];
+      const primaryImages = rawState.machineryState?.primaryGear?.images || [];
+      const companionImages = rawState.machineryState?.companionGear?.images || [];
+      const allStateImages = [...primaryImages, ...companionImages];
+
+      for (const img of allStateImages) {
+        if (img?.file instanceof Blob && !img.assetId) {
+          uploadPromises.push(
+            uploadWorkbenchImageApi(wbId, img.file, img.name)
+              .then((asset) => {
+                if (asset?.id) {
+                  img.assetId = asset.id;
+                  img.url = asset.url;
+                }
+              })
+              .catch((err) => {
+                console.warn('Failed to upload image during snapshot save:', err);
+              })
+          );
+        }
+      }
+
+      if (uploadPromises.length > 0) {
+        await Promise.all(uploadPromises);
+      }
+
+      // Serialize state: strip browser Blobs and ensure durable references
+      const serialized = serializeWorkbenchState(wbId, rawState);
+      const snapshot = await saveSnapshotApi(wbId, serialized);
+      setSaveStatus('saved');
+      return { success: true, snapshot };
+    } catch (err) {
+      console.error('Failed to save workbench snapshot:', err);
+      setSaveStatus('error');
+      return { success: false, error: err.message || 'Failed to save workbench snapshot.' };
+    }
+  }, [currentWorkbenchId, currentWorkbenchName, ensureWorkbench, analysis, machineryState, stage, viewMode, activeComponentId]);
+
+  const resumeWorkbench = useCallback(async (workbenchId) => {
+    if (!workbenchId) return;
+    setSaveStatus('saving');
+    try {
+      const data = await getWorkbenchApi(workbenchId);
+      if (!data?.workbench) throw new Error('Workbench not found.');
+
+      setCurrentWorkbenchId(data.workbench.id);
+      setCurrentWorkbenchName(data.workbench.name);
+      if (typeof window !== 'undefined') {
+        window.__REFORGE_CURRENT_WB_ID__ = data.workbench.id;
+      }
+
+      const snapState = data.snapshot?.state;
+      const assets = data.assets || [];
+
+      if (snapState) {
+        const hydrated = deserializeWorkbenchState(data.workbench.id, snapState, assets);
+
+        if (hydrated.analysis) {
+          setAnalysis(hydrated.analysis);
+        } else {
+          setAnalysis(null);
+        }
+
+        if (hydrated.machineryState) {
+          setMachineryState(hydrated.machineryState);
+          setLastAnalyzedSnapshot(createMachinerySnapshot(hydrated.machineryState));
+          if (hydrated.machineryState.primaryGear?.images) {
+            setImages(hydrated.machineryState.primaryGear.images);
+          }
+        }
+
+        if (hydrated.viewMode) {
+          setViewMode(hydrated.viewMode);
+        }
+        if (hydrated.activeComponentId) {
+          setActiveComponentId(hydrated.activeComponentId);
+        }
+
+        if (hydrated.analysis) {
+          setStage('ready');
+          setPage('workbench');
+        } else {
+          setStage('idle');
+          setPage('upload');
+        }
+      } else {
+        setStage('idle');
+        setPage('upload');
+      }
+      setSaveStatus('saved');
+    } catch (err) {
+      console.error('Failed to resume workbench:', err);
+      setSaveStatus('error');
+      alert(err.message || 'Failed to resume workbench.');
+    }
+  }, [setPage]);
+
+  const startNewReconstruction = useCallback(async () => {
+    setAnalysis(null);
+    setImages([]);
+    const freshState = createInitialMachineryState();
+    setMachineryState(freshState);
+    setLastAnalyzedSnapshot(null);
+    setStage('idle');
+
+    try {
+      const wb = await createWorkbenchApi({
+        name: `Reconstruction ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`,
+      });
+      if (wb?.id) {
+        setCurrentWorkbenchId(wb.id);
+        setCurrentWorkbenchName(wb.name);
+        if (typeof window !== 'undefined') {
+          window.__REFORGE_CURRENT_WB_ID__ = wb.id;
+        }
+      }
+    } catch (err) {
+      console.warn('Could not pre-create workbench:', err);
+    }
+    setPage('upload');
+  }, [setPage]);
 
   const isDirty = useMemo(() => {
     return hasDirtyContext(machineryState, lastAnalyzedSnapshot);
@@ -3522,17 +3911,58 @@ function App() {
     isDirty,
     theme,
     toggleTheme,
+    currentWorkbenchId,
+    currentWorkbenchName,
+    saveStatus,
+    ensureWorkbench,
+    saveCurrentWorkbench,
+    resumeWorkbench,
+    startNewReconstruction,
   }), [
     page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
     machineryState, lastAnalyzedSnapshot, viewMode, activeComponentId,
     selectedComponentIds, handleRegenerate, isRegenerating, isDirty,
-    theme, toggleTheme
+    theme, toggleTheme, currentWorkbenchId, currentWorkbenchName, saveStatus,
+    ensureWorkbench, saveCurrentWorkbench, resumeWorkbench, startNewReconstruction,
   ]);
+
+  const renderPage = () => {
+    switch (page) {
+      case 'login':
+        return <LoginPage onNavigate={setPage} />;
+      case 'register':
+        return <RegisterPage onNavigate={setPage} />;
+      case 'upload':
+        return (
+          <RequireAuth onNavigate={setPage}>
+            <Upload />
+          </RequireAuth>
+        );
+      case 'workbench':
+        return (
+          <RequireAuth onNavigate={setPage}>
+            <Workbench />
+          </RequireAuth>
+        );
+      case 'home':
+      default:
+        return (
+          <RequireAuth onNavigate={setPage}>
+            <Nav />
+            <HomePage
+              onNavigate={setPage}
+              onResumeWorkbench={resumeWorkbench}
+              onStartNewReconstruction={startNewReconstruction}
+            />
+          </RequireAuth>
+        );
+    }
+  };
 
   return (
     <ErrorBoundary>
       <AppContext.Provider value={value}>
-        {page === 'home' ? <Landing /> : page === 'upload' ? <Upload /> : <Workbench />}
+        {renderPage()}
       </AppContext.Provider>
     </ErrorBoundary>
   );
@@ -3540,6 +3970,8 @@ function App() {
 
 createRoot(document.getElementById('root')).render(
   <ErrorBoundary>
-    <App />
+    <AuthProvider>
+      <App />
+    </AuthProvider>
   </ErrorBoundary>
 );

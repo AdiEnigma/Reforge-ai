@@ -12,6 +12,7 @@ export async function postJson(url, body) {
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify(body),
     });
   } catch {
@@ -22,6 +23,29 @@ export async function postJson(url, body) {
     payload = await response.json();
   } catch {
     // ignore malformed body; use status text below
+  }
+  if (!response.ok) {
+    throw new ApiError(payload?.error || `Request failed (${response.status}).`, response.status);
+  }
+  return payload;
+}
+
+export async function getJson(url) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      credentials: "include",
+    });
+  } catch {
+    throw new ApiError("Cannot reach the ReForge AI server. Is it running?", 0);
+  }
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // ignore
   }
   if (!response.ok) {
     throw new ApiError(payload?.error || `Request failed (${response.status}).`, response.status);

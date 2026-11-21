@@ -9,4 +9,17 @@ env.local
 *.log
 .DS_Store
 .dependencies/
+.venv/
+venv/
+env/
+**/__pycache__/
+*.py[cod]
+*.pyo
+# SQLite temporary files
+*.db-shm
+*.db-wal
 
+# Generated STL failure artifacts
+/python-engine/exports/stl_fail_01/
+ /python-engine/exports/stl_fail_01_*.step
+/python-engine/exports/cad/stl_fail_01_*.step

@@ -1,4 +1,5 @@
 import express from "express";
+import cookieParser from "cookie-parser";
 import path from "node:path";
 import { createReadStream, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,10 @@ import {
   reconcileGeminiWithVision,
   fallbackDeterministicAnalysis,
 } from "./src/vision-geometry-resolver.js";
+import { getDb } from "./src/db.js";
+import { seedDemoAccounts } from "./src/demo-seed.js";
+import { createAuthRouter } from "./src/auth-routes.js";
+import { createWorkbenchRouter } from "./src/workbench-routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
@@ -22,14 +27,33 @@ const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
 const app = express();
 app.disable("x-powered-by");
+app.use(cookieParser());
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-Requested-With");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 app.use(express.json({ limit: `${MAX_BODY_BYTES}` }));
+
+// Initialize SQLite DB and seed demo accounts in development/demo mode
+const db = getDb();
+seedDemoAccounts(db).catch((err) => {
+  console.error("Failed to seed demo accounts:", err);
+});
+
+// Authentication routes
+app.use("/api/auth", createAuthRouter(db));
+
+// Workbench persistence routes
+app.use("/api/workbenches", createWorkbenchRouter(db));
 
 function validateImages(images) {
   if (!Array.isArray(images) || images.length === 0) {
@@ -477,7 +501,11 @@ if (existsSync(distDir)) {
 
 app.use((_req, res) => res.status(404).json({ error: "Not found." }));
 
-app.listen(PORT, () => {
-  console.log(`ReForge AI server listening on http://localhost:${PORT}`);
-  console.log(process.env.GEMINI_API_KEY ? "Gemini API key: configured" : "Gemini API key: NOT set — analysis/chat will fail until GEMINI_API_KEY is provided in .env.local");
-});
+export { app, db };
+
+if (process.env.NODE_ENV !== "test") {
+  app.listen(PORT, () => {
+    console.log(`ReForge AI server listening on http://localhost:${PORT}`);
+    console.log(process.env.GEMINI_API_KEY ? "Gemini API key: configured" : "Gemini API key: NOT set — analysis/chat will fail until GEMINI_API_KEY is provided in .env.local");
+  });
+}
