@@ -11284,3 +11284,262 @@ body.theme-light {
   border-color: rgba(197, 34, 31, 0.4);
   background: rgba(197, 34, 31, 0.1);
 }
+
+/* =========================================================================
+   3D Viewport Engineering Dimensions HUD Overlay
+   ========================================================================= */
+.viewport-dims-hud {
+  position: absolute;
+  top: 48px;
+  right: 14px;
+  z-index: 10;
+  min-width: 175px;
+  background: rgba(18, 12, 8, 0.92);
+  border: 1px solid rgba(255, 183, 127, 0.35);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  border-radius: 4px;
+  padding: 8px 10px;
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+}
+
+.dims-hud-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #ffb77f;
+  border-bottom: 1px solid rgba(84, 67, 55, 0.6);
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+.dims-hud-title .icon {
+  font-size: 13px;
+}
+
+.dims-hud-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dims-hud-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+}
+
+.dims-hud-k {
+  color: #a08875;
+  font-size: 10px;
+}
+
+.dims-hud-v {
+  color: #b5e67e;
+  font-weight: 600;
+}
+
+.dims-status-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+  letter-spacing: 0.04em;
+}
+
+.dims-status-badge.status-measured {
+  background: rgba(181, 230, 126, 0.18);
+  color: #b5e67e;
+  border: 1px solid rgba(181, 230, 126, 0.4);
+}
+
+.dims-status-badge.status-estimated {
+  background: rgba(255, 183, 127, 0.18);
+  color: #ffb77f;
+  border: 1px solid rgba(255, 183, 127, 0.4);
+}
+
+.dims-status-badge.status-unknown {
+  background: rgba(160, 136, 117, 0.18);
+  color: #a08875;
+  border: 1px solid rgba(160, 136, 117, 0.3);
+}
+
+/* =========================================================================
+   Inspection Dimensions Table & Details
+   ========================================================================= */
+.inspection-dims-section {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dims-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(84, 67, 55, 0.35);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dims-toggle-pill:hover {
+  background: rgba(255, 183, 127, 0.15);
+  border-color: #ffb77f;
+  color: #ffb77f;
+}
+
+.dims-toggle-pill.active {
+  background: rgba(181, 230, 126, 0.18);
+  border-color: #b5e67e;
+  color: #b5e67e;
+}
+
+.dims-toggle-pill .icon {
+  font-size: 13px;
+}
+
+.inspection-dims-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.dim-table-row {
+  display: flex;
+  flex-direction: column;
+  background: rgba(30, 20, 14, 0.5);
+  border: 1px solid rgba(84, 67, 55, 0.4);
+  border-radius: 4px;
+  padding: 6px 8px;
+  transition: border-color 0.15s;
+}
+
+.dim-table-row:hover {
+  border-color: rgba(255, 183, 127, 0.45);
+}
+
+.dim-row-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dim-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dim-symbol {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffb77f;
+  width: 14px;
+}
+
+.dim-name {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text, #e2d7cd);
+}
+
+.dim-radius-hint {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 10px;
+  color: #c9f88d;
+  opacity: 0.85;
+  margin-left: 4px;
+}
+
+.dim-row-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dim-val-highlight {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #b5e67e;
+}
+
+.dim-tol-val {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 9px;
+  color: #a08875;
+}
+
+.dim-row-provenance {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 9px;
+  color: #8c7866;
+}
+
+.dim-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+
+.dim-status-pill.status-measured {
+  background: rgba(181, 230, 126, 0.15);
+  color: #b5e67e;
+  border: 1px solid rgba(181, 230, 126, 0.35);
+}
+
+.dim-status-pill.status-estimated {
+  background: rgba(255, 183, 127, 0.15);
+  color: #ffb77f;
+  border: 1px solid rgba(255, 183, 127, 0.35);
+}
+
+.dim-status-pill.status-unknown {
+  background: rgba(160, 136, 117, 0.15);
+  color: #a08875;
+  border: 1px solid rgba(160, 136, 117, 0.3);
+}
+
+.dim-status-pill .tiny-icon {
+  font-size: 10px;
+}
+
+.dim-conf-sub {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-weight: 600;
+  color: #b5e67e;
+}
+
+.dim-reason-snippet {
+  font-size: 9px;
+  color: #8c7866;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}

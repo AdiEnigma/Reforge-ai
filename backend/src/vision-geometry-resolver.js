@@ -314,6 +314,9 @@ export function buildParameterConfidence({
   const hasCalibration = Boolean(obs?.calibrations?.length && obs.calibrations[0]?.mm_per_pixel > 0);
 
   // 1. Outer Diameter / Major Width
+  const calSource = obs?.calibrations?.[0]?.source || '';
+  const isA4Calibrated = calSource === 'iso_216_a4_paper';
+
   if (typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0) {
     paramConf.outerDiameter = {
       status: 'MEASURED',
@@ -325,10 +328,12 @@ export function buildParameterConfidence({
   } else if (hasCalibration && obs?.circles?.length > 0) {
     paramConf.outerDiameter = {
       status: 'MEASURED',
-      confidence: 0.94,
-      source: 'calibrated_computer_vision',
+      confidence: isA4Calibrated ? 0.98 : 0.94,
+      source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
       value: dimensions.outerDiameter,
-      reason: `Calibrated from optical boundary (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
+      reason: isA4Calibrated
+        ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
+        : `Calibrated from optical boundary (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
     };
   } else if (dimensions.outerDiameter) {
     paramConf.outerDiameter = {
@@ -355,10 +360,12 @@ export function buildParameterConfidence({
   } else if (hasCalibration && obs?.circles?.length >= 2) {
     paramConf.innerDiameter = {
       status: 'MEASURED',
-      confidence: 0.91,
-      source: 'calibrated_computer_vision',
+      confidence: isA4Calibrated ? 0.96 : 0.91,
+      source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
       value: dimensions.innerDiameter,
-      reason: 'Calibrated from concentric internal bore circle',
+      reason: isA4Calibrated
+        ? `Calibrated from concentric internal bore circle via A4 planar scale (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
+        : 'Calibrated from concentric internal bore circle',
     };
   } else if (dimensions.innerDiameter && dimensions.innerDiameter > 0) {
     paramConf.innerDiameter = {
@@ -674,7 +681,8 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
 
   // ─── Scenario B: Flange Identified Deterministically ────────────────────────
   const isRefFlange = String(ref.componentType || '').toLowerCase().includes('flange');
-  if (isRefFlange || (obs && Array.isArray(obs.circles) && obs.circles.length >= 4 && outerDiameterMm !== null)) {
+  const hasCircularAspect = obs?.aspectRatios?.length ? Math.max(...obs.aspectRatios) <= 1.25 : true;
+  if (isRefFlange || (ref.componentType && Array.isArray(obs?.circles) && obs.circles.length >= 4 && outerDiameterMm !== null && hasCircularAspect)) {
     const od = outerDiameterMm || 130.0;
     const id = innerDiameterMm !== null ? innerDiameterMm : Math.round(od * 0.35 * 10) / 10;
     const th = faceWidthMm || Math.round(od * 0.16 * 10) / 10;
@@ -730,7 +738,9 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
   }
 
   // ─── Scenario C: Shaft / Cylinder Identified Deterministically ──────────────
-  if (outerDiameterMm !== null && outerDiameterMm > 0 && (faceWidthMm !== null || ref.length !== undefined)) {
+  const isRefShaft = String(ref.componentType || '').toLowerCase().includes('shaft') || String(ref.componentType || '').toLowerCase().includes('cylinder');
+  const hasExplicitLengthRef = typeof ref.length === 'number' && ref.length > 0;
+  if ((isRefShaft || hasExplicitLengthRef) && outerDiameterMm !== null && outerDiameterMm > 0 && (faceWidthMm !== null || ref.length !== undefined)) {
     const od = outerDiameterMm;
     const length = faceWidthMm || ref.length || od * 2.5;
     const id = innerDiameterMm || 0;
@@ -791,6 +801,108 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
 }
 
 /**
+ * Treats unobservable / uncalibrated dimensions as inference problems.
+ * Extracts metric bounds from geometric recipes (revolved profiles, axial segments,
+ * outlines, optical circles) or supplies standard engineering baselines so the
+ * component is always fully dimensioned and editable.
+ */
+export function inferDefensibleDimensions(reconciled, obs = null, ref = {}) {
+  if (!reconciled || typeof reconciled !== 'object') return;
+  reconciled.dimensions = { ...(reconciled.dimensions || {}) };
+
+  // First check explicit reference
+  for (const [key, val] of Object.entries(ref)) {
+    if (typeof val === 'number' && val > 0 && isFinite(val)) {
+      reconciled.dimensions[key] = val;
+    }
+  }
+
+  const recipe = reconciled.geometryRecipe || {};
+  let derivedOD = null;
+  let derivedLength = null;
+  let derivedBore = null;
+
+  // 1. From Revolved Profile (style: 'revolved')
+  if (recipe.style === 'revolved' && Array.isArray(recipe.revolvedProfile) && recipe.revolvedProfile.length > 0) {
+    const validRadii = recipe.revolvedProfile.map((p) => Math.abs(p.radius || 0)).filter((r) => r > 0);
+    const validZs = recipe.revolvedProfile.map((p) => p.z || 0);
+    if (validRadii.length > 0) {
+      const maxR = Math.max(...validRadii);
+      const minZ = Math.min(...validZs);
+      const maxZ = Math.max(...validZs);
+      const zSpan = Math.abs(maxZ - minZ);
+
+      if (maxR >= 5.0) {
+        derivedOD = Math.round(maxR * 2 * 10) / 10;
+        derivedLength = zSpan > 0 ? Math.round(zSpan * 10) / 10 : Math.round(derivedOD * 2);
+      } else {
+        derivedOD = 45.0;
+        derivedLength = zSpan > 0 && maxR > 0 ? Math.round(45.0 * (zSpan / (maxR * 2)) * 10) / 10 : 80.0;
+      }
+    }
+  }
+
+  // 2. From Axial Segments (style: 'axial_segments')
+  if (Array.isArray(recipe.axialSegments) && recipe.axialSegments.length > 0) {
+    const validRadii = recipe.axialSegments.map((s) => s.radius || 0).filter((r) => r > 0);
+    const zStarts = recipe.axialSegments.map((s) => s.zStart || 0);
+    const zEnds = recipe.axialSegments.map((s) => s.zEnd || 0);
+    if (validRadii.length > 0) {
+      const maxR = Math.max(...validRadii);
+      const minZ = Math.min(...zStarts);
+      const maxZ = Math.max(...zEnds);
+      derivedOD = Math.round(maxR * 2 * 10) / 10;
+      derivedLength = Math.round(Math.abs(maxZ - minZ) * 10) / 10;
+    }
+  }
+
+  // 3. From Extruded Outline (style: 'extruded')
+  if (Array.isArray(recipe.outline) && recipe.outline.length >= 3) {
+    const xs = recipe.outline.map((pt) => pt.x || 0);
+    const ys = recipe.outline.map((pt) => pt.y || 0);
+    const spanX = Math.max(...xs) - Math.min(...xs);
+    const spanY = Math.max(...ys) - Math.min(...ys);
+    if (spanX > 0 && spanY > 0) {
+      derivedOD = Math.round(Math.max(spanX, spanY) * 10) / 10;
+      derivedLength = Math.round(Math.min(spanX, spanY) * 10) / 10;
+    }
+  }
+
+  // 4. From Optical Observations (OpenCV circles & contours)
+  if (!derivedOD && obs?.circles?.length > 0) {
+    const primaryCircle = obs.circles[0];
+    if (obs.calibrations?.[0]?.mm_per_pixel > 0) {
+      derivedOD = Math.round(primaryCircle.radius * 2 * obs.calibrations[0].mm_per_pixel * 10) / 10;
+    } else {
+      derivedOD = Math.round(primaryCircle.radius * 2 * 0.25 * 10) / 10;
+    }
+  }
+
+  // 5. Populate missing dimensions with strongest defensible inference
+  const currentOD = reconciled.dimensions.outerDiameter;
+  const currentLen = reconciled.dimensions.length || reconciled.dimensions.height;
+  const currentBore = reconciled.dimensions.innerDiameter;
+
+  if (typeof currentOD !== 'number' || !isFinite(currentOD) || currentOD <= 0) {
+    reconciled.dimensions.outerDiameter = derivedOD || 45.0;
+  }
+  if (typeof currentLen !== 'number' || !isFinite(currentLen) || currentLen <= 0) {
+    const od = reconciled.dimensions.outerDiameter;
+    reconciled.dimensions.length = derivedLength || Math.round(od * 1.8 * 10) / 10;
+    reconciled.dimensions.height = reconciled.dimensions.length;
+  }
+  if (typeof reconciled.dimensions.width !== 'number' || !isFinite(reconciled.dimensions.width) || reconciled.dimensions.width <= 0) {
+    reconciled.dimensions.width = reconciled.dimensions.outerDiameter;
+  }
+  if (typeof reconciled.dimensions.thickness !== 'number' || !isFinite(reconciled.dimensions.thickness) || reconciled.dimensions.thickness <= 0) {
+    reconciled.dimensions.thickness = reconciled.dimensions.length || 25.0;
+  }
+  if (typeof currentBore !== 'number' || !isFinite(currentBore) || currentBore < 0) {
+    reconciled.dimensions.innerDiameter = derivedBore ?? (recipe.boreRadius ? recipe.boreRadius * 2 : 0);
+  }
+}
+
+/**
  * Reconciles Gemini's high-level semantic proposal with exact vision observations
  * and user-supplied reference dimensions. Prevents Gemini guesswork from overriding
  * verified measurements.
@@ -812,6 +924,9 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       reconciled.dimensions[key] = refVal;
     }
   }
+
+  // Infer defensible dimensions if uncalibrated/null from photograph
+  inferDefensibleDimensions(reconciled, obs, ref);
 
   // 2. Reconcile Teeth Count: User Reference > Vision Symmetry > Gemini Guess
   let finalTeeth = reconciled.teeth;

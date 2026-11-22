@@ -2786,6 +2786,8 @@ function Workbench() {
               hoveredFeatureId={hoveredFeatureId}
               onSelectFeature={setSelectedFeatureId}
               onHoverFeature={setHoveredFeatureId}
+              dims={dims}
+              onToggleDims={() => setDims(d => !d)}
               machineryState={machineryState}
               setMachineryState={setMachineryState}
               activeComponentId={activeComponentId}
@@ -2919,6 +2921,7 @@ function Workbench() {
                     wire={wire}
                     grid={grid}
                     stress={stress}
+                    dims={dims}
                     autoRotate={autoRotate}
                     resetKey={resetKey}
                     selectedFeatureId={selectedFeatureId}
@@ -2930,17 +2933,6 @@ function Workbench() {
                       handleToggleLeftPanel(true);
                     }}
                   />
-                )}
-
-                {ready && dims && (
-                  <div className="dims-overlay" aria-label="Component dimensions">
-                    {dimensionList(activeReconstructionAnalysis).map(d => (
-                      <div className="dims-row" key={d.label}>
-                        <span className="dims-label">{d.label}</span>
-                        <span className="dims-value">{d.value}</span>
-                      </div>
-                    ))}
-                  </div>
                 )}
 
                 {/* Floating PiP Toggle Button */}

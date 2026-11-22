@@ -164,39 +164,68 @@ def _build_depth_result(depth_dict: dict) -> DepthResult:
     )
 
 
-def _estimate_calibration(reference: Optional[dict], cv_dict: dict) -> CalibrationResult:
+from vision.calibration import detect_a4_paper_corners
+
+
+def _estimate_calibration(reference: Optional[dict], cv_dict: dict, rgb: Optional[np.ndarray] = None) -> CalibrationResult:
     """
-    Attempt pixel-to-mm calibration if user provided known dimensions.
+    Attempt pixel-to-mm calibration:
+    1. Automatic A4 Paper fiducial detection (210mm x 297mm planar homography).
+    2. User provided known dimension reference (outerDiameter or known_diameter_mm).
+    3. Explicit reference object (e.g. calibration target).
     If ambiguous or unsupported view, remains uncalibrated.
     """
-    if not reference or not isinstance(reference, dict):
-        return CalibrationResult(status="uncalibrated", confidence=0.0)
-
-    known_diam = reference.get("outerDiameter") or reference.get("known_diameter_mm")
-    circles = cv_dict.get("circles", [])
-
-    if known_diam and circles:
-        # Check if we have one dominant circle with high confidence
-        high_conf_circles = [c for c in circles if c.get("confidence", 0) > 0.8]
-        if len(high_conf_circles) == 1:
-            r_px = high_conf_circles[0]["radius_px"]
-            diam_px = 2.0 * r_px
-            if diam_px > 5:
-                mm_per_px = float(known_diam) / diam_px
+    # 1. Automatic A4 Paper benchmark detection
+    if rgb is not None:
+        try:
+            a4_info = detect_a4_paper_corners(rgb)
+            if a4_info:
+                logger.info(
+                    "Calibrated from ISO 216 A4 Paper reference: %.4f mm/px, confidence=%.2f (%s)",
+                    a4_info["mm_per_pixel"],
+                    a4_info["confidence"],
+                    a4_info["orientation"],
+                )
                 return CalibrationResult(
                     status="calibrated",
-                    mm_per_pixel=round(mm_per_px, 4),
-                    source="outerDiameter_to_circle",
-                    confidence=0.85,
-                    warnings=[]
+                    mm_per_pixel=round(a4_info["mm_per_pixel"], 4),
+                    source="iso_216_a4_paper",
+                    confidence=a4_info["confidence"],
+                    corners_px=a4_info["corners_px"],
+                    homography_matrix=a4_info["homography_matrix"],
+                    reference_type="a4_paper",
+                    warnings=[],
                 )
-    
+        except Exception as exc:
+            logger.warning("A4 paper calibration check error: %s", exc)
+
+    # 2. User-provided dimension reference
+    if reference and isinstance(reference, dict):
+        known_diam = reference.get("outerDiameter") or reference.get("known_diameter_mm")
+        circles = cv_dict.get("circles", [])
+
+        if known_diam and circles:
+            high_conf_circles = [c for c in circles if c.get("confidence", 0) > 0.8]
+            if len(high_conf_circles) == 1:
+                r_px = high_conf_circles[0]["radius_px"]
+                diam_px = 2.0 * r_px
+                if diam_px > 5:
+                    mm_per_px = float(known_diam) / diam_px
+                    return CalibrationResult(
+                        status="calibrated",
+                        mm_per_pixel=round(mm_per_px, 4),
+                        source="outerDiameter_to_circle",
+                        confidence=0.85,
+                        reference_type="user_reference",
+                        warnings=[],
+                    )
+
     return CalibrationResult(
         status="uncalibrated",
         mm_per_pixel=None,
         source=None,
         confidence=0.0,
-        warnings=["No reliable single-view reference calibration match found; uncalibrated."]
+        warnings=["No reliable single-view reference calibration match found; uncalibrated."],
     )
 
 
@@ -282,7 +311,7 @@ def _process_single_image(image_input: ImageInput, reference: Optional[dict]) ->
                 raise
 
     # --- calibration ---
-    cal_result = _estimate_calibration(reference, cv_dict)
+    cal_result = _estimate_calibration(reference, cv_dict, rgb=rgb)
 
     return ImageResult(
         image_index=image_input.image_index,

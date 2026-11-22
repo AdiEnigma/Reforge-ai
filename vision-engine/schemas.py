@@ -167,6 +167,9 @@ class CalibrationResult(BaseModel):
     mm_per_pixel: Optional[float] = None
     source: Optional[str] = None
     confidence: float = 0.0
+    corners_px: Optional[List[List[float]]] = Field(None, description="4 corners of detected planar reference target in pixels")
+    homography_matrix: Optional[List[List[float]]] = Field(None, description="3x3 homography matrix from image pixels to physical mm")
+    reference_type: Optional[str] = Field(None, description="'a4_paper' | 'user_reference' | 'circle_target'")
     warnings: List[str] = Field(default_factory=list)
 
 

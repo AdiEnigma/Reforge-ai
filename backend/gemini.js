@@ -231,7 +231,7 @@ function model(client, modelName = null) {
 
 function referenceBlock(reference) {
   if (!reference || typeof reference !== "object") {
-    return "No absolute reference was provided. Estimate relative proportions only; set dimension values to null when they cannot be determined.";
+    return "No absolute reference was provided. Treat uncalibrated dimensions as an inference problem: estimate strongest defensible engineering dimensions in millimetres (mm) based on visible geometry, standard mechanical proportions, and visual cues. Record any lack of absolute scale in uncertainties.";
   }
   const rows = [];
   const linear = [
@@ -249,7 +249,7 @@ function referenceBlock(reference) {
   if (reference.module != null) rows.push(`- gear module = ${reference.module} mm`);
   if (reference.helixAngle != null) rows.push(`- helix angle = ${reference.helixAngle} degrees`);
   if (rows.length === 0) {
-    return "No absolute reference was provided. Estimate relative proportions only; set dimension values to null when they cannot be determined.";
+    return "No absolute reference was provided. Treat uncalibrated dimensions as an inference problem: estimate strongest defensible engineering dimensions in millimetres (mm) based on visible geometry, standard mechanical proportions, and visual cues. Record any lack of absolute scale in uncertainties.";
   }
   return [
     "Known reference dimensions are provided. Treat them as ground truth: they take priority over image estimates when they disagree. Use them to calibrate every estimated dimension in millimetres:",
