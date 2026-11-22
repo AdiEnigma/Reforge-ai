@@ -20,7 +20,7 @@ import { buildModel, buildAssemblyScene, dimensionList, resolveLabel } from '../
 import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from '../lib/model-illumination.js';
 import { createThreeThemeSync } from '../lib/three-theme.js';
 import { getAllComponents, ROLE_TYPES } from '../lib/machinery-context.js';
-import { DamageHeatmapOverlay } from './DamageHeatmapOverlay.jsx';
+import { build3DDimensionsGroup } from '../lib/three-dimensions.js';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -38,6 +38,7 @@ function SingleViewportCanvas({
   wire,
   grid,
   stress,
+  dims,
   autoRotate,
   illumination = false,
   illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY,
@@ -50,8 +51,8 @@ function SingleViewportCanvas({
 }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId };
+  const options = useRef({ wire, grid, stress, dims, autoRotate, selectedFeatureId, hoveredFeatureId });
+  options.current = { wire, grid, stress, dims, autoRotate, selectedFeatureId, hoveredFeatureId };
 
   if (!analysis && !isAssembly) {
     return (
@@ -89,7 +90,11 @@ function SingleViewportCanvas({
       mainGroup = group;
     }
     scene.add(mainGroup);
-    const modelBounds = new THREE.Box3().setFromObject(mainGroup);
+
+    // 3D Technical Dimensions Overlay (Lines, Arrows, Extension Lines, Billboard Sprites)
+    const dimsOverlay = isAssembly ? new THREE.Group() : build3DDimensionsGroup(mainGroup, analysis);
+    dimsOverlay.visible = Boolean(dims);
+    scene.add(dimsOverlay);
 
     scene.add(new THREE.AmbientLight('#7a4a38', 0.65));
     const key = new THREE.DirectionalLight('#ffb77f', 0.85);
@@ -213,6 +218,7 @@ function SingleViewportCanvas({
       frame = requestAnimationFrame(animate);
       if (options.current.autoRotate) view.theta += 0.005;
       gridHelper.visible = options.current.grid;
+      dimsOverlay.visible = Boolean(options.current.dims);
       themeSync.update(options.current.theme);
       illuminationLight.update({
         enabled: options.current.illumination,
@@ -265,6 +271,13 @@ function SingleViewportCanvas({
       mainGroup.traverse((node) => {
         if (node.geometry) node.geometry.dispose();
       });
+      dimsOverlay.traverse((node) => {
+        if (node.geometry) node.geometry.dispose();
+        if (node.material) {
+          if (Array.isArray(node.material)) node.material.forEach((m) => m.dispose());
+          else node.material.dispose();
+        }
+      });
       wireMaterial.dispose();
       selectHighlightMat.dispose();
       hoverHighlightMat.dispose();
@@ -286,6 +299,27 @@ function SingleViewportCanvas({
         {headerControls}
       </div>
       <div className="single-viewport-mount" ref={mount} />
+      {dims && analysis && !isAssembly && (
+        <div className="viewport-dims-hud" aria-label="Component Dimensions">
+          <div className="dims-hud-title">
+            <Icon>straighten</Icon>
+            <span>DIMENSIONS (MM)</span>
+          </div>
+          <div className="dims-hud-items">
+            {dimensionList(analysis).map((d) => (
+              <div className="dims-hud-row" key={d.label}>
+                <span className="dims-hud-k">{d.label}</span>
+                <span className="dims-hud-v">{d.value}</span>
+                {d.status && (
+                  <span className={`dims-status-badge status-${(d.status || 'ESTIMATED').toLowerCase()}`}>
+                    {d.status === 'MEASURED' ? 'M' : d.status === 'UNKNOWN' ? '?' : 'EST'}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {stress && (
         <DamageHeatmapOverlay analysis={analysis} images={images} />
       )}
@@ -333,6 +367,7 @@ export function MultiViewportGrid({
   wire,
   grid,
   stress,
+  dims,
   autoRotate,
   illumination = false,
   illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY,
@@ -565,6 +600,7 @@ export function MultiViewportGrid({
             wire={wire}
             grid={grid}
             stress={stress}
+            dims={dims}
             autoRotate={autoRotate}
             illumination={illumination}
             illuminationIntensity={illuminationIntensity}
@@ -595,6 +631,7 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
@@ -624,6 +661,7 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
@@ -657,6 +695,7 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
@@ -685,6 +724,7 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
@@ -713,6 +753,7 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
@@ -762,6 +803,7 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
@@ -787,6 +829,7 @@ export function MultiViewportGrid({
             wire={wire}
             grid={grid}
             stress={stress}
+            dims={dims}
             autoRotate={autoRotate}
             illumination={illumination}
             illuminationIntensity={illuminationIntensity}

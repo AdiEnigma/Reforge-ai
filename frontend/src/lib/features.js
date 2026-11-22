@@ -198,6 +198,36 @@ export function normalizeFeatures(analysis) {
     }
   };
 
+  // 0. Deterministic Extraction from Neural / Depth Surface Mesh features
+  const meshFeatures = recipe.meshData?.features || analysis.geometryRecipe?.meshData?.features;
+  if (Array.isArray(meshFeatures) && meshFeatures.length > 0) {
+    for (const feat of meshFeatures) {
+      if (!feat || !feat.id) continue;
+      addOrMergeFeature({
+        id: feat.id,
+        type: feat.type || "other",
+        label: feat.label || feat.type,
+        description: feat.description || FEATURE_DESCRIPTIONS[feat.type] || "Surface mesh feature",
+        source: "mesh",
+        confidence: typeof feat.confidence === "number" ? feat.confidence : 0.95,
+        geometryRef: feat.id,
+        metadata: feat.metadata || {},
+      });
+    }
+  }
+  if (recipe.style === "mesh" || meshFeatures) {
+    addOrMergeFeature({
+      id: "feature-body-1",
+      type: "other",
+      label: "3D Surface Shell",
+      description: "Continuous reconstructed watertight surface geometry",
+      source: "mesh",
+      confidence: 1.0,
+      geometryRef: "feature-body-1",
+      metadata: {},
+    });
+  }
+
   // 1. Deterministic Extraction from recipe.gear / teeth / spur gear component
   const hasGear =
     recipe.style === "gear" ||
@@ -314,6 +344,34 @@ export function normalizeFeatures(analysis) {
       geometryRef: "feature-mounting-holes-1",
       metadata: {
         count: fCount,
+      },
+    });
+  }
+
+  // 3b. Deterministic Extraction of Extruded Profile & Body
+  if (recipe.style === "extruded" || Array.isArray(recipe.outline)) {
+    const isRod = compType.includes("rod") || compType.includes("link");
+    const isBracket = compType.includes("bracket");
+    const isPlate = compType.includes("plate");
+    const profileLabel = isRod
+      ? "Forged Link Shank"
+      : isBracket
+      ? "Machined Bracket Profile"
+      : isPlate
+      ? "Machined Solid Plate"
+      : "Contoured Machined Profile";
+
+    addOrMergeFeature({
+      id: "feature-body-1",
+      type: isBracket ? "flange" : "other",
+      label: profileLabel,
+      description: "External 2D perimeter boundary profile.",
+      source: "recipe",
+      confidence: 1.0,
+      geometryRef: "feature-body-1",
+      metadata: {
+        points: recipe.outline ? recipe.outline.length : 4,
+        thickness: recipe.depth || dims.thickness || dims.height || null,
       },
     });
   }

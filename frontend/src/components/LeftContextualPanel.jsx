@@ -54,6 +54,8 @@ export function LeftContextualPanel({
   hoveredFeatureId,
   onSelectFeature,
   onHoverFeature,
+  dims,
+  onToggleDims,
   // Machinery / Components Props
   machineryState,
   setMachineryState,
@@ -129,30 +131,56 @@ export function LeftContextualPanel({
       {/* Panel Top Header: Tabs and Panel Customization Actions */}
       <div className="contextual-panel-header">
         <div className="panel-tab-bar" role="tablist">
-          {/* Tab 1: Engineering Copilot (Always available) */}
+          {/* Tab 1: Engineering Copilot */}
           <button
             role="tab"
             aria-selected={activeTab === 'chat'}
             className={`panel-tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
             onClick={() => onSelectTab('chat')}
+            title="Engineering Copilot AI Chat"
           >
             <Icon>smart_toy</Icon>
             <span>Copilot</span>
           </button>
 
-          {/* Tab 2: Contextual Tool (Rendered only if selected on ribbon) */}
-          {selectedContextTool && contextualConfig && (
+          {/* Tab 2: Inspected Dimensions & Features */}
+          <button
+            role="tab"
+            aria-selected={activeTab === 'inspection'}
+            className={`panel-tab-btn ${activeTab === 'inspection' ? 'active' : ''}`}
+            onClick={() => onSelectTab('inspection')}
+            title="Inspected Dimensions, Tolerances & Features"
+          >
+            <Icon>center_focus_strong</Icon>
+            <span>Inspection</span>
+          </button>
+
+          {/* Tab 3: Components & Machinery */}
+          <button
+            role="tab"
+            aria-selected={activeTab === 'components'}
+            className={`panel-tab-btn ${activeTab === 'components' ? 'active' : ''}`}
+            onClick={() => onSelectTab('components')}
+            title="Manage Components and Machinery Assembly"
+          >
+            <Icon>category</Icon>
+            <span>Components</span>
+            {isDirty && (
+              <span className="dirty-indicator" title="New visual context staged" />
+            )}
+          </button>
+
+          {/* Tab 4: Health & Damage Analysis (when selected or active) */}
+          {(selectedContextTool === 'health' || activeTab === 'health') && (
             <button
               role="tab"
-              aria-selected={activeTab === selectedContextTool}
-              className={`panel-tab-btn ${activeTab === selectedContextTool ? 'active' : ''}`}
-              onClick={() => onSelectTab(selectedContextTool)}
+              aria-selected={activeTab === 'health'}
+              className={`panel-tab-btn ${activeTab === 'health' ? 'active' : ''}`}
+              onClick={() => onSelectTab('health')}
+              title="Component Health and Defect Analysis"
             >
-              <Icon>{contextualConfig.icon}</Icon>
-              <span>{contextualConfig.label}</span>
-              {selectedContextTool === 'components' && isDirty && (
-                <span className="dirty-indicator" title="New visual context staged" />
-              )}
+              <Icon>health_and_safety</Icon>
+              <span>Health</span>
             </button>
           )}
         </div>
@@ -295,7 +323,7 @@ export function LeftContextualPanel({
         )}
 
         {/* TAB 2A: INSPECTED DETAILS & DETECTED FEATURES */}
-        {activeTab === 'inspection' && selectedContextTool === 'inspection' && (
+        {activeTab === 'inspection' && (
           <InspectedDetailsPanel
             analysis={analysis}
             features={features}
@@ -303,11 +331,13 @@ export function LeftContextualPanel({
             hoveredFeatureId={hoveredFeatureId}
             onSelectFeature={onSelectFeature}
             onHoverFeature={onHoverFeature}
+            dims={dims}
+            onToggleDims={onToggleDims}
           />
         )}
 
         {/* TAB 2B: HEALTH & DAMAGE ANALYSIS */}
-        {activeTab === 'health' && selectedContextTool === 'health' && (
+        {activeTab === 'health' && (
           <ComponentHealthPanel
             analysis={analysis}
             machineryState={machineryState}
@@ -316,7 +346,7 @@ export function LeftContextualPanel({
         )}
 
         {/* TAB 2C: MANAGE COMPONENTS */}
-        {activeTab === 'components' && selectedContextTool === 'components' && (
+        {activeTab === 'components' && (
           <div className="manage-components-tab-wrapper">
             <ManageComponentsTab
               machineryState={machineryState}

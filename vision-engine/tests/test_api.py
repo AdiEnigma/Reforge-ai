@@ -13,7 +13,8 @@ from app import app
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 
 def make_b64(size=(64, 64), color="blue"):

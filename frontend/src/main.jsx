@@ -207,8 +207,9 @@ function ReconstructedViewport({ analysis, images = [], wire, grid, stress, auto
       roughness: 0.35,
     });
 
-    const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
-    const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
+    const stressMaterial = createStressMaterial();
+    const view = { radius: 11, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
+    const reset = () => { view.radius = 11; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
     let pointerMode = null, lastPoint = null, appliedKey = null;
     const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
     const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
@@ -2887,6 +2888,8 @@ function Workbench() {
               hoveredFeatureId={hoveredFeatureId}
               onSelectFeature={setSelectedFeatureId}
               onHoverFeature={setHoveredFeatureId}
+              dims={dims}
+              onToggleDims={() => setDims(d => !d)}
               machineryState={machineryState}
               setMachineryState={setMachineryState}
               activeComponentId={activeComponentId}
@@ -2985,7 +2988,7 @@ function Workbench() {
 
                 <div className="cad viewport-status" aria-live="polite">
                   {ready
-                    ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                    ? <>● {label}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
                     : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
                 </div>
 
@@ -3026,6 +3029,7 @@ function Workbench() {
                     wire={wire}
                     grid={grid}
                     stress={stress}
+                    dims={dims}
                     autoRotate={autoRotate}
                     illumination={illumination}
                     illuminationIntensity={illuminationIntensity}
@@ -3040,17 +3044,6 @@ function Workbench() {
                       handleToggleLeftPanel(true);
                     }}
                   />
-                )}
-
-                {ready && dims && (
-                  <div className="dims-overlay" aria-label="Component dimensions">
-                    {dimensionList(activeReconstructionAnalysis).map(d => (
-                      <div className="dims-row" key={d.label}>
-                        <span className="dims-label">{d.label}</span>
-                        <span className="dims-value">{d.value}</span>
-                      </div>
-                    ))}
-                  </div>
                 )}
 
                 {/* Floating PiP Toggle Button */}
@@ -3739,13 +3732,21 @@ function App() {
       // Re-run analysis for primary if it has images
       let pAnalysis = primary?.analysis;
       if (primary?.images?.length) {
-        pAnalysis = await analyzeComponent(primary.images, primary.reference || {});
+        pAnalysis = await analyzeComponent(primary.images, {
+          ...(primary.reference || {}),
+          name: primary.name || '',
+          notes: primary.notes || '',
+        });
       }
 
       // Re-run analysis for companion if it has images
       let cAnalysis = companion?.analysis;
       if (companion?.images?.length) {
-        cAnalysis = await analyzeComponent(companion.images, companion.reference || {});
+        cAnalysis = await analyzeComponent(companion.images, {
+          ...(companion.reference || {}),
+          name: companion.name || '',
+          notes: companion.notes || '',
+        });
       }
 
       // Re-run analysis for additions that have images
@@ -3753,7 +3754,11 @@ function App() {
         additions.map(async (comp) => {
           if (comp.images?.length) {
             try {
-              const compAnalysis = await analyzeComponent(comp.images, comp.reference || {});
+              const compAnalysis = await analyzeComponent(comp.images, {
+                ...(comp.reference || {}),
+                name: comp.name || '',
+                notes: comp.notes || '',
+              });
               return { ...comp, analysis: compAnalysis };
             } catch {
               return comp;

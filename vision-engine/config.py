@@ -8,7 +8,7 @@ VISION_PIPELINE_ENABLED = os.environ.get("VISION_PIPELINE_ENABLED", "false").low
 VISION_SAM2_ENABLED = os.environ.get("VISION_SAM2_ENABLED", "true").lower() == "true"
 VISION_DEPTH_ENABLED = os.environ.get("VISION_DEPTH_ENABLED", "true").lower() == "true"
 VISION_FAIL_OPEN = os.environ.get("VISION_FAIL_OPEN", "true").lower() == "true"
-VISION_DEVICE = os.environ.get("VISION_DEVICE", "auto")  # auto, cuda, mps, cpu
+VISION_DEVICE = os.environ.get("VISION_DEVICE", "cpu")  # cpu, cuda, mps, auto
 VISION_SAM2_VARIANT = os.environ.get("VISION_SAM2_VARIANT", "small")
 VISION_DEPTH_VARIANT = os.environ.get("VISION_DEPTH_VARIANT", "vits")
 VISION_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("VISION_REQUEST_TIMEOUT_SECONDS", "60"))
@@ -19,8 +19,10 @@ VISION_MAX_IMAGE_WIDTH = int(os.environ.get("VISION_MAX_IMAGE_WIDTH", "4096"))
 VISION_MAX_IMAGE_HEIGHT = int(os.environ.get("VISION_MAX_IMAGE_HEIGHT", "4096"))
 VISION_MAX_IMAGE_PIXELS = int(os.environ.get("VISION_MAX_IMAGE_PIXELS", "16777216"))  # 4096*4096
 VISION_MAX_PAYLOAD_BYTES = int(os.environ.get("VISION_MAX_PAYLOAD_BYTES", "20971520"))  # 20MB
-VISION_ARTIFACTS_DIR = os.environ.get("VISION_ARTIFACTS_DIR", "./artifacts")
-VISION_MODELS_DIR = os.environ.get("VISION_MODELS_DIR", "./models")
+_DEFAULT_MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+VISION_MODELS_DIR = os.environ.get("VISION_MODELS_DIR", _DEFAULT_MODELS_DIR)
+_DEFAULT_ARTIFACTS_DIR = os.path.join(os.path.dirname(__file__), "artifacts")
+VISION_ARTIFACTS_DIR = os.environ.get("VISION_ARTIFACTS_DIR", _DEFAULT_ARTIFACTS_DIR)
 _DEFAULT_DEPTH_ANYTHING_V2_SOURCE_DIR = os.path.join(
 	os.path.dirname(__file__), ".dependencies", "Depth-Anything-V2"
 )

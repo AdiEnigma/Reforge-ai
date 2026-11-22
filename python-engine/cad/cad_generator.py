@@ -361,15 +361,215 @@ def _build_gear_geometry(spec: Dict[str, Any]) -> Tuple[cq.Workplane, Dict[str, 
     return gear_generator.generate_gear(spec)
 
 
+def _apply_boolean_features(
+    wp: cq.Workplane, booleans: List[Dict[str, Any]]
+) -> Tuple[cq.Workplane, List[Dict[str, Any]]]:
+    """
+    OPERATOR D: Boolean Feature Operations & Geometric Composition.
+    Applies parametric subtractive and additive features to any base solid.
+    """
+    applied_ops = []
+    for idx, feat in enumerate(booleans):
+        f_type = str(feat.get("type") or feat.get("operation") or "").lower()
+        try:
+            if f_type in ("keyway", "slot"):
+                kw = float(feat.get("width", 6.0))
+                kh = float(feat.get("height", 4.0))
+                kl = float(feat.get("length", 40.0))
+                cx = float(feat.get("cx", 0.0))
+                cy = float(feat.get("cy", 0.0))
+                cz = float(feat.get("cz", 0.0))
+                cutter = (
+                    cq.Workplane("XY")
+                    .workplane(offset=cz - kl / 2.0)
+                    .center(cx, cy)
+                    .rect(kw, kh)
+                    .extrude(kl)
+                )
+                wp = wp.cut(cutter)
+                applied_ops.append({"type": "cut_keyway", "index": idx, "parameters": feat})
+            elif f_type in ("through_hole", "mounting_hole", "radial_hole", "hole"):
+                radius = float(feat.get("radius", 3.5))
+                depth = float(feat.get("depth", 20.0))
+                cx = float(feat.get("cx", 0.0))
+                cy = float(feat.get("cy", 0.0))
+                cz = float(feat.get("cz", 0.0))
+                cutter = (
+                    cq.Workplane("XY")
+                    .workplane(offset=cz - depth / 2.0)
+                    .center(cx, cy)
+                    .circle(radius)
+                    .extrude(depth)
+                )
+                wp = wp.cut(cutter)
+                applied_ops.append({"type": "cut_hole", "index": idx, "parameters": feat})
+            elif f_type == "groove":
+                gr_r = float(feat.get("radius", 15.0))
+                gr_w = float(feat.get("width", 2.0))
+                gr_d = float(feat.get("depth", 1.5))
+                cz = float(feat.get("cz", 0.0))
+                cutter = (
+                    cq.Workplane("XY")
+                    .workplane(offset=cz - gr_w / 2.0)
+                    .circle(gr_r + gr_d)
+                    .extrude(gr_w)
+                )
+                wp = wp.cut(cutter)
+                applied_ops.append({"type": "cut_groove", "index": idx, "parameters": feat})
+        except Exception as e:
+            logger.warning(f"Boolean operation {f_type} at index {idx} failed: {e}")
+    return wp, applied_ops
+
+
+def _build_axial_segments_geometry(spec: Dict[str, Any]) -> Tuple[cq.Workplane, Dict[str, Any]]:
+    """
+    OPERATOR A: Generalised Axial Segment Pipeline.
+    Constructs rotational mechanical components from an ordered array of continuous axial segments.
+    Unifies single gears, compound gears, multi-stage clusters, stepped shafts, pinion shafts,
+    splined spindles, and hollow shafts into one parametric continuous operator.
+    """
+    segments = spec.get("axialSegments") or []
+    if not segments:
+        raise CadGenerationError("Axial segments geometry requires at least one segment.", style="axial_segments")
+
+    solids = []
+    operations = []
+
+    for idx, seg in enumerate(segments):
+        z_start = float(seg["z_start"])
+        z_end = float(seg["z_end"])
+        length = float(z_end - z_start)
+        r_outer = float(seg["outer_radius"])
+        teeth = int(seg.get("teeth", 0))
+        splines = int(seg.get("spline_count", 0))
+        feature_type = str(seg.get("feature_type") or seg.get("featureType") or "")
+        pitch = float(seg.get("pitch", 0.0))
+
+        if feature_type == "worm_thread" or pitch > 0.0:
+            pitch = pitch or 8.0
+            starts = int(seg.get("starts", 1))
+            lead = float(seg.get("lead", starts * pitch))
+            r_root = float(seg.get("root_radius", r_outer * 0.70))
+            core_wp = cq.Workplane("XY").workplane(offset=z_start).circle(r_root).extrude(length)
+            try:
+                helix = cq.Workplane("XY").workplane(offset=z_start).helix(pitch=lead, height=length, radius=(r_outer + r_root) / 2.0)
+                tooth_cross = (
+                    cq.Workplane("XZ")
+                    .workplane(offset=(r_outer + r_root) / 2.0)
+                    .moveTo(0, z_start)
+                    .polyline([
+                        (-pitch * 0.25, -pitch * 0.18),
+                        (-pitch * 0.12, pitch * 0.18),
+                        (pitch * 0.12, pitch * 0.18),
+                        (pitch * 0.25, -pitch * 0.18),
+                    ])
+                    .close()
+                )
+                flight = tooth_cross.sweep(helix, isFrenet=True)
+                seg_wp = core_wp.union(flight)
+            except Exception:
+                seg_wp = cq.Workplane("XY").workplane(offset=z_start).circle(r_outer).extrude(length)
+            operations.append({"type": "worm_flight", "index": idx, "pitch": pitch, "starts": starts, "z_span": (z_start, z_end)})
+        elif teeth >= 3:
+            # Dedicated involute gear section
+            mod = float(seg.get("module") or ((r_outer * 2.0) / (teeth + 2.0)))
+            pa = float(seg.get("pressure_angle", 20.0))
+            ha = float(seg.get("helix_angle", 0.0))
+            gear_spec = {
+                "teeth": teeth,
+                "module": mod,
+                "faceWidth": length,
+                "pressureAngle": pa,
+                "helixAngle": ha,
+                "boreRadius": 0.0,
+            }
+            try:
+                from cad import gear_generator  # type: ignore
+                gear_wp, _ = gear_generator.generate_gear({"gear": gear_spec})
+                seg_wp = gear_wp.translate((0, 0, (z_start + z_end) / 2.0))
+            except Exception:
+                seg_wp = cq.Workplane("XY").workplane(offset=z_start).circle(r_outer).extrude(length)
+            operations.append({"type": "gear_segment", "index": idx, "teeth": teeth, "module": mod, "z_span": (z_start, z_end)})
+        elif splines >= 2:
+            # Splined shaft section
+            seg_wp = cq.Workplane("XY").workplane(offset=z_start).circle(r_outer).extrude(length)
+            spline_d = float(seg.get("spline_depth", r_outer * 0.16))
+            for s in range(splines):
+                angle = (float(s) / float(splines)) * 360.0
+                rad = math.radians(angle)
+                fx = math.cos(rad) * r_outer
+                fy = math.sin(rad) * r_outer
+                cutter = (
+                    cq.Workplane("XY")
+                    .workplane(offset=z_start - 1.0)
+                    .center(fx, fy)
+                    .circle(spline_d)
+                    .extrude(length + 2.0)
+                )
+                seg_wp = seg_wp.cut(cutter)
+            operations.append({"type": "spline_segment", "index": idx, "spline_count": splines, "z_span": (z_start, z_end)})
+        else:
+            # Cylindrical journal / collar / bearing seat
+            seg_wp = cq.Workplane("XY").workplane(offset=z_start).circle(r_outer).extrude(length)
+            operations.append({"type": "journal_segment", "index": idx, "radius": r_outer, "z_span": (z_start, z_end)})
+
+        solids.append(seg_wp)
+
+    # Union all continuous segments into single solid
+    combined_wp = solids[0]
+    for next_solid in solids[1:]:
+        try:
+            combined_wp = combined_wp.union(next_solid)
+        except Exception as e:
+            logger.warning(f"Segment union failed, continuing: {e}")
+
+    # Cut global central bore if specified
+    bore_r = float(spec.get("boreRadius") or 0.0)
+    if bore_r > 0:
+        z_min = min(float(s["z_start"]) for s in segments) - 2.0
+        z_max = max(float(s["z_end"]) for s in segments) + 2.0
+        bore_cutter = (
+            cq.Workplane("XY")
+            .workplane(offset=z_min)
+            .circle(bore_r)
+            .extrude(z_max - z_min)
+        )
+        combined_wp = combined_wp.cut(bore_cutter)
+        operations.append({"type": "central_bore", "radius": bore_r})
+
+    # Apply Boolean feature operations (keyways, holes, grooves)
+    booleans = spec.get("booleans") or []
+    if booleans:
+        combined_wp, applied_ops = _apply_boolean_features(combined_wp, booleans)
+        operations.extend(applied_ops)
+
+    _verify_workplane_integrity(combined_wp, style="axial_segments", expected_solids=1)
+
+    feature_tree = {
+        "style": "axial_segments",
+        "parameters": {
+            "num_segments": len(segments),
+            "z_span": (min(s["z_start"] for s in segments), max(s["z_end"] for s in segments)),
+        },
+        "operations": operations,
+    }
+    return combined_wp, feature_tree
+
+
 # ---------------------------------------------------------------------------
 # Public Generator Dispatch
 # ---------------------------------------------------------------------------
 
 DISPATCH_TABLE = {
+    "axial_segments": _build_axial_segments_geometry,
     "revolved": _build_revolved_geometry,
     "extruded": _build_extruded_geometry,
     "combination": _build_combination_geometry,
+    "composition": _build_combination_geometry,
     "gear": _build_gear_geometry,
+    "compound_gear": _build_axial_segments_geometry,
+    "pinion_shaft": _build_axial_segments_geometry,
+    "flanged_shaft": _build_axial_segments_geometry,
 }
 
 

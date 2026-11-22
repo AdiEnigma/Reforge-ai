@@ -19,12 +19,57 @@ _AMBIGUITY_SCORE_DELTA = 0.1
 _MIN_COMPONENT_AREA_RATIO = 0.001  # 0.1% of image — smaller components removed
 
 
+def _opencv_fallback_segment(rgb: np.ndarray) -> dict:
+    """Fast, zero-VRAM fallback segmentation using OpenCV adaptive contouring."""
+    import cv2
+    h, w = rgb.shape[:2]
+    total_px = max(1, h * w)
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Check if border is predominantly white (inverted subject)
+    border_pixels = np.concatenate([thresh[0, :], thresh[-1, :], thresh[:, 0], thresh[:, -1]])
+    if np.mean(border_pixels) > 127:
+        thresh = cv2.bitwise_not(thresh)
+
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return {
+            "status": "unavailable",
+            "bbox_xyxy_px": None,
+            "boundary_polygon_px": None,
+            "mask_area_ratio": None,
+            "candidate_count": 0,
+            "score": None,
+            "needs_user_selection": False,
+            "warnings": ["OpenCV threshold found no foreground"],
+        }
+
+    largest = max(contours, key=cv2.contourArea)
+    x, y, bw, bh = cv2.boundingRect(largest)
+    peri = cv2.arcLength(largest, True)
+    eps = max(1.0, 0.005 * peri)
+    approx = cv2.approxPolyDP(largest, eps, True)
+    boundary_polygon = approx[:, 0, :].astype(float).tolist() if len(approx) >= 4 else None
+    area_ratio = float(cv2.contourArea(largest) / total_px)
+
+    return {
+        "status": "ok",
+        "bbox_xyxy_px": [float(x), float(y), float(x + bw), float(y + bh)],
+        "boundary_polygon_px": boundary_polygon,
+        "mask_area_ratio": area_ratio,
+        "candidate_count": len(contours),
+        "score": 0.85,
+        "needs_user_selection": False,
+        "warnings": ["Segmented using robust OpenCV contour fallback"],
+    }
+
+
 class SAM2Segmentor:
     """Lazy-loaded SAM2 segmentor. Instantiate once; call load() before segment()."""
 
     def __init__(self) -> None:
         self._predictor = None
-        self._mask_generator = None
         self._loaded = False
         self._device: str = "cpu"
 
@@ -52,10 +97,7 @@ class SAM2Segmentor:
 
             # Resolve device
             if device == "auto":
-                if torch.cuda.is_available():
-                    resolved = "cuda"
-                else:
-                    resolved = "cpu"
+                resolved = "cpu"
             else:
                 resolved = device
             self._device = resolved
@@ -66,13 +108,24 @@ class SAM2Segmentor:
 
             from sam2.build_sam import build_sam2  # type: ignore
             from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore
-            from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator  # type: ignore
 
-            sam_model = build_sam2(config_path, checkpoint_path, device=self._device)
-            self._predictor = SAM2ImagePredictor(sam_model)
-            self._mask_generator = SAM2AutomaticMaskGenerator(sam_model)
-            self._loaded = True
-            return True
+            try:
+                sam_model = build_sam2(config_path, checkpoint_path, device=self._device)
+                self._predictor = SAM2ImagePredictor(sam_model)
+                self._loaded = True
+                return True
+            except Exception as device_exc:
+                if self._device != "cpu":
+                    logger.warning("SAM2 failed on %s (%s); retrying on CPU", self._device, device_exc)
+                    if "torch" in locals() and hasattr(torch, "cuda"):
+                        torch.cuda.empty_cache()
+                    self._device = "cpu"
+                    sam_model = build_sam2(config_path, checkpoint_path, device="cpu")
+                    self._predictor = SAM2ImagePredictor(sam_model)
+                    self._loaded = True
+                    return True
+                raise device_exc
+
         except ImportError as exc:
             logger.warning("SAM2 not installed: %s", exc)
             return False
@@ -80,10 +133,7 @@ class SAM2Segmentor:
             logger.warning("SAM2 checkpoint missing: %s", exc)
             return False
         except RuntimeError as exc:
-            if "out of memory" in str(exc).lower() or "oom" in str(exc).lower():
-                logger.warning("SAM2 OOM during load: %s", exc)
-            else:
-                logger.warning("SAM2 RuntimeError during load: %s", exc)
+            logger.warning("SAM2 RuntimeError during load: %s", exc)
             return False
         except Exception as exc:
             logger.warning("SAM2 load failed: %s", exc)
@@ -121,41 +171,43 @@ class SAM2Segmentor:
             "warnings": [],
         }
 
-        if not self._loaded or self._mask_generator is None:
-            result_base["warnings"].append("SAM2 not available; segmentation skipped")
-            return result_base
+        if not self._loaded or self._predictor is None:
+            fb = _opencv_fallback_segment(rgb)
+            fb["warnings"].insert(0, "SAM2 not available; used OpenCV contour fallback")
+            return fb
 
+        masks = []
         try:
             import torch  # type: ignore
 
-            # Choose autocast context — only on cuda/mps
-            use_autocast = self._device in ("cuda", "mps")
-
             with torch.inference_mode():
-                if use_autocast:
-                    dtype = torch.float16 if self._device == "cuda" else torch.bfloat16
-                    with torch.autocast(self._device, dtype=dtype):
-                        masks = self._mask_generator.generate(rgb)
-                else:
-                    masks = self._mask_generator.generate(rgb)
-
-        except RuntimeError as exc:
-            msg = str(exc).lower()
-            if "out of memory" in msg or "oom" in msg:
-                result_base["warnings"].append("SAM2 OOM during inference; segmentation skipped")
-            else:
-                result_base["warnings"].append(f"SAM2 RuntimeError: {exc}")
-            return result_base
+                h, w = rgb.shape[:2]
+                self._predictor.set_image(rgb)
+                # Center foreground point prompt
+                point_coords = np.array([[w / 2.0, h / 2.0]], dtype=np.float32)
+                point_labels = np.array([1], dtype=np.int32)
+                pred_masks, pred_scores, _ = self._predictor.predict(
+                    point_coords=point_coords,
+                    point_labels=point_labels,
+                    multimask_output=True,
+                )
+                best_idx = int(np.argmax(pred_scores))
+                masks = [
+                    {
+                        "segmentation": pred_masks[best_idx],
+                        "predicted_iou": float(pred_scores[best_idx]),
+                    }
+                ]
         except Exception as exc:
-            result_base["warnings"].append(f"SAM2 inference error: {exc}")
-            return result_base
+            logger.warning("SAM2 inference error (%s); falling back to OpenCV contouring", exc)
+            fb = _opencv_fallback_segment(rgb)
+            fb["warnings"].insert(0, f"SAM2 error ({exc}); used OpenCV contour fallback")
+            return fb
 
         if not masks:
-            return {
-                **result_base,
-                "status": "low_confidence",
-                "warnings": ["SAM2 returned no masks"],
-            }
+            fb = _opencv_fallback_segment(rgb)
+            fb["warnings"].insert(0, "SAM2 returned no masks; used OpenCV contour fallback")
+            return fb
 
         # Sort by score descending
         masks_sorted = sorted(masks, key=lambda m: m.get("predicted_iou", 0.0), reverse=True)
@@ -186,6 +238,18 @@ class SAM2Segmentor:
                 bbox_xyxy = [float(x1), float(y1), float(x2), float(y2)]
                 bbox_area_ratio = float(np.sum(clean_mask > 0) / total_pixels)
 
+            # Extract simplified 2D boundary polygon from clean mask for direct 3D visual reconstruction
+            contours, _ = cv2.findContours(clean_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            boundary_polygon = None
+            if contours:
+                largest = max(contours, key=cv2.contourArea)
+                if cv2.contourArea(largest) >= min_area_px:
+                    peri = cv2.arcLength(largest, True)
+                    eps = max(1.0, 0.005 * peri)
+                    approx = cv2.approxPolyDP(largest, eps, True)
+                    if len(approx) >= 4:
+                        boundary_polygon = approx[:, 0, :].astype(float).tolist()
+
         # Determine status
         needs_selection = False
         if len(masks_sorted) >= 2:
@@ -205,6 +269,7 @@ class SAM2Segmentor:
         return {
             "status": status,
             "bbox_xyxy_px": bbox_xyxy,
+            "boundary_polygon_px": boundary_polygon if seg_mask is not None else None,
             "mask_area_ratio": bbox_area_ratio,
             "candidate_count": len(masks_sorted),
             "score": best_score,

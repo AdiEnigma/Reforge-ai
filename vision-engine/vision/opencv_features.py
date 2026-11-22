@@ -133,16 +133,20 @@ def extract_features(rgb: np.ndarray, mask: Optional[np.ndarray] = None, image_i
     min_radius = max(5, min(h, w) // 20)
     max_radius = min(h, w) // 2
 
-    circles_raw = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=_HOUGH_CIRCLE_DP,
-        minDist=max(10, min(h, w) // 10),
-        param1=100,
-        param2=30,
-        minRadius=min_radius,
-        maxRadius=max_radius,
-    )
+    circles_raw = None
+    try:
+        circles_raw = cv2.HoughCircles(
+            blurred,
+            cv2.HOUGH_GRADIENT,
+            dp=_HOUGH_CIRCLE_DP,
+            minDist=max(10, min(h, w) // 10),
+            param1=100,
+            param2=30,
+            minRadius=min_radius,
+            maxRadius=max_radius,
+        )
+    except Exception as e:
+        logger.warning("HoughCircles skipped: %s", e)
 
     if circles_raw is not None:
         for cx, cy, r in np.round(circles_raw[0]).astype(int):
@@ -195,14 +199,18 @@ def extract_features(rgb: np.ndarray, mask: Optional[np.ndarray] = None, image_i
     # Lines — HoughLinesP
     # ------------------------------------------------------------------
     line_features = []
-    lines_raw = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=math.pi / 180,
-        threshold=_HOUGH_LINE_THRESHOLD,
-        minLineLength=_HOUGH_LINE_MIN_LENGTH,
-        maxLineGap=_HOUGH_LINE_MAX_GAP,
-    )
+    lines_raw = None
+    try:
+        lines_raw = cv2.HoughLinesP(
+            edges,
+            rho=1,
+            theta=math.pi / 180,
+            threshold=_HOUGH_LINE_THRESHOLD,
+            minLineLength=_HOUGH_LINE_MIN_LENGTH,
+            maxLineGap=_HOUGH_LINE_MAX_GAP,
+        )
+    except Exception as e:
+        logger.warning("HoughLinesP skipped: %s", e)
 
     if lines_raw is not None:
         for x1, y1, x2, y2 in lines_raw[:, 0]:
@@ -243,9 +251,10 @@ def extract_features(rgb: np.ndarray, mask: Optional[np.ndarray] = None, image_i
         }
 
     # ------------------------------------------------------------------
-    # Symmetry hints (heuristic)
+    # Symmetry hints and Periodicity Analysis (Polar FFT + Axis Moments)
     # ------------------------------------------------------------------
-    symmetry_hints = _compute_symmetry_hints(gray)
+    symmetry_hints = _compute_advanced_symmetry(gray, edges, circle_features, contour_features)
+    radial_profile = _extract_radial_profile(mask if mask is not None else gray, bounding_box)
 
     return {
         "contours": contour_features,
@@ -254,41 +263,180 @@ def extract_features(rgb: np.ndarray, mask: Optional[np.ndarray] = None, image_i
         "lines": line_features,
         "bounding_box": bounding_box,
         "symmetry_hints": symmetry_hints,
+        "radial_profile": radial_profile,
         "warnings": warnings_out,
     }
 
 
-def _compute_symmetry_hints(gray: np.ndarray) -> dict:
-    """Heuristic bilateral and rotational symmetry detection."""
-    h, w = gray.shape
-
-    # Bilateral symmetry: compare left half with flipped right half
+def _compute_advanced_symmetry(
+    gray: np.ndarray,
+    edges: np.ndarray,
+    circles: list[dict],
+    contours: list[dict],
+) -> dict:
+    """
+    Mathematical cyclic periodicity and rotational order detection via 1D Polar FFT
+    and bilateral reflection analysis.
+    """
+    h, w = gray.shape[:2]
     bilateral = False
+    rotational = False
+    rotational_order = None
+    spectral_confidence = 0.0
+    detected_frequencies = []
+
+    # 1. Bilateral symmetry check
     try:
         mid = w // 2
         left = gray[:, :mid].astype(float)
         right = np.fliplr(gray[:, w - mid:]).astype(float)
         if left.shape == right.shape and left.size > 0:
             diff = np.abs(left - right)
-            bilateral = float(diff.mean()) < 10.0  # threshold: low mean diff
+            bilateral = float(diff.mean()) < 12.0
     except Exception:
         pass
 
-    # Rotational symmetry: compare 180° rotation
-    rotational = False
-    rotational_order = None
-    try:
-        rot180 = np.rot90(gray, 2)
-        if gray.shape == rot180.shape:
-            diff180 = np.abs(gray.astype(float) - rot180.astype(float))
-            if float(diff180.mean()) < 15.0:
-                rotational = True
-                rotational_order = 2
-    except Exception:
-        pass
+    # 2. Polar FFT Cyclic Symmetry around dominant concentric circle
+    primary_circle = circles[0] if circles else None
+    if primary_circle and primary_circle.get("radius_px", 0) > 20:
+        cx = float(primary_circle["cx_px"])
+        cy = float(primary_circle["cy_px"])
+        max_r = float(primary_circle["radius_px"]) * 1.30
+        if 0 < cx < w and 0 < cy < h and max_r > 15:
+            try:
+                # Warp to polar coordinates: rows=angles (360), cols=radii (max_r)
+                polar = cv2.warpPolar(
+                    gray,
+                    (int(max_r), 360),
+                    (cx, cy),
+                    max_r,
+                    cv2.WARP_POLAR_LINEAR,
+                )
+                if polar is not None and polar.shape[0] == 360:
+                    # Otsu threshold on polar unwrap to extract radial boundary per angle
+                    _, polar_bin = cv2.threshold(polar, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    radii = np.sum(polar_bin > 128, axis=1).astype(float)
+
+                    centered = radii - np.mean(radii)
+                    if np.std(centered) > 1e-3:
+                        fft_vals = np.abs(np.fft.rfft(centered))
+                        # Evaluate candidate frequencies between k=3 and k=72 (standard mechanical tooth/hole counts)
+                        freq_range = np.arange(len(fft_vals))
+                        valid_mask = (freq_range >= 3) & (freq_range <= 72)
+                        
+                        valid_freqs = freq_range[valid_mask]
+                        valid_amps = fft_vals[valid_mask]
+
+                        if len(valid_amps) > 0:
+                            peak_idx = int(np.argmax(valid_amps))
+                            peak_freq = int(valid_freqs[peak_idx])
+                            peak_amp = float(valid_amps[peak_idx])
+                            mean_amp = float(np.mean(valid_amps)) + 1e-6
+
+                            # Check prominence over noise floor
+                            if peak_amp > 2.0 * mean_amp:
+                                rotational = True
+                                rotational_order = peak_freq
+                                spectral_confidence = min(1.0, float(peak_amp / (3.5 * mean_amp)))
+                                detected_frequencies.append({
+                                    "order": peak_freq,
+                                    "confidence": round(spectral_confidence, 3),
+                                })
+            except Exception as e:
+                logger.debug("Polar FFT periodicity analysis skipped: %s", e)
+
+    # 3. Fallback: 180-degree rotational symmetry
+    if not rotational:
+        try:
+            rot180 = np.rot90(gray, 2)
+            if gray.shape == rot180.shape:
+                diff180 = np.abs(gray.astype(float) - rot180.astype(float))
+                if float(diff180.mean()) < 15.0:
+                    rotational = True
+                    rotational_order = 2
+                    spectral_confidence = 0.5
+        except Exception:
+            pass
 
     return {
         "bilateral": bilateral,
         "rotational": rotational,
         "rotational_order": rotational_order,
+        "spectral_confidence": spectral_confidence,
+        "detected_frequencies": detected_frequencies,
     }
+
+
+def _extract_radial_profile(
+    mask_or_gray: np.ndarray,
+    bounding_box: Optional[dict],
+) -> Optional[dict]:
+    """
+    Extracts continuous radial envelope R(s) along principal axis of elongated components.
+    Identifies stepped transitions, journals, and collars.
+    """
+    if bounding_box is None:
+        return None
+
+    sz = bounding_box.get("rotated_size_px")
+    if not sz or sz[0] <= 0 or sz[1] <= 0:
+        return None
+
+    w_box, h_box = sz
+    aspect = max(w_box, h_box) / max(1.0, min(w_box, h_box))
+    if aspect < 1.4:
+        # Not elongated enough to form a stepped shaft/spindle profile
+        return None
+
+    angle = float(bounding_box.get("rotated_angle_deg", 0.0))
+    center = bounding_box.get("rotated_center_px")
+    if not center or len(center) != 2:
+        return None
+
+    h, w = mask_or_gray.shape[:2]
+    try:
+        # Rotate image to align principal axis along horizontal X
+        rot_mat = cv2.getRotationMatrix2D((center[0], center[1]), angle, 1.0)
+        aligned = cv2.warpAffine(
+            (mask_or_gray > 15).astype(np.uint8) * 255,
+            rot_mat,
+            (w, h),
+            flags=cv2.INTER_NEAREST,
+        )
+
+        # Bounding box along horizontal X
+        pts = np.argwhere(aligned > 128)
+        if len(pts) < 100:
+            return None
+
+        ys = pts[:, 0]
+        xs = pts[:, 1]
+        x_min, x_max = int(np.min(xs)), int(np.max(xs))
+        total_len_px = x_max - x_min
+        if total_len_px < 30:
+            return None
+
+        # Slices across X in 32 uniform stations
+        num_stations = 32
+        step = max(1, total_len_px // num_stations)
+        stations = []
+        for x_curr in range(x_min, x_max, step):
+            col = pts[pts[:, 1] == x_curr, 0]
+            if len(col) >= 2:
+                r_px = float((np.max(col) - np.min(col)) / 2.0)
+                stations.append({
+                    "station_x_px": int(x_curr - x_min),
+                    "radius_px": round(r_px, 1),
+                })
+
+        if len(stations) >= 4:
+            return {
+                "length_px": total_len_px,
+                "stations": stations,
+                "max_radius_px": max(s["radius_px"] for s in stations),
+                "min_radius_px": min(s["radius_px"] for s in stations),
+            }
+    except Exception as e:
+        logger.debug("Radial profile extraction skipped: %s", e)
+
+    return None

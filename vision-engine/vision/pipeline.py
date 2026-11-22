@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import List, Optional
 
 import numpy as np
@@ -40,7 +41,8 @@ _semaphore: Optional[asyncio.Semaphore] = None
 
 def _get_semaphore() -> asyncio.Semaphore:
     global _semaphore
-    if _semaphore is None:
+    loop = asyncio.get_running_loop()
+    if _semaphore is None or getattr(_semaphore, "_loop", None) is not loop:
         _semaphore = asyncio.Semaphore(config.VISION_MAX_CONCURRENCY)
     return _semaphore
 
@@ -49,6 +51,7 @@ def _build_segmentation_result(seg_dict: dict) -> SegmentationResult:
     return SegmentationResult(
         status=seg_dict.get("status", "unavailable"),
         bbox_xyxy_px=seg_dict.get("bbox_xyxy_px"),
+        boundary_polygon_px=seg_dict.get("boundary_polygon_px"),
         mask_area_ratio=seg_dict.get("mask_area_ratio"),
         candidate_count=seg_dict.get("candidate_count", 0),
         score=seg_dict.get("score"),
@@ -134,6 +137,8 @@ def _build_opencv_result(cv_dict: dict) -> OpenCVResult:
             bilateral=sh_raw.get("bilateral", False),
             rotational=sh_raw.get("rotational", False),
             rotational_order=sh_raw.get("rotational_order"),
+            spectral_confidence=float(sh_raw.get("spectral_confidence", 0.0)),
+            detected_frequencies=sh_raw.get("detected_frequencies", []),
         )
     return OpenCVResult(
         contours=contours,
@@ -142,6 +147,7 @@ def _build_opencv_result(cv_dict: dict) -> OpenCVResult:
         lines=lines,
         bounding_box=bounding_box,
         symmetry_hints=symmetry_hints,
+        radial_profile=cv_dict.get("radial_profile"),
         warnings=cv_dict.get("warnings", []),
     )
 
@@ -153,43 +159,73 @@ def _build_depth_result(depth_dict: dict) -> DepthResult:
         depth_type=depth_dict.get("depth_type", "relative"),
         metric=False,  # strictly non-metric
         preview_ref=depth_dict.get("preview_ref"),
+        depth_grid=depth_dict.get("depth_grid"),
         warnings=warnings,
     )
 
 
-def _estimate_calibration(reference: Optional[dict], cv_dict: dict) -> CalibrationResult:
+from vision.calibration import detect_a4_paper_corners
+
+
+def _estimate_calibration(reference: Optional[dict], cv_dict: dict, rgb: Optional[np.ndarray] = None) -> CalibrationResult:
     """
-    Attempt pixel-to-mm calibration if user provided known dimensions.
+    Attempt pixel-to-mm calibration:
+    1. Automatic A4 Paper fiducial detection (210mm x 297mm planar homography).
+    2. User provided known dimension reference (outerDiameter or known_diameter_mm).
+    3. Explicit reference object (e.g. calibration target).
     If ambiguous or unsupported view, remains uncalibrated.
     """
-    if not reference or not isinstance(reference, dict):
-        return CalibrationResult(status="uncalibrated", confidence=0.0)
-
-    known_diam = reference.get("outerDiameter") or reference.get("known_diameter_mm")
-    circles = cv_dict.get("circles", [])
-
-    if known_diam and circles:
-        # Check if we have one dominant circle with high confidence
-        high_conf_circles = [c for c in circles if c.get("confidence", 0) > 0.8]
-        if len(high_conf_circles) == 1:
-            r_px = high_conf_circles[0]["radius_px"]
-            diam_px = 2.0 * r_px
-            if diam_px > 5:
-                mm_per_px = float(known_diam) / diam_px
+    # 1. Automatic A4 Paper benchmark detection
+    if rgb is not None:
+        try:
+            a4_info = detect_a4_paper_corners(rgb)
+            if a4_info:
+                logger.info(
+                    "Calibrated from ISO 216 A4 Paper reference: %.4f mm/px, confidence=%.2f (%s)",
+                    a4_info["mm_per_pixel"],
+                    a4_info["confidence"],
+                    a4_info["orientation"],
+                )
                 return CalibrationResult(
                     status="calibrated",
-                    mm_per_pixel=round(mm_per_px, 4),
-                    source="outerDiameter_to_circle",
-                    confidence=0.85,
-                    warnings=[]
+                    mm_per_pixel=round(a4_info["mm_per_pixel"], 4),
+                    source="iso_216_a4_paper",
+                    confidence=a4_info["confidence"],
+                    corners_px=a4_info["corners_px"],
+                    homography_matrix=a4_info["homography_matrix"],
+                    reference_type="a4_paper",
+                    warnings=[],
                 )
-    
+        except Exception as exc:
+            logger.warning("A4 paper calibration check error: %s", exc)
+
+    # 2. User-provided dimension reference
+    if reference and isinstance(reference, dict):
+        known_diam = reference.get("outerDiameter") or reference.get("known_diameter_mm")
+        circles = cv_dict.get("circles", [])
+
+        if known_diam and circles:
+            high_conf_circles = [c for c in circles if c.get("confidence", 0) > 0.8]
+            if len(high_conf_circles) == 1:
+                r_px = high_conf_circles[0]["radius_px"]
+                diam_px = 2.0 * r_px
+                if diam_px > 5:
+                    mm_per_px = float(known_diam) / diam_px
+                    return CalibrationResult(
+                        status="calibrated",
+                        mm_per_pixel=round(mm_per_px, 4),
+                        source="outerDiameter_to_circle",
+                        confidence=0.85,
+                        reference_type="user_reference",
+                        warnings=[],
+                    )
+
     return CalibrationResult(
         status="uncalibrated",
         mm_per_pixel=None,
         source=None,
         confidence=0.0,
-        warnings=["No reliable single-view reference calibration match found; uncalibrated."]
+        warnings=["No reliable single-view reference calibration match found; uncalibrated."],
     )
 
 
@@ -248,7 +284,14 @@ def _process_single_image(image_input: ImageInput, reference: Optional[dict]) ->
         mask = np.zeros((h, w), dtype=np.uint8)
         mask[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 255
 
-    cv_dict = extract_features(rgb, mask=mask, image_index=image_input.image_index)
+    cv_dict = {"contours": [], "circles": [], "ellipses": [], "lines": [], "bounding_boxes": [], "symmetry_hints": [], "warnings": []}
+    try:
+        cv_dict = extract_features(rgb, mask=mask, image_index=image_input.image_index)
+    except Exception as exc:
+        if config.VISION_FAIL_OPEN:
+            warnings.append(f"OpenCV features extraction warning: {exc}")
+        else:
+            raise
 
     # --- depth ---
     depth_dict = {
@@ -268,7 +311,7 @@ def _process_single_image(image_input: ImageInput, reference: Optional[dict]) ->
                 raise
 
     # --- calibration ---
-    cal_result = _estimate_calibration(reference, cv_dict)
+    cal_result = _estimate_calibration(reference, cv_dict, rgb=rgb)
 
     return ImageResult(
         image_index=image_input.image_index,
@@ -315,38 +358,40 @@ async def process_images(
     """
     registry.initialize()
 
-    sem = _get_semaphore()
     warnings: List[str] = []
-    loop = asyncio.get_running_loop()
-
-    async def _run_one(img_input: ImageInput) -> ImageResult:
-        async with sem:
-            try:
-                return await asyncio.wait_for(
-                    loop.run_in_executor(None, _process_single_image, img_input, reference),
-                    timeout=config.VISION_REQUEST_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                raise TimeoutError(
-                    f"Image {img_input.image_index} timed out after {config.VISION_REQUEST_TIMEOUT_SECONDS}s"
-                )
-
-    tasks = [_run_one(img) for img in images]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
     image_results: List[ImageResult] = []
-    for img, result in zip(images, results):
-        if isinstance(result, Exception):
-            if isinstance(result, ValueError):
-                # Input validation errors (bad base64, corrupt bytes, excessive dimensions) raise 4xx
-                raise result
-            if config.VISION_FAIL_OPEN:
-                warnings.append(f"Image {img.image_index} failed: {result}")
-                image_results.append(_make_error_result(img.image_index, str(result)))
-            else:
-                raise result
-        else:
+
+    for img in images:
+        try:
+            start_t = time.perf_counter()
+            result = _process_single_image(img, reference)
+            elapsed = time.perf_counter() - start_t
+            if elapsed > config.VISION_REQUEST_TIMEOUT_SECONDS:
+                timeout_msg = f"Image {img.image_index} timed out after {config.VISION_REQUEST_TIMEOUT_SECONDS}s"
+                if config.VISION_FAIL_OPEN:
+                    logger.warning(timeout_msg)
+                    warnings.append(timeout_msg)
+                    image_results.append(_make_error_result(img.image_index, timeout_msg))
+                    continue
+                else:
+                    raise TimeoutError(timeout_msg)
             image_results.append(result)
+        except ValueError as val_err:
+            raise val_err
+        except TimeoutError as to_err:
+            if config.VISION_FAIL_OPEN:
+                timeout_msg = str(to_err)
+                warnings.append(timeout_msg)
+                image_results.append(_make_error_result(img.image_index, timeout_msg))
+            else:
+                raise
+        except Exception as exc:
+            if config.VISION_FAIL_OPEN:
+                logger.warning("Image %d failed (fail-open): %s", img.image_index, exc)
+                warnings.append(f"Image {img.image_index} failed: {exc}")
+                image_results.append(_make_error_result(img.image_index, str(exc)))
+            else:
+                raise exc
 
     image_results.sort(key=lambda r: r.image_index)
 
