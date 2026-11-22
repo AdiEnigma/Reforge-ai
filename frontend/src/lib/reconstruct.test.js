@@ -99,3 +99,50 @@ test('validateReconstructedModel rejects an empty model', () => {
   );
   assert.throws(() => validateReconstructedModel(null), /no 3D model/);
 });
+
+function minimalBinaryStlBase64() {
+  const buffer = Buffer.alloc(84 + 50);
+  buffer.writeUInt32LE(1, 80); // one triangle
+  let offset = 84;
+  for (const value of [0, 0, 1, 0, 0, 0, 10, 0, 0, 0, 10, 0]) {
+    buffer.writeFloatLE(value, offset);
+    offset += 4;
+  }
+  return buffer.toString('base64');
+}
+
+test('buildModel renders the actual retrieved STL mesh instead of a generic shape', () => {
+  const model = buildModel({
+    componentType: 'other',
+    componentName: 'ABC retrieved part',
+    dimensions: { outerDiameter: 10 },
+    datasetModel: {
+      assetId: 'ABC:test',
+      viewerMeshBase64: minimalBinaryStlBase64(),
+    },
+  });
+  assert.equal(model.label, 'ABC RETRIEVED PART');
+  let retrieved = null;
+  model.group.traverse((node) => {
+    if (node.isMesh && node.userData?.featureType === 'retrieved_dataset_geometry') retrieved = node;
+  });
+  assert.ok(retrieved, 'must contain the retrieved dataset mesh');
+  assert.ok(retrieved.geometry.getAttribute('position').count > 0);
+  assert.equal(retrieved.userData.source, 'ABC:test');
+  assert.equal(validateReconstructedModel(model).valid, true);
+});
+
+test('buildModel ignores an invalid retrieved mesh and keeps the parametric fallback', () => {
+  const model = buildModel({
+    componentType: 'spur gear',
+    teeth: 12,
+    dimensions: { outerDiameter: 80, innerDiameter: 20, height: 18 },
+    datasetModel: { assetId: 'ABC:bad', viewerMeshBase64: 'not-valid-base64!!!' },
+  });
+  let retrieved = false;
+  model.group.traverse((node) => {
+    if (node.userData?.featureType === 'retrieved_dataset_geometry') retrieved = true;
+  });
+  assert.equal(retrieved, false);
+  assert.equal(validateReconstructedModel(model).valid, true);
+});

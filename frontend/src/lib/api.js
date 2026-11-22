@@ -17,15 +17,17 @@ function isRetryableError(error) {
     : error?.status === 0 || error?.status === 408 || error?.status === 429 || error?.status >= 500;
 }
 
-export async function postJson(url, body) {
+export async function postJson(url, body, { signal } = {}) {
   let response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw cancellationError();
     throw new ApiError("Cannot reach the ReForge AI server. Is it running?", 0);
   }
   let payload = null;
@@ -130,7 +132,7 @@ async function postNdjson(url, body, { onEvent, signal, attempt = 1 } = {}) {
 }
 
 export async function analyzeComponent(images, reference, options = {}) {
-  const { onProgress, signal, retries = 0 } = options;
+  const { onProgress, signal, retries = 0, includeCondition = false } = options;
   const totalImages = images.length;
 
   if (signal?.aborted) throw cancellationError();
@@ -162,11 +164,19 @@ export async function analyzeComponent(images, reference, options = {}) {
     try {
       const result = await postNdjson(
         "/api/analyze-component/stream",
-        { images: payloads, reference },
+        { images: payloads, reference, includeCondition },
         { onEvent: onProgress, signal, attempt }
       );
       if (!result || !result.analysis) throw new ApiError("Server returned no analysis.", 502);
-      return result.analysis;
+      // Preserve the unified reconstruction envelope on the analysis object so
+      // existing consumers keep working while provenance/solver mode remain
+      // available to the viewer and engineering panels.
+      return {
+        ...result.analysis,
+        solverMode: result.solverMode || result.analysis.solverMode || null,
+        datasetRetrieval: result.datasetRetrieval || result.analysis.datasetRetrieval || null,
+        visionDiagnostics: result.visionDiagnostics || result.analysis.visionDiagnostics || null,
+      };
     } catch (error) {
       if (isCancellationError(error)) throw cancellationError();
       lastError = error;
@@ -174,6 +184,24 @@ export async function analyzeComponent(images, reference, options = {}) {
     }
   }
   throw lastError || new ApiError("Analysis failed.", 500);
+}
+
+/**
+ * Loads image-space condition evidence only when the health panel or heatmap
+ * is opened. Geometry reconstruction never waits for this request.
+ */
+export async function analyzeCondition(images, analysis, { signal } = {}) {
+  if (!Array.isArray(images) || images.length === 0) return null;
+  const payloads = await Promise.all(images.map(({ file }) => fileToPayload(file)));
+  const result = await postJson(
+    "/api/analyze-condition",
+    {
+      images: payloads,
+      analysis: { componentType: analysis?.componentType || '' },
+    },
+    { signal }
+  );
+  return result?.conditionAssessment || null;
 }
 
 export async function sendChatMessage(message, engineeringContextOrAnalysis, history) {

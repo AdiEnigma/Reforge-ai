@@ -7,6 +7,8 @@ import {
   resolveGeometryFromVision,
   reconcileGeminiWithVision,
   fallbackDeterministicAnalysis,
+  buildBearingRecipe,
+  buildBracketRecipe,
 } from "./src/vision-geometry-resolver.js";
 
 test("snapToStandardModule snaps close continuous modules to standard ISO/DIN values", () => {
@@ -291,4 +293,51 @@ test("fallbackDeterministicAnalysis produces stepped shaft and bevel gear accord
   assert.equal(shaftFallback.componentType, "stepped shaft");
   assert.equal(shaftFallback.geometryRecipe.style, "revolved");
   assert.ok(shaftFallback.geometryRecipe.revolvedProfile.length >= 8);
+});
+
+test("buildBearingRecipe builds concentric races and countable rolling elements", () => {
+  const recipe = buildBearingRecipe({ outerDiameter: 80, innerDiameter: 40, width: 18, ballCount: 9 });
+  assert.equal(recipe.style, "combination");
+  assert.equal(recipe.primitives.filter((p) => p.kind === "torus").length, 2, "inner and outer raceways");
+  const balls = recipe.primitives.filter((p) => p.kind === "sphere");
+  assert.equal(balls.length, 9);
+  const positions = new Set(balls.map((ball) => `${ball.position.x},${ball.position.y}`));
+  assert.equal(positions.size, 9, "rolling elements must be distributed, not stacked at the origin");
+});
+
+test("bearing reconciliation keeps the observed ball count", () => {
+  const reconciled = reconcileGeminiWithVision({
+    componentType: "bearing",
+    features: ["deep groove ball bearing"],
+    dimensions: { outerDiameter: 80, innerDiameter: 40, height: 18 },
+    ballCount: 8,
+  }, null, {});
+  assert.equal(reconciled.componentType, "bearing");
+  assert.equal(reconciled.geometryType, "rolling_element_bearing");
+  assert.equal(reconciled.geometryRecipe.primitives.filter((p) => p.kind === "sphere").length, 8);
+});
+
+test("buildBracketRecipe builds an L outline with explicit mounting holes", () => {
+  const recipe = buildBracketRecipe({ width: 90, height: 60, thickness: 12, boltCount: 2 });
+  assert.equal(recipe.style, "extruded");
+  assert.ok(recipe.outline.length >= 6);
+  assert.equal(recipe.depth, 12);
+  assert.equal(recipe.holes.length, 2);
+  assert.ok(recipe.outline.some((p) => Math.abs(p.x - 32.4) < 0.1 && Math.abs(p.y - 19.2) < 0.1),
+    "must include the concave L-step, not a plain rectangle");
+});
+
+test("fallbackDeterministicAnalysis produces component-specific bearing and bracket geometry", () => {
+  const bearing = fallbackDeterministicAnalysis({
+    componentType: "bearing", outerDiameter: 80, innerDiameter: 40, thickness: 18, ballCount: 7,
+  }, "Gemini offline");
+  assert.equal(bearing.componentType, "bearing");
+  assert.equal(bearing.geometryRecipe.primitives.filter((p) => p.kind === "sphere").length, 7);
+
+  const bracket = fallbackDeterministicAnalysis({
+    componentType: "bracket", width: 100, height: 70, thickness: 10, boltCount: 3,
+  }, "Gemini offline");
+  assert.equal(bracket.componentType, "simple bracket");
+  assert.equal(bracket.geometryRecipe.style, "extruded");
+  assert.equal(bracket.geometryRecipe.holes.length, 3);
 });

@@ -75,6 +75,23 @@ test('skipped stages are credited but never shown as the active stage', () => {
   assert.equal(progress.message, 'No companion gear supplied.');
 });
 
+test('dataset/vision resolution completes progress after Gemini is skipped', () => {
+  let progress = createReconstructionProgress(1);
+  progress = completeStages(progress, ['image-analysis', 'geometry-extraction', 'dataset-matching']);
+  progress = applyReconstructionEvent(progress, {
+    stage: 'gemini-reconstruction',
+    status: 'skipped',
+    message: 'Dataset match supplied geometry.',
+  });
+  assert.equal(progress.percent, 70);
+  assert.equal(progress.status, RECONSTRUCTION_RUNNING);
+
+  progress = applyReconstructionEvent(progress, { stage: 'mesh-generation', status: 'complete' });
+  progress = applyReconstructionEvent(progress, { stage: 'validation', status: 'complete' });
+  assert.equal(progress.percent, 100);
+  assert.equal(progress.status, RECONSTRUCTION_COMPLETE);
+});
+
 test('failure keeps earned progress and retry resets the attempt', () => {
   let progress = createReconstructionProgress(1);
   progress = applyReconstructionEvent(progress, { stage: 'image-analysis', status: 'complete' });

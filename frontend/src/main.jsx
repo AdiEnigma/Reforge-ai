@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import './styles.css';
-import { analyzeComponent, sendChatMessage, isCancellationError } from './lib/api.js';
+import { analyzeComponent, analyzeCondition, sendChatMessage, isCancellationError } from './lib/api.js';
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
 import { normalizeFeatures } from './lib/features.js';
@@ -80,7 +80,11 @@ function ProgressStepper({ index }) {
 }
 
 function ReconstructionProgress({ progress, onCancel, onRetry }) {
-  if (!progress || progress.status === RECONSTRUCTION_IDLE) return null;
+  if (
+    !progress ||
+    progress.status === RECONSTRUCTION_IDLE ||
+    progress.status === RECONSTRUCTION_COMPLETE
+  ) return null;
 
   const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
   const stageLabel = progress.status === RECONSTRUCTION_COMPLETE
@@ -2033,6 +2037,7 @@ function Workbench() {
     cancelReconstruction,
     retryReconstruction,
     isReconstructionCancelled,
+    ensureConditionAssessment,
     theme,
     toggleTheme,
   } = useApp();
@@ -2490,7 +2495,16 @@ function Workbench() {
   // Ensure manufacturing data is loaded for copilot, drawings, and reports
   useEffect(() => {
     if (!analysis) return;
-    fetchManufacturingIntelligence(analysis, quantity)
+    // The manufacturing engine only consumes geometry fields; sending the full
+    // analysis serialises condition masks that the backend immediately drops.
+    const geometryAnalysis = {
+      componentType: analysis.componentType,
+      dimensions: analysis.dimensions,
+      features: analysis.features,
+      materialEstimate: analysis.materialEstimate,
+      geometryRecipe: analysis.geometryRecipe,
+    };
+    fetchManufacturingIntelligence(geometryAnalysis, quantity)
       .then(res => setMfgData(res))
       .catch(() => { });
   }, [analysis, quantity]);
@@ -2513,6 +2527,26 @@ function Workbench() {
 
   // Derive active component analysis or fallback to top-level analysis
   const currentAnalysis = activeComp?.analysis || analysis;
+
+  // Load condition evidence only when an explicit consumer asks for it.
+  useEffect(() => {
+    const wantsCondition = selectedContextTool === 'health' || stress;
+    if (!ready || !wantsCondition) return;
+    const targetAnalysis = currentAnalysis || analysis;
+    if (!targetAnalysis || targetAnalysis.conditionAssessment) return;
+    const targetImages = activeComp?.images?.length ? activeComp.images : images;
+    if (!targetImages?.length) return;
+    ensureConditionAssessment(targetAnalysis, targetImages);
+  }, [
+    ready,
+    selectedContextTool,
+    stress,
+    currentAnalysis,
+    analysis,
+    activeComp?.images,
+    images,
+    ensureConditionAssessment,
+  ]);
 
   // Sync analysis whenever activeComponentId changes or when the active component gets an analysis
   useEffect(() => {
@@ -3513,6 +3547,7 @@ function App() {
   const reconstructionControllerRef = useRef(null);
   const reconstructionAttemptRef = useRef(0);
   const reconstructionCancelledRef = useRef(false);
+  const conditionRequestRef = useRef(null);
 
   // Machinery Context State
   const [machineryState, setMachineryState] = useState(() => createInitialMachineryState());
@@ -3557,7 +3592,9 @@ function App() {
       const pAnalysis = await analyzeComponent(primary.images, primaryRef, {
         onProgress: (event) => applyReconstructionProgress({ ...event, attempt }),
         signal: controller.signal,
-        retries: 1,
+        // The backend already retries model candidates and optional services.
+        // A whole-pipeline retry here duplicates every expensive stage.
+        retries: 0,
       });
       if (reconstructionCancelledRef.current) return;
 
@@ -3571,7 +3608,7 @@ function App() {
         });
         cAnalysis = await analyzeComponent(companion.images, {}, {
           signal: controller.signal,
-          retries: 1,
+          retries: 0,
         });
         if (reconstructionCancelledRef.current) return;
         applyReconstructionProgress({
@@ -3629,6 +3666,61 @@ function App() {
   const retryReconstruction = useCallback(() => {
     startReconstruction();
   }, [startReconstruction]);
+
+  // Condition evidence is image-space diagnostics. It is fetched only when a
+  // user opens the health panel or heatmap, never during geometry build.
+  const ensureConditionAssessment = useCallback(async (targetAnalysis, componentImages = []) => {
+    if (!targetAnalysis || targetAnalysis.conditionAssessment) return;
+    if (!Array.isArray(componentImages) || componentImages.length === 0) return;
+    if (conditionRequestRef.current === targetAnalysis) return;
+    conditionRequestRef.current = targetAnalysis;
+
+    try {
+      const conditionAssessment = await analyzeCondition(componentImages, targetAnalysis);
+      if (!conditionAssessment) return;
+      const enrichedAnalysis = { ...targetAnalysis, conditionAssessment };
+      let primaryGear = machineryState.primaryGear;
+      let companionGear = machineryState.companionGear;
+      let additionalComponents = machineryState.additionalComponents;
+      let changed = false;
+
+      if (primaryGear?.analysis === targetAnalysis) {
+        primaryGear = { ...primaryGear, analysis: enrichedAnalysis };
+        changed = true;
+      }
+      if (companionGear?.analysis === targetAnalysis) {
+        companionGear = { ...companionGear, analysis: enrichedAnalysis };
+        changed = true;
+      }
+      if (Array.isArray(additionalComponents) && additionalComponents.some((comp) => comp.analysis === targetAnalysis)) {
+        additionalComponents = additionalComponents.map((comp) => (
+          comp.analysis === targetAnalysis ? { ...comp, analysis: enrichedAnalysis } : comp
+        ));
+        changed = true;
+      }
+
+      setAnalysis((previous) => previous === targetAnalysis ? enrichedAnalysis : previous);
+      if (changed) {
+        const nextMachineryState = {
+          ...machineryState,
+          primaryGear,
+          companionGear,
+          additionalComponents,
+        };
+        setMachineryState(nextMachineryState);
+        setLastAnalyzedSnapshot(createMachinerySnapshot(nextMachineryState));
+      }
+    } catch (error) {
+      console.warn('Condition analysis failed:', error?.message || error);
+    } finally {
+      conditionRequestRef.current = null;
+    }
+  }, [
+    machineryState,
+    setAnalysis,
+    setMachineryState,
+    setLastAnalyzedSnapshot,
+  ]);
 
   useEffect(() => () => reconstructionControllerRef.current?.abort(), []);
 
@@ -3716,6 +3808,7 @@ function App() {
     cancelReconstruction,
     retryReconstruction,
     isReconstructionCancelled,
+    ensureConditionAssessment,
     machineryState, setMachineryState,
     lastAnalyzedSnapshot, setLastAnalyzedSnapshot,
     viewMode, setViewMode,
@@ -3730,6 +3823,7 @@ function App() {
     page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
     reconstructionReference, reconstructionProgress, applyReconstructionProgress,
     startReconstruction, cancelReconstruction, retryReconstruction, isReconstructionCancelled,
+    ensureConditionAssessment,
     machineryState, lastAnalyzedSnapshot, viewMode, activeComponentId,
     selectedComponentIds, handleRegenerate, isRegenerating, isDirty,
     theme, toggleTheme
@@ -3744,7 +3838,13 @@ function App() {
   );
 }
 
-createRoot(document.getElementById('root')).render(
+// Vite can re-evaluate the entry module during HMR. Reusing the same root
+// prevents a second createRoot() on #root and the stale-node removeChild crash.
+const rootContainer = document.getElementById('root');
+const appRoot = rootContainer._reforgeAppRoot || createRoot(rootContainer);
+rootContainer._reforgeAppRoot = appRoot;
+
+appRoot.render(
   <ErrorBoundary>
     <App />
   </ErrorBoundary>

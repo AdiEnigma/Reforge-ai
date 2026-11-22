@@ -1,6 +1,12 @@
 import * as THREE from "three";
+import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { executeRecipe, sanitizeRecipe } from "./recipe.js";
 import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup } from "./geo.js";
+
+// Built geometry is immutable for a given analysis object. Validation and each
+// viewport previously rebuilt the same meshes from scratch; share the geometry
+// and clone only the lightweight Object3D wrappers per consumer.
+const modelCache = new WeakMap();
 
 export const COMPONENT_LABELS = {
   "bevel gear": "BEVEL GEAR",
@@ -356,12 +362,53 @@ function buildGeneric(p) {
   return group;
 }
 
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/**
+ * Render the actual retrieved STL instead of a parametric approximation when
+ * the dataset service supplied a validated viewer mesh.
+ */
+function buildRetrievedDatasetMesh(analysis) {
+  const base64 = analysis?.datasetModel?.viewerMeshBase64;
+  if (typeof base64 !== "string" || base64.length < 100) return null;
+  try {
+    const geometry = new STLLoader().parse(base64ToArrayBuffer(base64));
+    if (!geometry || !geometry.getAttribute("position") || geometry.getAttribute("position").count === 0) {
+      return null;
+    }
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, matBody);
+    mesh.userData = {
+      featureId: "feature-retrieved-dataset-mesh",
+      featureType: "retrieved_dataset_geometry",
+      source: analysis.datasetModel.assetId || "dataset",
+    };
+    const group = new THREE.Group();
+    group.add(mesh);
+    return group;
+  } catch (error) {
+    console.warn("Could not parse retrieved dataset mesh:", error?.message || error);
+    return null;
+  }
+}
+
 export function buildModel(analysis) {
+  if (analysis && typeof analysis === 'object') {
+    const cached = modelCache.get(analysis);
+    if (cached) return { ...cached, group: cached.group.clone(true) };
+  }
+
   const p = computeParams(analysis);
   const group = new THREE.Group();
   let body;
   let label;
   const recipe = sanitizeRecipe(analysis);
+  const retrievedMesh = buildRetrievedDatasetMesh(analysis);
 
   // Detect trivial single-box fallback that Gemini returns when it can't determine geometry
   const isTrivialBoxFallback =
@@ -399,7 +446,10 @@ export function buildModel(analysis) {
       recipe.style === "revolved" ||
       (!recipe.flange && (!recipe.holes || recipe.holes.length <= 1)));
 
-  if (isBevel) {
+  if (retrievedMesh) {
+    body = retrievedMesh;
+    label = String(analysis?.componentName || analysis?.componentType || "DATASET GEOMETRY").toUpperCase();
+  } else if (isBevel) {
     const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.8;
     const faceW = p.height || p.thickness || outerR * 0.45;
     const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.30;
@@ -482,11 +532,14 @@ export function buildModel(analysis) {
     const fitScale = 5.5 / maxExtent;
     group.scale.setScalar(fitScale);
   }
-  const updatedBbox = new THREE.Box3().setFromObject(group);
-  const updatedCenter = updatedBbox.getCenter(new THREE.Vector3());
-  group.position.sub(updatedCenter);
+  // The first bounding box already describes the unscaled geometry; scaling it
+  // mathematically is equivalent to traversing the whole group a second time.
+  const center = bbox.getCenter(new THREE.Vector3()).multiplyScalar(group.scale.x);
+  group.position.sub(center);
 
-  return { group, params: p, label };
+  const model = { group, params: p, label };
+  if (analysis && typeof analysis === 'object') modelCache.set(analysis, model);
+  return model;
 }
 
 /**

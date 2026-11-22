@@ -30,6 +30,7 @@ const ANALYSIS_SCHEMA = {
     coneAngle: { type: "NUMBER" },
     spokes: { type: "NUMBER" },
     boltCount: { type: "NUMBER" },
+    ballCount: { type: "NUMBER" },
     helixAngle: { type: "NUMBER" },
     materialEstimate: { type: "STRING" },
     manufacturingProcess: { type: "STRING" },
@@ -309,6 +310,7 @@ function analysisPrompt(reference, visionEvidence) {
     "- dimensions.thickness: web/rim thickness or plate thickness; null if not visible.",
     "- features: visible details such as teeth, bolt holes, keyway, chamfers, ribs, grooves.",
     "- teeth: exact integer count only when clearly countable, otherwise null.",
+    "- ballCount: exact number of rolling elements only for bearings when clearly countable, otherwise null.",
     "- module: gear module in mm (pitch diameter / teeth). Only for toothed gears; otherwise null.",
     "- helixAngle: helix angle in degrees for helical gears; 0 for spur gears; null for non-gears.",
     "- confidence: 0..1 reflecting how sure you are of the component classification.",
@@ -321,7 +323,8 @@ function analysisPrompt(reference, visionEvidence) {
     "GEOMETRY RECIPE (geometryRecipe): produce a construction recipe the renderer can execute. Pick ONE style and fill only its fields:",
     '- "flange": circular mounting plates, pipe flanges with bolt holes, companion flanges. Provide flange = { outerDiameter, innerDiameter (bore), thickness (flange plate thickness), height (total height including hub/boss), boltCount (count the bolt holes, e.g. 4, 6, 8, 12), boltCircleDiameter (PCD), boltHoleDiameter, bossDiameter, bossHeight }. Always include all bolt holes in the features array (e.g. "4 Mounting Bolt Holes").',
     '- "revolved": continuous axisymmetric solid/hollow parts (shafts, pins, bushings, stepped spindles, simple sleeves). For stepped shafts with multiple diameters along their length, provide revolvedProfile with 4-12 points {z, radius} tracing each journal step and shoulder from one axial end to the other. NOTE: Do NOT use "revolved" for flanges with bolt holes — use "flange" instead.',
-    '- "extruded": plates, brackets, housings, levers. Provide outline as a closed polygon of 3-12 points {x, y} plus optional holes [{cx, cy, radius}] for through-holes, and depth (extrude thickness).',
+    '- "extruded": plates, brackets, housings, levers. Provide outline as a closed polygon of 3-12 points {x, y} plus optional holes [{cx, cy, radius}] for through-holes, and depth (extrude thickness). For an L-bracket, use an L-shaped outline, not a plain rectangle.',
+    '- "combination": also use concentric torus primitives plus countable sphere rolling elements for bearings; mirror the observed ballCount into the top-level field.',
     '- "gear": toothed wheels. Set gear.gearType: "bevel" for conical gears with angled/tapered teeth on a cone surface, "spur" for standard cylindrical gears, "helical" for angled teeth. For bevel gears, provide coneAngle (e.g. 45 degrees), teeth, module, faceWidth, boreRadius, hubDiameter, hubLength. Also set componentType to "bevel gear" and include "bevel gear" in features. For spoked gears, mirror spokes into top-level.',
     '- "combination": complex or ambiguous parts. Compose from up to ~8 additive primitives (kind: box | cylinder | sphere | cone | torus), each with its size fields, position and rotation.',
     "All recipe lengths are in mm, angles in degrees, counts as integers. Use sane, bounded magnitudes — never extreme values like 50000 or 0.0001. IMPORTANT: Do NOT fall back to a single plain box primitive. If you cannot determine the exact recipe, make your best geometric approximation using the component type — for example, use cylinders for shafts, the 'revolved' style for axisymmetric parts, or the 'gear' style for toothed wheels. A single box is never an acceptable fallback.",
@@ -360,6 +363,7 @@ function normalizeAnalysis(raw) {
     module: null,
     spokes: null,
     boltCount: null,
+    ballCount: null,
     helixAngle: null,
     materialEstimate: "",
     manufacturingProcess: "",
@@ -383,6 +387,7 @@ function normalizeAnalysis(raw) {
   out.coneAngle = cleanNumber(raw.coneAngle) ?? (cleanNumber(raw.geometryRecipe?.gear?.coneAngle) ?? (out.gearType === 'bevel' ? 45 : null));
   out.spokes = typeof raw.spokes === "number" && isFinite(raw.spokes) ? Math.round(raw.spokes) : null;
   out.boltCount = typeof raw.boltCount === "number" && isFinite(raw.boltCount) ? Math.round(raw.boltCount) : (raw.geometryRecipe?.flange?.boltCount ? Math.round(raw.geometryRecipe.flange.boltCount) : null);
+  out.ballCount = typeof raw.ballCount === "number" && isFinite(raw.ballCount) ? Math.round(raw.ballCount) : null;
   out.helixAngle = cleanNumber(raw.helixAngle);
   out.materialEstimate = typeof raw.materialEstimate === "string" ? raw.materialEstimate : "";
   out.manufacturingProcess = typeof raw.manufacturingProcess === "string" ? raw.manufacturingProcess : "";

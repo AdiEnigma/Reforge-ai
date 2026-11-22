@@ -197,6 +197,97 @@ export function buildSteppedShaftRecipe({
     revolvedProfile: profile,
   };
 }
+/**
+ * Builds a deep-groove ball-bearing recipe from concentric races and discrete
+ * rolling elements. Unlike a generic revolved annulus, the rolling elements are
+ * separate, countable geometry.
+ */
+export function buildBearingRecipe({
+  outerDiameter = 80,
+  innerDiameter = 40,
+  width = 18,
+  ballCount = 9,
+}) {
+  const od = Math.max(20, outerDiameter);
+  const id = Math.min(od * 0.82, Math.max(5, innerDiameter));
+  const w = Math.max(3, width);
+  const outerR = od / 2;
+  const innerR = id / 2;
+  const radialGap = outerR - innerR;
+  const raceTube = Math.max(0.6, radialGap * 0.17);
+  const ballRadius = Math.max(0.8, radialGap * 0.19);
+  const ballCircleRadius = (outerR + innerR) / 2;
+  const count = Math.max(5, Math.min(20, Math.round(ballCount || 9)));
+
+  const primitives = [
+    {
+      kind: 'torus',
+      radius: Math.round((outerR - raceTube) * 100) / 100,
+      tube: Math.round(raceTube * 100) / 100,
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+    },
+    {
+      kind: 'torus',
+      radius: Math.round((innerR + raceTube) * 100) / 100,
+      tube: Math.round(raceTube * 100) / 100,
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+    },
+  ];
+  for (let i = 0; i < count; i += 1) {
+    const angle = (i / count) * Math.PI * 2;
+    primitives.push({
+      kind: 'sphere',
+      radius: Math.round(ballRadius * 100) / 100,
+      position: {
+        x: Math.round(Math.cos(angle) * ballCircleRadius * 100) / 100,
+        y: Math.round(Math.sin(angle) * ballCircleRadius * 100) / 100,
+        z: 0,
+      },
+      rotation: { x: 0, y: 0, z: 0 },
+    });
+  }
+
+  return { style: 'combination', primitives };
+}
+
+/**
+ * Builds an L-bracket with an explicit outline and mounting holes. It is only
+ * selected when bearing/bracket evidence already exists; it is never used as a
+ * catch-all for unknown components.
+ */
+export function buildBracketRecipe({ width = 90, height = 60, thickness = 12, boltCount = 2 }) {
+  const w = Math.max(20, width);
+  const h = Math.max(20, height);
+  const t = Math.max(3, thickness);
+  const count = Math.max(1, Math.min(6, Math.round(boltCount || 2)));
+  const outline = [
+    { x: 0, y: 0 },
+    { x: w, y: 0 },
+    { x: w, y: h * 0.32 },
+    { x: w * 0.36, y: h * 0.32 },
+    { x: w * 0.36, y: h },
+    { x: 0, y: h },
+  ].map((point) => ({ x: Math.round(point.x * 100) / 100, y: Math.round(point.y * 100) / 100 }));
+  const holeRadius = Math.round(Math.min(w, h) * 0.055 * 100) / 100;
+  const holes = [];
+  const locations = [
+    { cx: w * 0.18, cy: h * 0.16 },
+    { cx: w * 0.18, cy: h * 0.72 },
+    { cx: w * 0.72, cy: h * 0.16 },
+    { cx: w * 0.84, cy: h * 0.16 },
+  ];
+  for (let i = 0; i < count && i < locations.length; i += 1) {
+    holes.push({
+      cx: Math.round(locations[i].cx * 100) / 100,
+      cy: Math.round(locations[i].cy * 100) / 100,
+      radius: holeRadius,
+    });
+  }
+  return { style: 'extruded', outline, holes, depth: t };
+}
+
 export function extractVisionObservations(visionResult) {
   if (!visionResult || !Array.isArray(visionResult.images) || visionResult.images.length === 0) {
     return null;
@@ -732,6 +823,54 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     reconciled.features = featuresList;
   }
 
+  // 3d. Reconcile Bearing geometry with discrete rolling elements.
+  const isBearing =
+    !isGear && !isFlange && !isShaft &&
+    (compTypeLower.includes('bearing') ||
+      (Array.isArray(reconciled.features) && reconciled.features.some((f) => /bearing|race|ball|roller/i.test(String(f)))) ||
+      reconciled.geometryType === 'bearing');
+
+  if (isBearing) {
+    reconciled.componentType = 'bearing';
+    reconciled.geometryType = 'rolling_element_bearing';
+    const od = ref.outerDiameter || reconciled.dimensions.outerDiameter || 80;
+    const id = ref.innerDiameter != null ? ref.innerDiameter : (reconciled.dimensions.innerDiameter || Math.round(od * 0.5 * 10) / 10);
+    const width = ref.thickness || ref.height || reconciled.dimensions.thickness || reconciled.dimensions.height || Math.round(od * 0.22 * 10) / 10;
+    const ballCount = typeof ref.ballCount === 'number' && ref.ballCount >= 5
+      ? Math.round(ref.ballCount)
+      : (typeof geminiAnalysis?.ballCount === 'number' && geminiAnalysis.ballCount >= 5
+        ? Math.round(geminiAnalysis.ballCount)
+        : 9);
+    reconciled.dimensions.outerDiameter = od;
+    reconciled.dimensions.innerDiameter = id;
+    reconciled.dimensions.thickness = width;
+    reconciled.dimensions.height = width;
+    reconciled.dimensions.width = od;
+    reconciled.dimensions.length = od;
+    reconciled.geometryRecipe = buildBearingRecipe({ outerDiameter: od, innerDiameter: id, width, ballCount });
+  }
+
+  // 3e. Reconcile Bracket geometry with an explicit outline and mounting holes.
+  const isBracket =
+    !isGear && !isFlange && !isShaft && !isBearing &&
+    (compTypeLower.includes('bracket') ||
+      (Array.isArray(reconciled.features) && reconciled.features.some((f) => /bracket|l[- ]?plate|mounting plate/i.test(String(f)))) ||
+      reconciled.geometryType === 'bracket');
+
+  if (isBracket) {
+    reconciled.componentType = 'simple bracket';
+    reconciled.geometryType = 'extruded_bracket';
+    const width = ref.width || reconciled.dimensions.width || 90;
+    const height = ref.height || reconciled.dimensions.height || 60;
+    const thickness = ref.thickness || reconciled.dimensions.thickness || 12;
+    const boltCount = extractBoltCount(reconciled.features, obs, ref, null, reconciled.boltCount);
+    reconciled.dimensions.width = width;
+    reconciled.dimensions.height = height;
+    reconciled.dimensions.thickness = thickness;
+    reconciled.dimensions.outerDiameter = Math.max(width, height);
+    reconciled.geometryRecipe = buildBracketRecipe({ width, height, thickness, boltCount });
+  }
+
   // 4. Ensure Geometry Recipe is always present and watertight
   if (!reconciled.geometryRecipe || typeof reconciled.geometryRecipe !== 'object') {
     reconciled.geometryRecipe = buildRecipeFromDimensions(reconciled);
@@ -804,6 +943,24 @@ function buildRecipeFromDimensions(analysis) {
     return buildSteppedShaftRecipe({ outerDiameter: od, length, innerDiameter: id });
   }
 
+  if (type.includes('bearing')) {
+    return buildBearingRecipe({
+      outerDiameter: od,
+      innerDiameter: id,
+      width: h,
+      ballCount: analysis?.ballCount || 9,
+    });
+  }
+
+  if (type.includes('bracket')) {
+    return buildBracketRecipe({
+      width: dims.width || od,
+      height: dims.height || h,
+      thickness: dims.thickness || h,
+      boltCount: analysis?.boltCount || 2,
+    });
+  }
+
   // Default revolved cylinder/shaft
   return {
     style: 'revolved',
@@ -822,7 +979,9 @@ function buildRecipeFromDimensions(analysis) {
  */
 export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assist offline') {
   const ref = reference && typeof reference === 'object' ? reference : {};
-  const isFlange = String(ref.componentType || '').toLowerCase().includes('flange') || typeof ref.boltCount === 'number';
+  const refType = String(ref.componentType || '').toLowerCase();
+  const isFlange = refType.includes('flange') ||
+    (typeof ref.boltCount === 'number' && !refType.includes('bracket') && !refType.includes('bearing'));
 
   if (isFlange) {
     const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 130.0;
@@ -923,6 +1082,64 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
           hubLength: hubL,
         },
       },
+      provenance: 'deterministic_fallback_engine',
+    };
+  }
+
+  if (String(ref.componentType || '').toLowerCase().includes('bearing')) {
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 80;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.5 * 10) / 10;
+    const width = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.22 * 10) / 10;
+    const ballCount = typeof ref.ballCount === 'number' && ref.ballCount >= 5 ? Math.round(ref.ballCount) : 9;
+    return {
+      componentType: 'bearing',
+      componentName: `Deep-Groove Ball Bearing Ø${id}x${od}x${width}mm`,
+      label: `Bearing (Ø${od}mm)`,
+      confidence: 0.89,
+      geometryType: 'rolling_element_bearing',
+      dimensions: { outerDiameter: od, innerDiameter: id, height: width, thickness: width, width: od, length: od },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `${ballCount} Discrete Rolling Elements`,
+        'Concentric Inner and Outer Raceway Rings',
+        `Bore Ø${id}mm / Outside Ø${od}mm / Width ${width}mm`,
+      ],
+      materialEstimate: 'AISI 52100 Bearing Steel',
+      manufacturingProcess: 'Raceway Grinding + Ball Assembly',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Built a component-specific rolling-element bearing, not a generic annulus.`,
+      uncertainties: [],
+      geometryRecipe: buildBearingRecipe({ outerDiameter: od, innerDiameter: id, width, ballCount }),
+      provenance: 'deterministic_fallback_engine',
+    };
+  }
+
+  if (String(ref.componentType || '').toLowerCase().includes('bracket')) {
+    const width = typeof ref.width === 'number' && ref.width > 0 ? ref.width : 90;
+    const height = typeof ref.height === 'number' && ref.height > 0 ? ref.height : 60;
+    const thickness = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : 12;
+    const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 1 ? Math.round(ref.boltCount) : 2;
+    return {
+      componentType: 'simple bracket',
+      componentName: `L-Bracket ${width}x${height}x${thickness}mm`,
+      label: `Bracket (${width}x${height}mm)`,
+      confidence: 0.88,
+      geometryType: 'extruded_bracket',
+      dimensions: { outerDiameter: Math.max(width, height), innerDiameter: null, height, thickness, width, length: height },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `${boltCount} Mounting Holes`,
+        'Extruded L-Profile with Orthogonal Mounting Faces',
+        `${thickness}mm Plate Thickness`,
+      ],
+      materialEstimate: 'EN AW-6082-T6 Aluminium',
+      manufacturingProcess: 'CNC Milling + Deburr',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Built an extruded L-bracket with explicit mounting geometry.`,
+      uncertainties: [],
+      geometryRecipe: buildBracketRecipe({ width, height, thickness, boltCount }),
       provenance: 'deterministic_fallback_engine',
     };
   }

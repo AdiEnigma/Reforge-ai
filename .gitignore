@@ -10,3 +10,6 @@ env.local
 .DS_Store
 .dependencies/
 
+# Downloaded dataset binaries and generated retrieval indexes are local build data.
+backend/var/datasets/
+
