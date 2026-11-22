@@ -6,6 +6,7 @@ export const MODEL_ILLUMINATION_MAX_INTENSITY = 4;
 export const MODEL_ILLUMINATION_INTENSITY_STEP = 0.1;
 
 const OVERHEAD_LIGHT_COLOR = 0xfff4e6;
+const INTENSITY_EASING = 0.18;
 
 function clampIntensity(value) {
   const numeric = Number(value);
@@ -24,14 +25,26 @@ function getBounds(bounds) {
   return { center: new THREE.Vector3(), radius: 5 };
 }
 
+function normalizeTheme(theme = 'dark') {
+  return theme === 'light' ? 'light' : 'dark';
+}
+
 /**
- * Adds a soft overhead directional light positioned from the model's bounding
- * box. The light has no shadows and enough intensity to reveal metallic
- * MeshStandardMaterial / MeshPhysicalMaterial surfaces without a CSS filter.
+ * Adds a soft overhead directional light for Dark Mode and coordinates with
+ * the theme sync in Light Mode, where the same control deepens the model's
+ * lighting instead of adding brightness. The light has no shadows and is
+ * positioned from the model's bounding sphere; no CSS filter is involved.
  */
 export function createModelIllumination(scene, options = {}) {
   const { center, radius } = getBounds(options.bounds);
-  const light = new THREE.DirectionalLight(OVERHEAD_LIGHT_COLOR, clampIntensity(options.intensity));
+  const themeSync = options.themeSync || null;
+  let currentTheme = normalizeTheme(options.theme);
+  let enabled = Boolean(options.enabled);
+  let currentIntensity = clampIntensity(options.intensity);
+  let targetIntensity = currentTheme === 'dark' && enabled ? currentIntensity : 0;
+  let appliedIntensity = currentIntensity;
+
+  const light = new THREE.DirectionalLight(OVERHEAD_LIGHT_COLOR, appliedIntensity);
   light.name = 'model-illumination';
   light.castShadow = false;
 
@@ -45,18 +58,48 @@ export function createModelIllumination(scene, options = {}) {
     .multiplyScalar(radius * 2.4 + 6);
   light.position.copy(center).add(offset);
   light.target.position.copy(center);
-  light.visible = Boolean(options.enabled);
+  light.visible = currentTheme === 'dark' && enabled;
 
   scene.add(light);
   scene.add(light.target);
 
+  function applyLight(immediate = false) {
+    if (immediate) {
+      appliedIntensity = targetIntensity;
+    } else {
+      appliedIntensity = THREE.MathUtils.lerp(appliedIntensity, targetIntensity, INTENSITY_EASING);
+      if (Math.abs(targetIntensity - appliedIntensity) < 0.001) appliedIntensity = targetIntensity;
+    }
+    light.intensity = Math.max(appliedIntensity, 0);
+    light.visible = currentTheme === 'dark' && (enabled || appliedIntensity > 0.01);
+  }
+
+  function syncTheme(immediate = false) {
+    if (!themeSync || typeof themeSync.setIllumination !== 'function') return;
+    themeSync.setIllumination({
+      enabled: currentTheme === 'light' && enabled,
+      intensity: currentIntensity,
+      theme: currentTheme,
+      immediate,
+    });
+  }
+
+  syncTheme(true);
+
   return {
     light,
-    update(next = {}) {
-      const enabled = next.enabled === undefined ? light.visible : next.enabled;
-      const intensity = next.intensity === undefined ? light.intensity : next.intensity;
-      light.visible = Boolean(enabled);
-      light.intensity = clampIntensity(intensity);
+    update(next = {}, immediate = false) {
+      if (next.theme !== undefined) {
+        const nextTheme = normalizeTheme(next.theme);
+        if (nextTheme !== currentTheme && nextTheme === 'light') appliedIntensity = 0;
+        currentTheme = nextTheme;
+      }
+      if (next.enabled !== undefined) enabled = Boolean(next.enabled);
+      if (next.intensity !== undefined) currentIntensity = clampIntensity(next.intensity);
+      targetIntensity = currentTheme === 'dark' && enabled ? currentIntensity : 0;
+
+      applyLight(immediate);
+      syncTheme(immediate);
     },
     dispose() {
       scene.remove(light);

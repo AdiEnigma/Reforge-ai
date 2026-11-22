@@ -136,8 +136,10 @@ function ReconstructionProgress({ progress, onCancel, onRetry }) {
   );
 }
 
-function GearCanvas() {
+function GearCanvas({ theme = 'dark' }) {
   const mount = useRef(null);
+  const options = useRef({ theme });
+  options.current = { theme };
   useEffect(() => {
     const host = mount.current, scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, .1, 1000); camera.position.z = 15;
@@ -147,14 +149,33 @@ function GearCanvas() {
     const hole = new THREE.Path(); hole.absarc(0, 0, 2.2, 0, Math.PI * 2, false); shape.holes.push(hole);
     const geo = new THREE.ExtrudeGeometry(shape, { depth: .25, bevelEnabled: true, bevelSegments: 12, steps: 2, curveSegments: 64, bevelSize: .05, bevelThickness: .05 }); geo.center();
     const material = new THREE.MeshStandardMaterial({ color: '#2A0E06', metalness: .8, roughness: .45, emissive: '#0a0301', emissiveIntensity: .2 });
-    const gear = new THREE.Mesh(geo, material); const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 22), new THREE.LineBasicMaterial({ color: '#DE822B' })); gear.add(edges); scene.add(gear);
-    [1, -1].forEach(z => { const ring = new THREE.Mesh(new THREE.RingGeometry(2.15, 2.28, 64), new THREE.MeshBasicMaterial({ color: '#DE822B', side: THREE.DoubleSide })); ring.position.z = z * .14; gear.add(ring); });
-    scene.add(new THREE.AmbientLight('#7A4A38', .9)); const light = new THREE.PointLight('#DE822B', 2.5, 30); light.position.set(8, 8, 8); scene.add(light); const tenne = new THREE.PointLight('#B76308', 2.2, 30); tenne.position.set(-8, -8, 6); scene.add(tenne);
+    material.userData.appearanceRole = 'decorative-gear';
+    const edgesMaterial = new THREE.LineBasicMaterial({ color: '#DE822B' });
+    edgesMaterial.userData.appearanceRole = 'edges';
+    const gear = new THREE.Mesh(geo, material); const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 22), edgesMaterial); gear.add(edges); scene.add(gear);
+    [1, -1].forEach(z => {
+      const ringMaterial = new THREE.MeshBasicMaterial({ color: '#DE822B', side: THREE.DoubleSide });
+      ringMaterial.userData.appearanceRole = 'rim';
+      const ring = new THREE.Mesh(new THREE.RingGeometry(2.15, 2.28, 64), ringMaterial);
+      ring.position.z = z * .14;
+      gear.add(ring);
+    });
+    const ambient = new THREE.AmbientLight('#7A4A38', .9); scene.add(ambient);
+    const light = new THREE.PointLight('#DE822B', 2.5, 30); light.position.set(8, 8, 8); scene.add(light);
+    const tenne = new THREE.PointLight('#B76308', 2.2, 30); tenne.position.set(-8, -8, 6); scene.add(tenne);
+    // Keep the hero transparent: only the model lighting rig follows the theme.
+    const themeSync = createThreeThemeSync({
+      scene,
+      renderer,
+      lights: { ambient, key: light, fill: tenne },
+      background: false,
+    });
+    themeSync.update(options.current.theme, true);
     const pointer = { x: 0, y: 0 }, target = { x: 0, y: 0 }, current = { x: 0, y: 0 }; const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
     const onMove = e => { const r = host.getBoundingClientRect(); pointer.x = (e.clientX - r.left) / r.width * 2 - 1; pointer.y = -(e.clientY - r.top) / r.height * 2 + 1; target.x = (e.clientX - r.left - r.width / 2) * .0018; target.y = (e.clientY - r.top - r.height / 2) * .0018; }; host.addEventListener('pointermove', onMove);
     const resize = () => { const { width, height } = host.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height, false) }; const observer = new ResizeObserver(resize); observer.observe(host); resize(); let frame;
-    const animate = () => { frame = requestAnimationFrame(animate); mouse.set(pointer.x, pointer.y); raycaster.setFromCamera(mouse, camera); const active = raycaster.intersectObject(gear).length > 0; material.emissive.lerp(new THREE.Color(active ? '#DE822B' : '#0a0301'), active ? .04 : .03); current.x = THREE.MathUtils.lerp(current.x, target.x, .035); current.y = THREE.MathUtils.lerp(current.y, target.y, .035); gear.rotation.x = current.y; gear.rotation.y = current.x; gear.rotation.z -= .006 * (active ? 1.8 : 1); renderer.render(scene, camera) }; animate();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); host.removeEventListener('pointermove', onMove); renderer.dispose(); geo.dispose(); material.dispose(); host.replaceChildren(); };
+    const animate = () => { frame = requestAnimationFrame(animate); mouse.set(pointer.x, pointer.y); raycaster.setFromCamera(mouse, camera); const active = raycaster.intersectObject(gear).length > 0; material.emissive.lerp(new THREE.Color(active ? '#DE822B' : '#0a0301'), active ? .04 : .03); current.x = THREE.MathUtils.lerp(current.x, target.x, .035); current.y = THREE.MathUtils.lerp(current.y, target.y, .035); gear.rotation.x = current.y; gear.rotation.y = current.x; gear.rotation.z -= .006 * (active ? 1.8 : 1); themeSync.update(options.current.theme); renderer.render(scene, camera) }; animate();
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); host.removeEventListener('pointermove', onMove); themeSync.dispose(); renderer.dispose(); geo.dispose(); material.dispose(); host.replaceChildren(); };
   }, []);
   return <div className="gear-canvas" ref={mount} aria-hidden="true" />;
 }
@@ -172,17 +193,20 @@ function ReconstructedViewport({ analysis, images = [], wire, grid, stress, auto
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     host.appendChild(renderer.domElement);
-    const themeSync = createThreeThemeSync({ scene, renderer });
+    const ambient = new THREE.AmbientLight('#7a4a38', 0.6); scene.add(ambient);
+    const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
+    const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
+    const themeSync = createThreeThemeSync({ scene, renderer, lights: { ambient, key, fill } });
     themeSync.update(options.current.theme);
     const { group } = buildModel(analysis);
     scene.add(group);
+    themeSync.update(options.current.theme, true);
     const modelBounds = new THREE.Box3().setFromObject(group);
-    scene.add(new THREE.AmbientLight('#7a4a38', 0.6));
-    const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
-    const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
     const illuminationLight = createModelIllumination(scene, {
       enabled: options.current.illumination,
       intensity: options.current.illuminationIntensity,
+      theme: options.current.theme,
+      themeSync,
       bounds: modelBounds,
       camera,
     });
@@ -226,7 +250,11 @@ function ReconstructedViewport({ analysis, images = [], wire, grid, stress, auto
       if (options.current.autoRotate) view.theta += .006;
       gridHelper.visible = options.current.grid;
       themeSync.update(options.current.theme);
-      illuminationLight.update({ enabled: options.current.illumination, intensity: options.current.illuminationIntensity });
+      illuminationLight.update({
+        enabled: options.current.illumination,
+        intensity: options.current.illuminationIntensity,
+        theme: options.current.theme,
+      });
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
       const isSelected = Boolean(options.current.selectedFeatureId);
@@ -270,6 +298,7 @@ function ReconstructedViewport({ analysis, images = [], wire, grid, stress, auto
       selectHighlightMat.dispose();
       hoverHighlightMat.dispose();
       illuminationLight.dispose();
+      themeSync.dispose();
       renderer.dispose();
       host.replaceChildren();
     };
@@ -308,13 +337,13 @@ function Nav() {
 }
 
 function Landing() {
-  const { setPage } = useApp();
+  const { setPage, theme } = useApp();
   return (
     <>
       <Nav />
       <main className="landing">
         <section className="hero">
-          <GearCanvas />
+          <GearCanvas theme={theme} />
           <div className="cad readout top-left">X: -145.22, Y: 84.10, Z: 0.00</div>
           <div className="cad readout top-right">SYS: ONLINE // REV-ENG: ACTIVE</div>
           <div className="hero-copy">
@@ -3454,8 +3483,8 @@ class ErrorBoundary extends React.Component {
       return (
         <div style={{
           padding: '40px',
-          color: '#DE822B',
-          background: '#0c0805',
+          color: 'var(--error-accent, #DE822B)',
+          background: 'var(--error-bg, #0c0805)',
           fontFamily: "'JetBrains Mono', monospace",
           minHeight: '100vh',
           display: 'flex',
@@ -3465,7 +3494,7 @@ class ErrorBoundary extends React.Component {
           gap: '16px',
         }}>
           <h2 style={{ letterSpacing: '0.08em', margin: 0 }}>SYSTEM NOTICE // REFORGE WORKSPACE RECOVERY</h2>
-          <p style={{ color: '#ff8585', maxWidth: '640px', textAlign: 'center', lineHeight: '1.6', fontSize: '13px' }}>
+          <p style={{ color: 'var(--error-text, #ff8585)', maxWidth: '640px', textAlign: 'center', lineHeight: '1.6', fontSize: '13px' }}>
             {this.state.error?.message || 'A render interruption occurred.'}
           </p>
           <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>

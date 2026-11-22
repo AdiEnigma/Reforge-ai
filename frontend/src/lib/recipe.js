@@ -624,6 +624,7 @@ function buildMeshFromRecipe(meshData) {
   // Sharp technical CAD edges (threshold 35 deg avoids triangulated facet noise on curved walls)
   const edgesGeo = new THREE.EdgesGeometry(geo, 35);
   const edgesMat = new THREE.LineBasicMaterial({ color: "#181410", linewidth: 1 });
+  edgesMat.userData.appearanceRole = 'edges';
   const edgesLine = new THREE.LineSegments(edgesGeo, edgesMat);
   group.add(edgesLine);
 

@@ -410,19 +410,23 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, ill
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(typeof window !== 'undefined' ? window.devicePixelRatio : 1, 2));
     host.appendChild(renderer.domElement);
-    const themeSync = createThreeThemeSync({ scene, renderer });
+    const ambient = new THREE.AmbientLight('#7a4a38', 0.65);
+    scene.add(ambient);
+    const key = new THREE.DirectionalLight('#ffb77f', 0.85);
+    key.position.set(6, 8, 10);
+    scene.add(key);
+    const themeSync = createThreeThemeSync({ scene, renderer, lights: { ambient, key } });
     themeSync.update(options.current.theme);
 
     const { group } = buildAssemblyScene(machineryState);
     scene.add(group);
+    themeSync.update(options.current.theme, true);
     const modelBounds = new THREE.Box3().setFromObject(group);
-    scene.add(new THREE.AmbientLight('#7a4a38', 0.65));
-    const key = new THREE.DirectionalLight('#ffb77f', 0.85);
-    key.position.set(6, 8, 10);
-    scene.add(key);
     const illuminationLight = createModelIllumination(scene, {
       enabled: options.current.illumination,
       intensity: options.current.illuminationIntensity,
+      theme: options.current.theme,
+      themeSync,
       bounds: modelBounds,
       camera,
     });
@@ -493,6 +497,7 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, ill
       illuminationLight.update({
         enabled: options.current.illumination,
         intensity: options.current.illuminationIntensity,
+        theme: options.current.theme,
       });
       const r = view.radius * Math.sin(view.phi);
       camera.position.set(
@@ -517,6 +522,7 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, ill
         if (n.geometry) n.geometry.dispose();
       });
       illuminationLight.dispose();
+      themeSync.dispose();
       renderer.dispose();
       host.replaceChildren();
     };

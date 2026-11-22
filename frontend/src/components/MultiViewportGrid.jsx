@@ -21,6 +21,7 @@ import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from '.
 import { createThreeThemeSync } from '../lib/three-theme.js';
 import { getAllComponents, ROLE_TYPES } from '../lib/machinery-context.js';
 import { build3DDimensionsGroup } from '../lib/three-dimensions.js';
+import { DamageHeatmapOverlay } from './DamageHeatmapOverlay.jsx';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -51,8 +52,8 @@ function SingleViewportCanvas({
 }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, stress, dims, autoRotate, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, stress, dims, autoRotate, selectedFeatureId, hoveredFeatureId };
+  const options = useRef({ wire, grid, stress, dims, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId });
+  options.current = { wire, grid, stress, dims, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId };
 
   if (!analysis && !isAssembly) {
     return (
@@ -63,8 +64,8 @@ function SingleViewportCanvas({
         </div>
         <div className="viewport-empty-slot" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }}>
           <Icon className="spin">sync</Icon>
-          <span style={{ fontSize: '13px', fontWeight: 600, letterSpacing: '0.05em', color: '#ffb77f' }}>AWAITING COMPONENT ANALYSIS…</span>
-          <span style={{ fontSize: '11px', color: '#a08875' }}>Upload or select photos in the left panel to reconstruct 3D CAD geometry.</span>
+          <span style={{ fontSize: '13px', fontWeight: 600, letterSpacing: '0.05em', color: 'var(--viewport-empty-primary, #ffb77f)' }}>AWAITING COMPONENT ANALYSIS…</span>
+          <span style={{ fontSize: '11px', color: 'var(--viewport-empty-muted, #a08875)' }}>Upload or select photos in the left panel to reconstruct 3D CAD geometry.</span>
         </div>
       </div>
     );
@@ -78,7 +79,15 @@ function SingleViewportCanvas({
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(typeof window !== 'undefined' ? window.devicePixelRatio : 1, 2));
     host.appendChild(renderer.domElement);
-    const themeSync = createThreeThemeSync({ scene, renderer });
+    const ambient = new THREE.AmbientLight('#7a4a38', 0.65);
+    scene.add(ambient);
+    const key = new THREE.DirectionalLight('#ffb77f', 0.85);
+    key.position.set(6, 8, 10);
+    scene.add(key);
+    const fill = new THREE.PointLight('#b76308', 1.1, 30);
+    fill.position.set(-6, -4, 8);
+    scene.add(fill);
+    const themeSync = createThreeThemeSync({ scene, renderer, lights: { ambient, key, fill } });
     themeSync.update(options.current.theme);
 
     let mainGroup;
@@ -90,22 +99,19 @@ function SingleViewportCanvas({
       mainGroup = group;
     }
     scene.add(mainGroup);
+    themeSync.update(options.current.theme, true);
+    const modelBounds = new THREE.Box3().setFromObject(mainGroup);
 
     // 3D Technical Dimensions Overlay (Lines, Arrows, Extension Lines, Billboard Sprites)
     const dimsOverlay = isAssembly ? new THREE.Group() : build3DDimensionsGroup(mainGroup, analysis);
     dimsOverlay.visible = Boolean(dims);
     scene.add(dimsOverlay);
 
-    scene.add(new THREE.AmbientLight('#7a4a38', 0.65));
-    const key = new THREE.DirectionalLight('#ffb77f', 0.85);
-    key.position.set(6, 8, 10);
-    scene.add(key);
-    const fill = new THREE.PointLight('#b76308', 1.1, 30);
-    fill.position.set(-6, -4, 8);
-    scene.add(fill);
     const illuminationLight = createModelIllumination(scene, {
       enabled: options.current.illumination,
       intensity: options.current.illuminationIntensity,
+      theme: options.current.theme,
+      themeSync,
       bounds: modelBounds,
       camera,
     });
@@ -223,6 +229,7 @@ function SingleViewportCanvas({
       illuminationLight.update({
         enabled: options.current.illumination,
         intensity: options.current.illuminationIntensity,
+        theme: options.current.theme,
       });
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
@@ -282,6 +289,7 @@ function SingleViewportCanvas({
       selectHighlightMat.dispose();
       hoverHighlightMat.dispose();
       illuminationLight.dispose();
+      themeSync.dispose();
       renderer.dispose();
       host.replaceChildren();
     };

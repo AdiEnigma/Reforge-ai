@@ -68,6 +68,16 @@ export function TopRibbon({
   ready = false,
   label = '',
 }) {
+  const lightTheme = theme === 'light';
+  const illuminationOnLabel = lightTheme
+    ? 'Turn Off Model Shade Control'
+    : 'Turn Off 3D Model Illumination';
+  const illuminationOffLabel = lightTheme
+    ? 'Turn On Model Shade Control (deeper metallic orange)'
+    : 'Turn On 3D Model Illumination (overhead light)';
+  const intensityLabel = lightTheme
+    ? 'Model shade depth'
+    : 'Overhead model light intensity';
   return (
     <header className={`top-ribbon ${expanded ? 'expanded' : 'collapsed'}`} role="toolbar" aria-label="Engineering Workspace Ribbon">
       {/* Category 0: Brand & Ribbon Mode */}
@@ -221,8 +231,8 @@ export function TopRibbon({
             className={`ribbon-item mini illumination-toggle-btn icon-only ${illumination ? 'active' : ''}`}
             onClick={onToggleIllumination}
             disabled={!ready || !onToggleIllumination}
-            title={illumination ? 'Turn Off 3D Model Illumination' : 'Turn On 3D Model Illumination (overhead light)'}
-            aria-label={illumination ? 'Turn Off 3D Model Illumination' : 'Turn On 3D Model Illumination'}
+            title={illumination ? illuminationOnLabel : illuminationOffLabel}
+            aria-label={illumination ? illuminationOnLabel : illuminationOffLabel}
             aria-pressed={illumination}
           >
             <Icon>lightbulb</Icon>
@@ -238,8 +248,8 @@ export function TopRibbon({
               value={illuminationIntensity}
               onChange={(event) => onChangeIlluminationIntensity?.(Number(event.target.value))}
               disabled={!ready || !onChangeIlluminationIntensity}
-              title={`Overhead light intensity: ${Math.round(illuminationIntensity * 100)}%`}
-              aria-label="Overhead model light intensity"
+              title={`${intensityLabel}: ${Math.round(illuminationIntensity * 100)}%`}
+              aria-label={intensityLabel}
             />
           )}
 

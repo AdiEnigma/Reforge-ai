@@ -10668,9 +10668,9 @@ body,
 /* ═══════════════════════════════════════════════════════════════════════════
    REFORGE AI — LIGHT THEME SPECIFICATION
    Clean, premium engineering aesthetic:
-   • Warm white drafting backgrounds (#f7f5f0)
-   • Subtle neutral surfaces (#ffffff, #ece7de, #e2dbd0)
-   • Dark readable typography (#191410, #5c4e43)
+   • Layered neutral greys (#e8eaed main, #f1f3f5 panels, #d5d9de toolbars)
+   • Darker grey borders and dialog shells (#b9c0c8)
+   • High-contrast typography (#20252b, #5b6470)
    • Precision copper/amber accents (#b75508)
    • High-contrast verification green (#1e7e34)
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -10679,32 +10679,42 @@ body,
 :root[data-theme="light"],
 [data-theme="light"],
 body.theme-light {
-  --bg: #f7f5f0;
-  --low: #ece7de;
-  --surface: #ffffff;
-  --high: #e2dbd0;
-  --text: #191410;
-  --muted: #5c4e43;
-  --line: #d8d0c3;
+  --bg: #e8eaed;
+  --low: #d5d9de;
+  --surface: #f1f3f5;
+  --high: #b9c0c8;
+  --text: #20252b;
+  --muted: #5b6470;
+  --line: #aeb6c0;
   --primary: #b75508;
   --tenne: #964203;
   --gold: #b76308;
   --lime: #1e7e34;
-  --viewport-bg: #f7f5f0;
-  --viewport-panel-bg: rgba(255, 255, 255, .94);
-  --viewport-header-bg: #ece7de;
-  --viewport-grid-major: #b8aa98;
-  --viewport-grid-minor: #d8d0c3;
-  color: #191410;
-  background-color: #f7f5f0;
+  --viewport-bg: #dfe3e8;
+  --viewport-panel-bg: rgba(241, 243, 245, .94);
+  --viewport-header-bg: #cdd3da;
+  --viewport-grid-major: #98a2ad;
+  --viewport-grid-minor: #c3cad2;
+  --panel-bg: #eef0f3;
+  --toolbar-bg: #d5d9de;
+  --dialog-bg: #cdd3da;
+  --card-bg: #e6e9ed;
+  --dialog-backdrop: rgba(39, 45, 52, .58);
+  --error-bg: #2a2f36;
+  --error-text: #ff9c9c;
+  --error-accent: #ff9a4d;
+  --viewport-empty-primary: #b75508;
+  --viewport-empty-muted: #5b6470;
+  color: #20252b;
+  background-color: #e8eaed;
 }
 
 [data-theme="light"] body,
 body.theme-light {
-  background-color: #f7f5f0;
-  background-image: radial-gradient(#d8d0c3 1px, transparent 1px);
+  background-color: var(--bg);
+  background-image: radial-gradient(var(--line) 1px, transparent 1px);
   background-size: 8px 8px;
-  color: #191410;
+  color: var(--text);
 }
 
 /* ─── Theme Toggle Button in Nav and Ribbon ──────────────────────────────── */
@@ -10775,7 +10785,7 @@ body.theme-light {
 
 /* ─── Nav & Top Ribbon ───────────────────────────────────────────────────── */
 [data-theme="light"] nav {
-  background: #fffffffa;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
@@ -10793,7 +10803,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .top-ribbon {
-  background: #fdfcf9;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
@@ -10821,7 +10831,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .ribbon-item:hover {
-  background: #ece7de;
+  background: var(--low);
   color: var(--text);
   border-color: var(--line);
 }
@@ -10847,13 +10857,13 @@ body.theme-light {
 }
 
 [data-theme="light"] .ribbon-toggle-btn:hover {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--primary);
   color: var(--primary);
 }
 
 [data-theme="light"] .ribbon-status-pill {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
 }
 
@@ -10894,7 +10904,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .viewport {
-  background: #ece7de;
+  background: var(--low);
   border-right: 1px solid var(--line);
 }
 
@@ -10926,7 +10936,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .contextual-panel-header {
-  background: #ffffff;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
@@ -10936,7 +10946,7 @@ body.theme-light {
 
 [data-theme="light"] .panel-tab-btn:hover {
   color: var(--text);
-  background: #ece7de;
+  background: var(--low);
 }
 
 [data-theme="light"] .panel-tab-btn.active {
@@ -10947,7 +10957,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .panel-action-btn {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--muted);
 }
@@ -10964,7 +10974,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .subtab-pill {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--muted);
 }
@@ -10972,7 +10982,7 @@ body.theme-light {
 [data-theme="light"] .subtab-pill:hover {
   color: var(--primary);
   border-color: var(--primary);
-  background: #fdfcf9;
+  background: var(--surface);
 }
 
 [data-theme="light"] .subtab-pill.active {
@@ -10987,25 +10997,25 @@ body.theme-light {
 }
 
 [data-theme="light"] .ai-message p {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--text);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
 
 [data-theme="light"] .user-message p {
-  background: #ece7de;
+  background: var(--low);
   border-color: var(--line);
   color: var(--text);
 }
 
 [data-theme="light"] .composer {
-  background: #ffffff;
+  background: var(--surface);
   border-top: 1px solid var(--line);
 }
 
 [data-theme="light"] .composer input {
-  background: #f7f5f0;
+  background: var(--bg);
   border-color: var(--line);
   color: var(--text);
 }
@@ -11020,12 +11030,12 @@ body.theme-light {
 }
 
 [data-theme="light"] .inspection-text-block {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
 }
 
 [data-theme="light"] .health-card {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
@@ -11053,12 +11063,12 @@ body.theme-light {
 }
 
 [data-theme="light"] .mfg-decision-header {
-  background: #ffffff;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
 [data-theme="light"] .mfg-decision-close {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--muted);
 }
@@ -11094,7 +11104,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .mfg-live-cost-badge {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
@@ -11157,21 +11167,21 @@ body.theme-light {
 }
 
 [data-theme="light"] .mfg-cat-header-btn:hover {
-  background: #e2dbd0;
+  background: var(--high);
 }
 
 [data-theme="light"] .mfg-cat-card.expanded .mfg-cat-header-btn {
-  background: #ffffff;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
 [data-theme="light"] .mfg-cat-body {
-  background: #ffffff;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
 [data-theme="light"] .mfg-field input {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--text);
 }
@@ -11183,17 +11193,17 @@ body.theme-light {
 }
 
 [data-theme="light"] .mfg-choice-card {
-  background: #faf8f5;
+  background: var(--surface);
   border-color: var(--line);
 }
 
 [data-theme="light"] .mfg-choice-card:hover {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--primary);
 }
 
 [data-theme="light"] .mfg-choice-card.selected {
-  background: #f4fbf4;
+  background: var(--surface);
   border-color: var(--lime);
   box-shadow: inset 0 0 0 1px var(--lime);
 }
@@ -11211,13 +11221,13 @@ body.theme-light {
 }
 
 [data-theme="light"] .mfg-reasoning-card {
-  background: #faf8f5;
+  background: var(--surface);
   border-color: var(--line);
   border-left: 3px solid var(--lime);
 }
 
 [data-theme="light"] .mfg-reasoning-card.suboptimal {
-  background: #fffdf9;
+  background: var(--surface);
   border-left-color: var(--gold);
 }
 
@@ -11246,8 +11256,8 @@ body.theme-light {
 }
 
 [data-theme="light"] .mfg-confirm-btn:disabled {
-  background: #e2dbd0;
-  color: #8c7b6d;
+  background: var(--high);
+  color: var(--muted);
 }
 
 [data-theme="light"] .confirmed-pill {
@@ -11257,13 +11267,13 @@ body.theme-light {
 }
 
 [data-theme="light"] .mfg-completed-summary-card {
-  background: #f4fbf4;
+  background: var(--surface);
   border-color: var(--lime);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
 }
 
 [data-theme="light"] .completed-cost-grid {
-  background: #ffffff;
+  background: var(--surface);
   border-color: #c3e6cb;
 }
 
@@ -11279,7 +11289,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .qty-btn {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--text);
 }
@@ -11290,13 +11300,13 @@ body.theme-light {
 }
 
 [data-theme="light"] .qty-stepper-row input {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--text);
 }
 
 [data-theme="light"] .tier-pill {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--muted);
 }
@@ -11314,12 +11324,12 @@ body.theme-light {
 }
 
 [data-theme="light"] .cost-panel-header {
-  background: #ffffff;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
 [data-theme="light"] .cost-panel-close {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--muted);
 }
@@ -11331,7 +11341,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .cost-subtabs-bar {
-  background: #faf8f5;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
@@ -11351,7 +11361,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .cost-headline-card {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
 }
@@ -11398,14 +11408,14 @@ body.theme-light {
 }
 
 [data-theme="light"] .cost-impact-card.is-preview {
-  background: #fffaf4;
+  background: var(--surface);
   border: 1px solid #f0c38d;
   border-left: 3px solid #b75508;
   box-shadow: 0 2px 6px rgba(183, 85, 8, 0.08);
 }
 
 [data-theme="light"] .cost-impact-card.is-confirmed {
-  background: #f4fbf4;
+  background: var(--surface);
   border: 1px solid #b7e4be;
   border-left: 3px solid #1e7e34;
   box-shadow: 0 2px 6px rgba(30, 126, 52, 0.08);
@@ -11434,27 +11444,27 @@ body.theme-light {
 }
 
 [data-theme="light"] .cost-table-wrap {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
 }
 
 [data-theme="light"] .cost-breakdown-table th {
-  background: #faf8f5;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
   color: var(--muted);
 }
 
 [data-theme="light"] .cost-breakdown-table td {
-  border-bottom: 1px solid #ede7dc;
+  border-bottom: 1px solid var(--line);
   color: var(--text);
 }
 
 [data-theme="light"] .breakdown-row.preview {
-  background: #fffbf5;
+  background: var(--surface);
 }
 
 [data-theme="light"] .breakdown-row.confirmed {
-  background: #f8fdf8;
+  background: var(--surface);
 }
 
 [data-theme="light"] .driver-text.confirmed {
@@ -11480,19 +11490,19 @@ body.theme-light {
 }
 
 [data-theme="light"] .row-breakdown-total td {
-  background: #ece7de;
+  background: var(--low);
   border-top: 2px solid var(--lime);
 }
 
 [data-theme="light"] .tco-card {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
 
 /* ─── PiP Viewer & Floating Windows ──────────────────────────────────────── */
 [data-theme="light"] .pip-workbench {
-  background: #fdfcf9;
+  background: var(--surface);
   border-color: var(--line);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05);
 }
@@ -11516,13 +11526,13 @@ body.theme-light {
 }
 
 [data-theme="light"] .report-editor-card {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
 }
 
 [data-theme="light"] .report-editor-topbar {
-  background: #faf8f5;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
@@ -11532,7 +11542,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .checkbox-pill {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--text);
 }
@@ -11542,7 +11552,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .report-mode-btn {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--text);
 }
@@ -11554,19 +11564,19 @@ body.theme-light {
 }
 
 [data-theme="light"] .report-sheet {
-  background: #ffffff;
+  background: var(--surface);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
 }
 
 [data-theme="light"] .editor-section {
-  background: #faf8f5;
+  background: var(--surface);
   border-color: var(--line);
 }
 
 [data-theme="light"] .editor-field input,
 [data-theme="light"] .editor-field select,
 [data-theme="light"] .editor-field textarea {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--text);
 }
@@ -11581,7 +11591,7 @@ body.theme-light {
 }
 
 [data-theme="light"] .btn-report-draft {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--line);
   color: var(--text);
 }
@@ -11594,7 +11604,7 @@ body.theme-light {
 
 /* ─── Hero / Landing Page Adaptations ────────────────────────────────────── */
 [data-theme="light"] .hero {
-  background: linear-gradient(90deg, #f7f5f0f0 15%, #f2decce0 100%);
+  background: linear-gradient(90deg, var(--bg) 15%, #d5dbe2 100%);
   border-bottom: 1px solid var(--line);
 }
 
@@ -11622,16 +11632,16 @@ body.theme-light {
 }
 
 [data-theme="light"] *::-webkit-scrollbar-thumb {
-  background: #d8d0c3;
+  background: var(--line);
   border-radius: 3px;
 }
 
 [data-theme="light"] *::-webkit-scrollbar-thumb:hover {
-  background: #b5a999;
+  background: #8f98a3;
 }
 
 [data-theme="light"] .workspace-window-header {
-  background: #f6f3ee;
+  background: var(--low);
   border-bottom-color: #dfd7cc;
 }
 
@@ -11642,24 +11652,24 @@ body.theme-light {
 }
 
 [data-theme="light"] .workspace-closed-placeholder {
-  background: #fdfcf9;
-  color: #71685e;
+  background: var(--surface);
+  color: var(--muted);
 }
 
 [data-theme="light"] .workspace-closed-placeholder h4 {
-  color: #1f1b16;
+  color: var(--text);
 }
 
 [data-theme="light"] .panel-action-btn {
-  background: #fdfcf9;
-  border-color: #dfd7cc;
-  color: #71685e;
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--muted);
 }
 
 [data-theme="light"] .panel-action-btn:hover {
-  background: #f3ede2;
+  background: var(--low);
   border-color: #c76a16;
-  color: #1f1b16;
+  color: var(--text);
 }
 
 [data-theme="light"] .panel-action-btn.panel-drag-handle:active {
@@ -11930,4 +11940,227 @@ body.theme-light {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 180px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIGHT MODE — FINAL NEUTRAL GREY POLISH
+   Kept last so the dark-only viewport/HUD rules above cannot leak into Light.
+   Dark Mode rules are intentionally untouched.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Main workspace sections */
+[data-theme="light"] .workspace-main-area,
+[data-theme="light"] .workspace-center-column,
+[data-theme="light"] .workspace-center-column .workspace-main-area,
+[data-theme="light"] .multi-viewport-root,
+[data-theme="light"] .single-viewport-pane,
+[data-theme="light"] .work-window,
+[data-theme="light"] .work-window-body,
+[data-theme="light"] .left-contextual-panel,
+[data-theme="light"] .mfg-decision-panel {
+  background: var(--bg);
+}
+
+/* Toolbars and headers use the darker grey tier */
+[data-theme="light"] .top-ribbon,
+[data-theme="light"] .viewport-top-toolbar,
+[data-theme="light"] .work-window-topbar,
+[data-theme="light"] .contextual-panel-header,
+[data-theme="light"] .mfg-decision-header,
+[data-theme="light"] .cost-panel-header,
+[data-theme="light"] .pip-header,
+[data-theme="light"] .floating-panel-header,
+[data-theme="light"] .damage-heatmap-topbar {
+  background: var(--toolbar-bg);
+  color: var(--text);
+  border-color: var(--high);
+}
+
+/* Panels, cards, and dialogs use the medium/light grey tiers */
+[data-theme="light"] .mfg-panel,
+[data-theme="light"] .matcomp-panel,
+[data-theme="light"] .features-panel,
+[data-theme="light"] .cost-estimation-panel,
+[data-theme="light"] .floating-panel-container,
+[data-theme="light"] .pip-workbench,
+[data-theme="light"] .modal-content-custom,
+[data-theme="light"] .report-editor-card,
+[data-theme="light"] .workspace-center-pip-placeholder,
+[data-theme="light"] .health-card,
+[data-theme="light"] .cost-headline-card,
+[data-theme="light"] .tco-card,
+[data-theme="light"] .inspection-text-block {
+  background: var(--panel-bg);
+  border-color: var(--high);
+  box-shadow: 0 8px 24px rgba(32, 37, 43, 0.12);
+}
+
+[data-theme="light"] .work-window-body .mfg-panel,
+[data-theme="light"] .work-window-body .matcomp-panel,
+[data-theme="light"] .work-window-body .whatif-container {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+[data-theme="light"] .comp-img-card,
+[data-theme="light"] .subtab-pill,
+[data-theme="light"] .mfg-choice-card,
+[data-theme="light"] .mfg-reasoning-card,
+[data-theme="light"] .qty-btn,
+[data-theme="light"] .tier-pill,
+[data-theme="light"] .checkbox-pill,
+[data-theme="light"] .report-mode-btn,
+[data-theme="light"] .btn-report-draft,
+[data-theme="light"] .cost-table-wrap,
+[data-theme="light"] .editor-section {
+  background: var(--card-bg);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+/* 3D and drawing canvases */
+[data-theme="light"] .viewport,
+[data-theme="light"] .pip-canvas-area,
+[data-theme="light"] .viewport-panes-container,
+[data-theme="light"] .drawing-viewport-wrap,
+[data-theme="light"] .damage-heatmap-overlay {
+  background: var(--viewport-bg);
+}
+
+/* Floating viewport chrome */
+[data-theme="light"] .viewport-controls-vertical,
+[data-theme="light"] .pip-controls-toolbar,
+[data-theme="light"] .pip-dims-overlay,
+[data-theme="light"] .viewport-pane-header,
+[data-theme="light"] .comp-img-thumb-wrap,
+[data-theme="light"] .comp-img-bottom-actions,
+[data-theme="light"] .img-icon-btn {
+  background: var(--toolbar-bg);
+  border-color: var(--high);
+  color: var(--text);
+}
+
+[data-theme="light"] .comp-img-thumb-wrap .no-preview {
+  color: var(--muted);
+}
+
+[data-theme="light"] .empty-viewport-pane {
+  background: radial-gradient(circle at center, var(--surface) 0%, var(--viewport-bg) 80%);
+  border-color: var(--high);
+}
+
+/* Dialog backdrops */
+[data-theme="light"] .modal-backdrop-custom,
+[data-theme="light"] .report-backdrop,
+[data-theme="light"] .report-dialog-backdrop,
+[data-theme="light"] .drawing-modal-backdrop {
+  background: var(--dialog-backdrop);
+}
+
+/* Semantic banners remain legible on the neutral grey surfaces */
+[data-theme="light"] .mfg-dep-banner,
+[data-theme="light"] .mfg-cat-inline-warning {
+  background: rgba(183, 85, 8, 0.09);
+  border-color: var(--primary);
+}
+
+/* Docking affordances */
+[data-theme="light"] .workspace-dock-drop-overlay {
+  background: rgba(45, 51, 58, 0.42);
+}
+
+[data-theme="light"] .dock-drop-zone {
+  background: rgba(238, 240, 243, 0.82);
+  border-color: var(--high);
+}
+
+[data-theme="light"] .dock-drop-zone.hovered {
+  background: rgba(183, 85, 8, 0.12);
+  border-color: var(--primary);
+  box-shadow: inset 0 0 24px rgba(183, 85, 8, 0.14);
+}
+
+[data-theme="light"] .dock-drag-ghost-badge {
+  background: var(--dialog-bg);
+  border-color: var(--high);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgba(32, 37, 43, 0.22);
+}
+
+/* Dimensions HUD — colours only; displayed dimensions and tolerances unchanged */
+[data-theme="light"] .viewport-dims-hud {
+  background: rgba(241, 243, 245, 0.96);
+  border-color: var(--high);
+  box-shadow: 0 8px 24px rgba(32, 37, 43, 0.18);
+}
+
+[data-theme="light"] .dims-hud-title {
+  color: var(--primary);
+  border-bottom-color: var(--line);
+}
+
+[data-theme="light"] .dims-hud-k,
+[data-theme="light"] .dim-tol-val,
+[data-theme="light"] .dim-row-provenance,
+[data-theme="light"] .dim-reason-snippet {
+  color: var(--muted);
+}
+
+[data-theme="light"] .dims-hud-v,
+[data-theme="light"] .dim-val-highlight,
+[data-theme="light"] .dim-conf-sub {
+  color: #176529;
+}
+
+[data-theme="light"] .dims-status-badge.status-measured,
+[data-theme="light"] .dim-status-pill.status-measured {
+  background: rgba(30, 126, 52, 0.1);
+  color: #176529;
+  border-color: rgba(30, 126, 52, 0.35);
+}
+
+[data-theme="light"] .dims-status-badge.status-estimated,
+[data-theme="light"] .dim-status-pill.status-estimated {
+  background: rgba(183, 85, 8, 0.1);
+  color: #944500;
+  border-color: rgba(183, 85, 8, 0.35);
+}
+
+[data-theme="light"] .dims-status-badge.status-unknown,
+[data-theme="light"] .dim-status-pill.status-unknown {
+  background: rgba(91, 100, 112, 0.1);
+  color: var(--muted);
+  border-color: rgba(91, 100, 112, 0.3);
+}
+
+[data-theme="light"] .dims-toggle-pill {
+  background: var(--card-bg);
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+[data-theme="light"] .dims-toggle-pill:hover,
+[data-theme="light"] .dim-table-row:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+[data-theme="light"] .dims-toggle-pill.active {
+  background: rgba(30, 126, 52, 0.1);
+  border-color: var(--lime);
+  color: #176529;
+}
+
+[data-theme="light"] .dim-table-row {
+  background: var(--card-bg);
+  border-color: var(--line);
+}
+
+[data-theme="light"] .dim-symbol {
+  color: var(--primary);
+}
+
+[data-theme="light"] .dim-radius-hint {
+  color: #944500;
 }

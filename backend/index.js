@@ -131,119 +131,254 @@ async function attachConditionAssessment({ analysis, images }) {
 
   analysis.conditionAssessment.damageMasks = [];
   try {
-    const images = validateImages(req.body?.images);
-    const reference = sanitizeReference(req.body?.reference);
+    const masks = await generateDamageMasks({
+      images,
+      observedTypes: analysis.conditionAssessment.observedDefectTypes || [],
+    });
+    analysis.conditionAssessment.damageMasks = masks;
+    const primaryMask = masks.reduce((best, mask) => {
+      if (!best) return mask;
+      return mask.stats.damageRatioOfComponent > best.stats.damageRatioOfComponent ? mask : best;
+    }, null);
+    analysis.conditionAssessment = applyPixelEvidence(
+      analysis.conditionAssessment,
+      primaryMask?.stats
+    );
+  } catch (maskError) {
+    // Never fall back to broad rectangles: an unavailable mask simply means
+    // no areas are painted and no pixel-derived score is asserted.
+    console.warn('[analyze-component] Pixel damage segmentation failed:', maskError?.message);
+    analysis.conditionAssessment.damageMaskUnavailable = true;
+    analysis.conditionAssessment = applyPixelEvidence(analysis.conditionAssessment, null);
+  }
+  return analysis.conditionAssessment;
+}
 
-    // Optional vision preprocessing — fail-open by default (null if disabled/offline/error)
-    let visionEvidence = null;
-    let rawVisionResult = null;
-    let spatialEvidenceRef = null;
-    if (isVisionEnabled()) {
-      try {
-        const visionResult = await callVisionService(images, reference);
-        if (visionResult) {
-          rawVisionResult = visionResult;
-          spatialEvidenceRef = storeSpatialEvidence(visionResult);
-          visionEvidence = buildVisionEvidenceSummary(visionResult, spatialEvidenceRef);
-        }
-      } catch (visionError) {
-        // callVisionService should never throw (resolves null on error), but guard anyway
-        console.warn('[analyze-component] Unexpected vision error (continuing without vision):', visionError?.message);
-      }
-    }
+function summarizeDatasetResult(result) {
+  if (!result) return { status: 'not_attempted' };
+  return {
+    status: result.status,
+    confidence: result.confidence || 0,
+    provenance: result.analysis?.provenance || null,
+    validation: result.analysis?.validation || null,
+    candidates: (result.candidates || []).slice(0, 5).map((candidate) => ({
+      id: candidate.id,
+      dataset: candidate.dataset,
+      confidence: candidate.confidence,
+      accepted: candidate.accepted,
+      scores: candidate.scores,
+      violations: candidate.violations,
+    })),
+    diagnostics: result.diagnostics || {},
+  };
+}
 
-    let analysis = null;
-    let solverMode = null;
+class ReconstructionCancelledError extends Error {
+  constructor() {
+    super('Reconstruction cancelled.');
+    this.name = 'ReconstructionCancelledError';
+    this.status = 499;
+  }
+}
 
-    emit(ANALYSIS_STAGES.DATASET, 'running');
-    let datasetResult = null;
+async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled = () => false }) {
+  const emit = (stage, status, detail = {}) => {
+    if (!isCancelled()) onProgress({ stage, status, ...detail });
+  };
+  const checkCancelled = () => {
+    if (isCancelled()) throw new ReconstructionCancelledError();
+  };
+
+  emit(ANALYSIS_STAGES.IMAGE, 'running');
+  let images;
+  try {
+    images = validateImages(body?.images);
+  } catch (error) {
+    error.stage = ANALYSIS_STAGES.IMAGE;
+    throw error;
+  }
+  emit(ANALYSIS_STAGES.IMAGE, 'complete', { completed: images.length, total: images.length });
+  checkCancelled();
+
+  const reference = sanitizeReference(body?.reference);
+
+  emit(ANALYSIS_STAGES.GEOMETRY, 'running');
+  let visionEvidence = null;
+  let rawVisionResult = null;
+  let spatialEvidenceRef = null;
+  if (isVisionEnabled()) {
     try {
-      datasetResult = await retrieveDatasetModel({ images, reference, visionEvidence });
-    } catch (datasetError) {
-      // The adapter is expected to fail open; this guard keeps a malformed
-      // service response from taking down the whole analysis pipeline.
-      console.warn('[analyze-component] Unexpected dataset retrieval error:', datasetError?.message);
-      datasetResult = {
-        status: 'unavailable',
-        confidence: 0,
-        candidates: [],
-        diagnostics: { reason: datasetError?.message || 'Dataset retrieval failed.' },
-      };
+      const visionResult = await callVisionService(images, reference);
+      if (visionResult) {
+        rawVisionResult = visionResult;
+        spatialEvidenceRef = storeSpatialEvidence(visionResult);
+        visionEvidence = buildVisionEvidenceSummary(visionResult, spatialEvidenceRef);
+      }
+    } catch (visionError) {
+      // callVisionService should never throw (resolves null on error), but guard anyway
+      console.warn('[analyze-component] Unexpected vision error (continuing without vision):', visionError?.message);
     }
+  }
+  emit(ANALYSIS_STAGES.GEOMETRY, 'complete');
+  checkCancelled();
 
-    if (datasetResult.status === 'match' && datasetResult.analysis) {
-      analysis = datasetResult.analysis;
-      solverMode = 'dataset_retrieval';
+  let analysis = null;
+  let solverMode = null;
+
+  emit(ANALYSIS_STAGES.DATASET, 'running');
+  let datasetResult = null;
+  try {
+    datasetResult = await retrieveDatasetModel({ images, reference, visionEvidence });
+  } catch (datasetError) {
+    // The adapter is expected to fail open; this guard keeps a malformed
+    // service response from taking down the whole analysis pipeline.
+    console.warn('[analyze-component] Unexpected dataset retrieval error:', datasetError?.message);
+    datasetResult = {
+      status: 'unavailable',
+      confidence: 0,
+      candidates: [],
+      diagnostics: { reason: datasetError?.message || 'Dataset retrieval failed.' },
+    };
+  }
+
+  if (datasetResult.status === 'match' && datasetResult.analysis) {
+    analysis = datasetResult.analysis;
+    solverMode = 'dataset_retrieval';
+    emit(ANALYSIS_STAGES.DATASET, 'complete', {
+      message: `Matched ${datasetResult.analysis.datasetModel?.assetId || 'dataset asset'} with confidence ${Math.round((datasetResult.confidence || 0) * 100)}%.`,
+      confidence: datasetResult.confidence,
+      source: datasetResult.analysis.provenance?.dataset || 'dataset',
+    });
+    emit(ANALYSIS_STAGES.GEMINI, 'skipped', {
+      message: 'Dataset match supplied geometry; Gemini reconstruction skipped.',
+    });
+  } else {
+    // No reliable dataset hit: keep the existing vision solver, then Gemini.
+    const visionResolution = resolveGeometryFromVision(rawVisionResult, reference);
+    if (visionResolution.canResolveWithoutGemini && visionResolution.confidence >= 0.80) {
+      analysis = visionResolution.analysis;
+      solverMode = "deterministic_cv";
       emit(ANALYSIS_STAGES.DATASET, 'complete', {
-        message: `Matched ${datasetResult.analysis.datasetModel?.assetId || 'dataset asset'} with confidence ${Math.round((datasetResult.confidence || 0) * 100)}%.`,
-        confidence: datasetResult.confidence,
-        source: datasetResult.analysis.provenance?.dataset || 'dataset',
+        message: 'No reliable dataset match; resolved from measured vision evidence.',
       });
       emit(ANALYSIS_STAGES.GEMINI, 'skipped', {
-        message: 'Dataset match supplied geometry; Gemini reconstruction skipped.',
+        message: 'Measured vision evidence supplied geometry; Gemini reconstruction skipped.',
       });
     } else {
-      // No reliable dataset hit: keep the existing vision solver, then Gemini.
-      const visionResolution = resolveGeometryFromVision(rawVisionResult, reference);
-      if (visionResolution.canResolveWithoutGemini && visionResolution.confidence >= 0.80) {
-        analysis = visionResolution.analysis;
-        solverMode = "deterministic_cv";
-      }
+      emit(ANALYSIS_STAGES.DATASET, rawVisionResult ? 'complete' : 'skipped', {
+        message: datasetResult.diagnostics?.reason
+          || (rawVisionResult
+            ? 'No reliable dataset match; using Gemini reconstruction.'
+            : 'Dataset retrieval unavailable; using Gemini reconstruction.'),
+      });
+    }
+  }
+  checkCancelled();
 
-      // 2. If vision alone is ambiguous or incomplete, use Gemini as assist
-      if (!analysis) {
-        try {
-          const geminiRaw = await analyzeComponent({ images, reference, visionEvidence });
-          // Reconcile Gemini's high-level semantic proposal with exact physical measurements & vision
-          analysis = reconcileGeminiWithVision(geminiRaw, rawVisionResult, reference);
-          solverMode = "gemini_assisted";
-        } catch (geminiError) {
-          console.warn('[analyze-component] Gemini assist failed or unavailable (falling back to deterministic solver):', geminiError?.message);
-          // 3. Guaranteed zero-crash fallback: synthesized engineering geometry adhering to ISO standards
-          analysis = fallbackDeterministicAnalysis(reference, geminiError?.message || 'Gemini assist offline', images);
-          solverMode = "deterministic_fallback";
-        }
-      }
+  if (!analysis) {
+    emit(ANALYSIS_STAGES.GEMINI, 'running');
+    try {
+      const geminiRaw = await analyzeComponent({ images, reference, visionEvidence });
+      // Reconcile Gemini's high-level semantic proposal with exact physical measurements & vision
+      analysis = reconcileGeminiWithVision(geminiRaw, rawVisionResult, reference);
+      solverMode = "gemini_assisted";
+      emit(ANALYSIS_STAGES.GEMINI, 'complete');
+    } catch (geminiError) {
+      console.warn('[analyze-component] Gemini assist failed or unavailable (falling back to deterministic solver):', geminiError?.message);
+      // Guaranteed zero-crash fallback: synthesized engineering geometry adhering to ISO standards
+      analysis = fallbackDeterministicAnalysis(reference, geminiError?.message || 'Gemini assist offline', images);
+      solverMode = "deterministic_fallback";
+      emit(ANALYSIS_STAGES.GEMINI, 'complete', {
+        warning: 'Gemini unavailable; deterministic fallback used.',
+      });
+    }
+  }
+  checkCancelled();
 
-      // Anchor spatial evidence to analysis object
-      if (analysis && typeof analysis === 'object') {
-        if (spatialEvidenceRef) {
-          analysis.spatialEvidenceRef = spatialEvidenceRef;
-        }
-        if (rawVisionResult) {
-          analysis.spatialObservations = extractVisionObservations(rawVisionResult);
-        }
-      }
+  if (body?.includeCondition === true) {
+    await attachConditionAssessment({ analysis, images });
+    checkCancelled();
+  }
 
-      // Build response — visionDiagnostics is additive and optional
-      const responseBody = {
-        analysis,
-        solverMode,
-        spatialEvidenceRef,
-      };
-      if (visionEvidence) {
-        responseBody.visionDiagnostics = {
-          status: visionEvidence.status,
-          images: visionEvidence.images.map((img) => ({
-            image_index: img.image_index,
-            segmentation_status: img.segmentation?.status ?? 'unavailable',
-            candidate_count: img.segmentation?.candidate_count ?? 0,
-            depth_status: img.depth?.status ?? 'unavailable',
-            opencv_contour_count: img.opencv?.contour_count ?? 0,
-            warnings: [
-              ...(img.opencv?.warnings || []),
-              ...(img.depth?.warnings || []),
-            ],
-          })),
-          warnings: visionEvidence.warnings || [],
-        };
-      }
+  // Anchor spatial evidence to analysis object
+  if (analysis && typeof analysis === 'object') {
+    if (spatialEvidenceRef) {
+      analysis.spatialEvidenceRef = spatialEvidenceRef;
+    }
+    if (rawVisionResult) {
+      analysis.spatialObservations = extractVisionObservations(rawVisionResult);
+    }
+  }
+
+  const responseBody = {
+    analysis,
+    solverMode,
+    datasetRetrieval: summarizeDatasetResult(datasetResult),
+    spatialEvidenceRef,
+  };
+  if (visionEvidence) {
+    responseBody.visionDiagnostics = {
+      status: visionEvidence.status,
+      images: visionEvidence.images.map((img) => ({
+        image_index: img.image_index,
+        segmentation_status: img.segmentation?.status ?? 'unavailable',
+        candidate_count: img.segmentation?.candidate_count ?? 0,
+        depth_status: img.depth?.status ?? 'unavailable',
+        opencv_contour_count: img.opencv?.contour_count ?? 0,
+        warnings: [
+          ...(img.opencv?.warnings || []),
+          ...(img.depth?.warnings || []),
+        ],
+      })),
+      warnings: visionEvidence.warnings || [],
+    };
+  }
+  return responseBody;
+}
+
 
       app.post("/api/analyze-component", async (req, res) => {
         try {
           res.json(await runComponentAnalysis({ body: req.body }));
         } catch (error) {
           res.status(error.status || 500).json({ error: error.message || "Analysis failed." });
+        }
+      });
+
+      app.post("/api/analyze-component/stream", async (req, res) => {
+        res.status(200);
+        res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders?.();
+
+        let cancelled = false;
+        res.on('close', () => {
+          if (!res.writableEnded) cancelled = true;
+        });
+
+        const emit = (event) => {
+          if (cancelled || res.destroyed || res.writableEnded) return;
+          res.write(`${JSON.stringify(event)}\n`);
+        };
+
+        try {
+          const result = await runComponentAnalysis({
+            body: req.body,
+            onProgress: emit,
+            isCancelled: () => cancelled,
+          });
+          if (cancelled || res.destroyed) return;
+          emit({ type: 'result', ...result });
+          res.end();
+        } catch (error) {
+          if (cancelled || res.destroyed) return;
+          emit({
+            type: 'failed',
+            stage: error.stage,
+            message: error.message || 'Analysis failed.',
+          });
+          res.end();
         }
       });
 

@@ -3,6 +3,11 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { executeRecipe, sanitizeRecipe } from "./recipe.js";
 import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup, buildCompoundGearGroup, buildFlangedShaftGroup, buildPinionShaftGroup } from "./geo.js";
 
+// Built geometry is immutable for a given analysis object. Validation and each
+// viewport previously rebuilt the same meshes from scratch; share the geometry
+// and clone only the lightweight Object3D wrappers per consumer.
+const modelCache = new WeakMap();
+
 export const COMPONENT_LABELS = {
   "pinion shaft": "HELICAL PINION SHAFT",
   "compound gear": "COMPOUND GEAR",
@@ -879,6 +884,7 @@ export function buildAssemblyScene(machineryState, options = {}) {
     metalness: 0.85,
     roughness: 0.35,
   });
+  shaftMat.userData.appearanceRole = 'shaft';
   const pShaftMesh = new THREE.Mesh(pShaftGeo, shaftMat);
   pShaftMesh.rotation.x = Math.PI / 2;
   pShaftMesh.userData = { featureType: 'shaft', role: 'drive_shaft' };
@@ -948,6 +954,7 @@ export function buildAssemblyScene(machineryState, options = {}) {
     transparent: true,
     opacity: 0.22,
   });
+  housingMat.userData.appearanceRole = 'housing';
   const housingBox = new THREE.Mesh(housingGeo, housingMat);
   housingBox.position.set(centerDist / 2, 0, 0);
   assemblySubGroup.add(housingBox);
@@ -959,6 +966,7 @@ export function buildAssemblyScene(machineryState, options = {}) {
     metalness: 0.8,
     roughness: 0.5,
   });
+  plateMat.userData.appearanceRole = 'plate';
   const plateMesh = new THREE.Mesh(plateGeo, plateMat);
   plateMesh.position.set(centerDist / 2, -frameH / 2 - 0.2, 0);
   assemblySubGroup.add(plateMesh);
