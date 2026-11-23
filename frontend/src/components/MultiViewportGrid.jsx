@@ -18,7 +18,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { buildModel, buildAssemblyScene, dimensionList, resolveLabel } from '../lib/reconstruct.js';
 import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from '../lib/model-illumination.js';
-import { createThreeThemeSync } from '../lib/three-theme.js';
+import { createThreeThemeSync, getWireframeAppearance } from '../lib/three-theme.js';
 import { getAllComponents, ROLE_TYPES } from '../lib/machinery-context.js';
 import { build3DDimensionsGroup } from '../lib/three-dimensions.js';
 import { DamageHeatmapOverlay } from './DamageHeatmapOverlay.jsx';
@@ -47,13 +47,16 @@ function SingleViewportCanvas({
   resetKey,
   selectedFeatureId,
   hoveredFeatureId,
+  modelBaseColor = null,
+  viewportBackgroundColor = null,
   onSelectComponent,
   headerControls = null,
 }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, stress, dims, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, stress, dims, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId };
+  const themeSyncRef = useRef(null);
+  const options = useRef({ wire, grid, stress, dims, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId, modelBaseColor, viewportBackgroundColor });
+  options.current = { wire, grid, stress, dims, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId, modelBaseColor, viewportBackgroundColor };
 
   if (!analysis && !isAssembly) {
     return (
@@ -87,7 +90,14 @@ function SingleViewportCanvas({
     const fill = new THREE.PointLight('#b76308', 1.1, 30);
     fill.position.set(-6, -4, 8);
     scene.add(fill);
-    const themeSync = createThreeThemeSync({ scene, renderer, lights: { ambient, key, fill } });
+    const themeSync = createThreeThemeSync({
+      scene,
+      renderer,
+      lights: { ambient, key, fill },
+      baseColor: options.current.modelBaseColor,
+      backgroundColor: options.current.viewportBackgroundColor,
+    });
+    themeSyncRef.current = themeSync;
     themeSync.update(options.current.theme);
 
     let mainGroup;
@@ -126,7 +136,15 @@ function SingleViewportCanvas({
       if (node.isMesh) originals.set(node.uuid, node.material);
     });
 
-    const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
+    const wireAppearance = getWireframeAppearance(options.current.theme);
+    const wireMaterial = new THREE.MeshBasicMaterial({
+      color: wireAppearance.color,
+      wireframe: true,
+      transparent: true,
+      opacity: wireAppearance.opacity,
+      blending: wireAppearance.blending,
+      depthWrite: wireAppearance.depthWrite,
+    });
     const selectHighlightMat = new THREE.MeshStandardMaterial({
       color: '#c9f88d',
       emissive: '#c9f88d',
@@ -234,7 +252,17 @@ function SingleViewportCanvas({
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
       const isSel = Boolean(options.current.selectedFeatureId);
-      const materialKey = `${options.current.wire ? 'w' : ''}|${activeFeatureId ?? ''}`;
+      const nextWireAppearance = getWireframeAppearance(options.current.theme);
+      if (wireMaterial.userData.theme !== options.current.theme) {
+        wireMaterial.color.set(nextWireAppearance.color);
+        wireMaterial.opacity = nextWireAppearance.opacity;
+        wireMaterial.blending = nextWireAppearance.blending;
+        wireMaterial.depthWrite = nextWireAppearance.depthWrite;
+        wireMaterial.transparent = true;
+        wireMaterial.needsUpdate = true;
+        wireMaterial.userData.theme = options.current.theme;
+      }
+      const materialKey = `${options.current.wire ? 'w' : ''}|${options.current.theme}|${activeFeatureId ?? ''}`;
 
       if (materialKey !== appliedKey) {
         appliedKey = materialKey;
@@ -290,10 +318,18 @@ function SingleViewportCanvas({
       hoverHighlightMat.dispose();
       illuminationLight.dispose();
       themeSync.dispose();
+      themeSyncRef.current = null;
       renderer.dispose();
       host.replaceChildren();
     };
   }, [analysis, isAssembly, machineryState]);
+
+  useEffect(() => {
+    themeSyncRef.current?.setAppearance({
+      baseColor: modelBaseColor,
+      backgroundColor: viewportBackgroundColor,
+    });
+  }, [modelBaseColor, viewportBackgroundColor]);
 
   useEffect(() => {
     resetViewRef.current?.();
@@ -383,6 +419,8 @@ export function MultiViewportGrid({
   resetKey,
   selectedFeatureId,
   hoveredFeatureId,
+  modelBaseColor = null,
+  viewportBackgroundColor = null,
   ready,
   onOpenImageManager,
 }) {
@@ -613,6 +651,8 @@ export function MultiViewportGrid({
             illumination={illumination}
             illuminationIntensity={illuminationIntensity}
             theme={theme}
+            modelBaseColor={modelBaseColor}
+            viewportBackgroundColor={viewportBackgroundColor}
             resetKey={resetKey}
             selectedFeatureId={selectedFeatureId}
             hoveredFeatureId={hoveredFeatureId}
@@ -644,6 +684,8 @@ export function MultiViewportGrid({
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
                   theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -674,6 +716,8 @@ export function MultiViewportGrid({
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
                   theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -708,6 +752,8 @@ export function MultiViewportGrid({
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
                   theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -737,6 +783,8 @@ export function MultiViewportGrid({
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
                   theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -766,6 +814,8 @@ export function MultiViewportGrid({
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
                   theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -816,6 +866,8 @@ export function MultiViewportGrid({
                   illumination={illumination}
                   illuminationIntensity={illuminationIntensity}
                   theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -842,6 +894,8 @@ export function MultiViewportGrid({
             illumination={illumination}
             illuminationIntensity={illuminationIntensity}
             theme={theme}
+            modelBaseColor={modelBaseColor}
+            viewportBackgroundColor={viewportBackgroundColor}
             resetKey={resetKey}
             selectedFeatureId={selectedFeatureId}
             hoveredFeatureId={hoveredFeatureId}

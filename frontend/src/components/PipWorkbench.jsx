@@ -80,6 +80,8 @@ export function PipWorkbench({
   setResetKey,
   selectedFeatureId,
   hoveredFeatureId,
+  modelBaseColor = null,
+  viewportBackgroundColor = null,
   label,
   conf,
   onDockToMain,
@@ -344,6 +346,8 @@ export function PipWorkbench({
                   illuminationIntensity={illuminationIntensity}
                   theme={theme}
                   resetKey={resetKey}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                 />
               ) : (
                 <ReconstructedViewport
@@ -359,6 +363,8 @@ export function PipWorkbench({
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                 />
               )}
             </div>
@@ -396,11 +402,12 @@ export function PipWorkbench({
   );
 }
 
-function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, illumination = false, illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY, theme = 'dark', resetKey }) {
+function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, illumination = false, illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY, theme = 'dark', resetKey, modelBaseColor = null, viewportBackgroundColor = null }) {
   const mount = useRef(null);
   const resetRef = useRef(null);
-  const options = useRef({ wire, grid, stress, autoRotate, illumination, illuminationIntensity, theme });
-  options.current = { wire, grid, stress, autoRotate, illumination, illuminationIntensity, theme };
+  const themeSyncRef = useRef(null);
+  const options = useRef({ wire, grid, stress, autoRotate, illumination, illuminationIntensity, theme, modelBaseColor, viewportBackgroundColor });
+  options.current = { wire, grid, stress, autoRotate, illumination, illuminationIntensity, theme, modelBaseColor, viewportBackgroundColor };
 
   useEffect(() => {
     const host = mount.current;
@@ -415,7 +422,14 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, ill
     const key = new THREE.DirectionalLight('#ffb77f', 0.85);
     key.position.set(6, 8, 10);
     scene.add(key);
-    const themeSync = createThreeThemeSync({ scene, renderer, lights: { ambient, key } });
+    const themeSync = createThreeThemeSync({
+      scene,
+      renderer,
+      lights: { ambient, key },
+      baseColor: options.current.modelBaseColor,
+      backgroundColor: options.current.viewportBackgroundColor,
+    });
+    themeSyncRef.current = themeSync;
     themeSync.update(options.current.theme);
 
     const { group } = buildAssemblyScene(machineryState);
@@ -523,10 +537,18 @@ function PipAssemblyCanvas({ machineryState, wire, grid, stress, autoRotate, ill
       });
       illuminationLight.dispose();
       themeSync.dispose();
+      themeSyncRef.current = null;
       renderer.dispose();
       host.replaceChildren();
     };
   }, [machineryState]);
+
+  useEffect(() => {
+    themeSyncRef.current?.setAppearance({
+      baseColor: modelBaseColor,
+      backgroundColor: viewportBackgroundColor,
+    });
+  }, [modelBaseColor, viewportBackgroundColor]);
 
   useEffect(() => {
     resetRef.current?.();

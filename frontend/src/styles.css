@@ -6092,6 +6092,40 @@ nav {
   display: none;
 }
 
+.ribbon-color-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.ribbon-color-picker input[type="color"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.ribbon-color-picker input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.ribbon-color-picker input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.top-ribbon.collapsed .ribbon-color-picker .ribbon-label,
+.top-ribbon.collapsed .ribbon-color-picker {
+  /* keep swatch visible in collapsed mode */
+}
+
 .top-ribbon.collapsed .ribbon-item {
   padding: 4px 6px;
 }

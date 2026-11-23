@@ -11,7 +11,7 @@ import { buildEngineeringContext, getEngineeringSuggestions } from './lib/engine
 import { buildDrawingModel, renderDrawingToSvg, exportSvg, exportPng, exportPdf } from './lib/drawing/index.js';
 import { buildModel, buildAssemblyScene, dimensionList, resolveLabel, validateReconstructedModel } from './lib/reconstruct.js';
 import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from './lib/model-illumination.js';
-import { createThreeThemeSync } from './lib/three-theme.js';
+import { createThreeThemeSync, getWireframeAppearance } from './lib/three-theme.js';
 import {
   PARAM_DEFINITIONS,
   isParamActive,
@@ -190,11 +190,12 @@ function GearCanvas({ theme = 'dark' }) {
   return <div className="gear-canvas" ref={mount} aria-hidden="true" />;
 }
 
-function ReconstructedViewport({ analysis, images = [], wire, grid, stress, autoRotate, illumination = false, illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY, theme = 'dark', resetKey, selectedFeatureId, hoveredFeatureId }) {
+function ReconstructedViewport({ analysis, images = [], wire, grid, stress, autoRotate, illumination = false, illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY, theme = 'dark', resetKey, selectedFeatureId, hoveredFeatureId, modelBaseColor = null, viewportBackgroundColor = null }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId };
+  const themeSyncRef = useRef(null);
+  const options = useRef({ wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId, modelBaseColor, viewportBackgroundColor });
+  options.current = { wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId, modelBaseColor, viewportBackgroundColor };
 
   useEffect(() => {
     const host = mount.current;
@@ -206,7 +207,14 @@ function ReconstructedViewport({ analysis, images = [], wire, grid, stress, auto
     const ambient = new THREE.AmbientLight('#7a4a38', 0.6); scene.add(ambient);
     const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
     const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
-    const themeSync = createThreeThemeSync({ scene, renderer, lights: { ambient, key, fill } });
+    const themeSync = createThreeThemeSync({
+      scene,
+      renderer,
+      lights: { ambient, key, fill },
+      baseColor: options.current.modelBaseColor,
+      backgroundColor: options.current.viewportBackgroundColor,
+    });
+    themeSyncRef.current = themeSync;
     themeSync.update(options.current.theme);
     const { group } = buildModel(analysis);
     scene.add(group);
@@ -225,7 +233,15 @@ function ReconstructedViewport({ analysis, images = [], wire, grid, stress, auto
     const originals = new Map();
     group.traverse(node => { if (node.isMesh) originals.set(node.uuid, node.material); });
 
-    const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
+    const wireAppearance = getWireframeAppearance(options.current.theme);
+    const wireMaterial = new THREE.MeshBasicMaterial({
+      color: wireAppearance.color,
+      wireframe: true,
+      transparent: true,
+      opacity: wireAppearance.opacity,
+      blending: wireAppearance.blending,
+      depthWrite: wireAppearance.depthWrite,
+    });
     const selectHighlightMat = new THREE.MeshStandardMaterial({
       color: '#c9f88d',
       emissive: '#c9f88d',
@@ -268,7 +284,17 @@ function ReconstructedViewport({ analysis, images = [], wire, grid, stress, auto
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
       const isSelected = Boolean(options.current.selectedFeatureId);
-      const materialKey = `${options.current.wire ? 'w' : ''}|${activeFeatureId ?? ''}`;
+      const nextWireAppearance = getWireframeAppearance(options.current.theme);
+      if (wireMaterial.userData.theme !== options.current.theme) {
+        wireMaterial.color.set(nextWireAppearance.color);
+        wireMaterial.opacity = nextWireAppearance.opacity;
+        wireMaterial.blending = nextWireAppearance.blending;
+        wireMaterial.depthWrite = nextWireAppearance.depthWrite;
+        wireMaterial.transparent = true;
+        wireMaterial.needsUpdate = true;
+        wireMaterial.userData.theme = options.current.theme;
+      }
+      const materialKey = `${options.current.wire ? 'w' : ''}|${options.current.theme}|${activeFeatureId ?? ''}`;
 
       if (materialKey !== appliedKey) {
         appliedKey = materialKey;
@@ -309,10 +335,18 @@ function ReconstructedViewport({ analysis, images = [], wire, grid, stress, auto
       hoverHighlightMat.dispose();
       illuminationLight.dispose();
       themeSync.dispose();
+      themeSyncRef.current = null;
       renderer.dispose();
       host.replaceChildren();
     };
   }, [analysis]);
+
+  useEffect(() => {
+    themeSyncRef.current?.setAppearance({
+      baseColor: modelBaseColor,
+      backgroundColor: viewportBackgroundColor,
+    });
+  }, [modelBaseColor, viewportBackgroundColor]);
 
   useEffect(() => { resetViewRef.current?.(); }, [resetKey]);
   return (
@@ -2133,6 +2167,8 @@ function Workbench() {
   const [autoRotate, setAutoRotate] = useState(true);
   const [illumination, setIllumination] = useState(false);
   const [illuminationIntensity, setIlluminationIntensity] = useState(DEFAULT_MODEL_ILLUMINATION_INTENSITY);
+  const [modelBaseColor, setModelBaseColor] = useState(null);
+  const [viewportBackgroundColor, setViewportBackgroundColor] = useState(null);
   const [resetKey, setResetKey] = useState(0);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
@@ -2946,6 +2982,10 @@ function Workbench() {
           onToggleIllumination={() => setIllumination(on => !on)}
           illuminationIntensity={illuminationIntensity}
           onChangeIlluminationIntensity={setIlluminationIntensity}
+          modelBaseColor={modelBaseColor}
+          onChangeModelBaseColor={setModelBaseColor}
+          viewportBackgroundColor={viewportBackgroundColor}
+          onChangeViewportBackgroundColor={setViewportBackgroundColor}
           onResetView={() => setResetKey(k => k + 1)}
           viewMode={viewMode}
           onChangeViewMode={setViewMode}
@@ -3191,6 +3231,8 @@ function Workbench() {
                     resetKey={resetKey}
                     selectedFeatureId={selectedFeatureId}
                     hoveredFeatureId={hoveredFeatureId}
+                    modelBaseColor={modelBaseColor}
+                    viewportBackgroundColor={viewportBackgroundColor}
                     ready={ready}
                     onOpenImageManager={() => {
                       setSelectedContextTool('components');
@@ -3426,6 +3468,8 @@ function Workbench() {
                   setResetKey={setResetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   label={label}
                   conf={conf}
                   onDockToMain={() => setPipVisible(false)}

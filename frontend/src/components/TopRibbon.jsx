@@ -33,6 +33,10 @@ export function TopRibbon({
   onToggleIllumination,
   illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY,
   onChangeIlluminationIntensity,
+  modelBaseColor = null,
+  onChangeModelBaseColor,
+  viewportBackgroundColor = null,
+  onChangeViewportBackgroundColor,
   onResetView,
   // View Modes
   viewMode,
@@ -251,6 +255,52 @@ export function TopRibbon({
               title={`${intensityLabel}: ${Math.round(illuminationIntensity * 100)}%`}
               aria-label={intensityLabel}
             />
+          )}
+
+          <label className="ribbon-item mini ribbon-color-picker" title="Object base color (auto-generates metallic shades)">
+            <input
+              type="color"
+              value={modelBaseColor || '#b76308'}
+              onChange={(event) => onChangeModelBaseColor?.(event.target.value)}
+              disabled={!ready || !onChangeModelBaseColor}
+              aria-label="Object base color"
+              style={{ width: 28, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: ready ? 'pointer' : 'default' }}
+            />
+            {expanded && <span className="ribbon-label">Object</span>}
+          </label>
+          {modelBaseColor && (
+            <button
+              className="ribbon-item mini"
+              onClick={() => onChangeModelBaseColor?.(null)}
+              disabled={!ready}
+              title="Reset object color"
+              aria-label="Reset object color"
+            >
+              <Icon>format_color_reset</Icon>
+            </button>
+          )}
+
+          <label className="ribbon-item mini ribbon-color-picker" title="Viewport background color">
+            <input
+              type="color"
+              value={viewportBackgroundColor || '#140d07'}
+              onChange={(event) => onChangeViewportBackgroundColor?.(event.target.value)}
+              disabled={!ready || !onChangeViewportBackgroundColor}
+              aria-label="Viewport background color"
+              style={{ width: 28, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: ready ? 'pointer' : 'default' }}
+            />
+            {expanded && <span className="ribbon-label">BG</span>}
+          </label>
+          {viewportBackgroundColor && (
+            <button
+              className="ribbon-item mini"
+              onClick={() => onChangeViewportBackgroundColor?.(null)}
+              disabled={!ready}
+              title="Reset background color"
+              aria-label="Reset background color"
+            >
+              <Icon>format_color_reset</Icon>
+            </button>
           )}
 
           <button

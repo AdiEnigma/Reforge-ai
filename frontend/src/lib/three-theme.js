@@ -19,6 +19,50 @@ const FALLBACK_PALETTES = {
   },
 };
 
+export const WIREFRAME_COLORS = {
+  dark: '#39ff14',
+  light: '#0a7a32',
+};
+
+export function getWireframeAppearance(theme = 'dark') {
+  const nextTheme = normalizeTheme(theme);
+  if (nextTheme === 'light') {
+    return {
+      color: WIREFRAME_COLORS.light,
+      opacity: 0.96,
+      blending: THREE.NormalBlending,
+      depthWrite: true,
+    };
+  }
+  return {
+    color: WIREFRAME_COLORS.dark,
+    opacity: 0.92,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  };
+}
+
+function clamp01(value) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function toHex(color) {
+  return `#${color.getHexString()}`;
+}
+
+function shiftHsl(baseHex, { h = 0, s = 0, l = 0 } = {}) {
+  const color = new THREE.Color(baseHex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  color.getHSL(hsl);
+  const hue = (hsl.h + h + 1) % 1;
+  const sat = clamp01(hsl.s + s);
+  const light = clamp01(hsl.l + l);
+  color.setHSL(hue, sat, light);
+  return toHex(color);
+}
+
+
+
 // Render-only appearance presets. Geometry, displayed dimensions, engineering
 // material data, and damage/FEA heatmap colours are never touched here.
 const APPEARANCE_PRESETS = {
@@ -59,6 +103,59 @@ const APPEARANCE_PRESETS = {
     light: { color: '#93420a', metalness: 0.64, roughness: 0.31 },
   },
 };
+
+function createRolePreset(baseHex, role, theme) {
+  const isLight = normalizeTheme(theme) === 'light';
+  const darkOffsets = {
+    body: { h: 0, s: 0.02, l: 0 },
+    accent: { h: 0.01, s: 0.06, l: 0.12 },
+    rim: { h: 0.015, s: 0.08, l: 0.22 },
+    dark: { h: -0.005, s: -0.04, l: -0.14 },
+    shaft: { h: 0, s: 0, l: -0.03 },
+    plate: { h: -0.005, s: -0.05, l: -0.16 },
+    housing: { h: 0.01, s: 0.04, l: 0.18 },
+    'decorative-gear': { h: -0.01, s: -0.02, l: -0.18 },
+    edges: { h: -0.01, s: -0.1, l: -0.22 },
+  };
+  const lightOffsets = {
+    body: { h: 0, s: -0.04, l: 0.16 },
+    accent: { h: 0.01, s: -0.02, l: 0.24 },
+    rim: { h: 0.015, s: 0, l: 0.32 },
+    dark: { h: -0.005, s: -0.08, l: 0.04 },
+    shaft: { h: 0, s: -0.03, l: 0.12 },
+    plate: { h: -0.005, s: -0.08, l: 0.02 },
+    housing: { h: 0.01, s: -0.03, l: 0.28 },
+    'decorative-gear': { h: -0.01, s: -0.06, l: 0.0 },
+    edges: { h: -0.01, s: -0.15, l: -0.08 },
+  };
+  const offsets = (isLight ? lightOffsets : darkOffsets)[role] || darkOffsets.body;
+  const color = shiftHsl(baseHex, offsets);
+
+  const basePreset = APPEARANCE_PRESETS[role]?.[isLight ? 'light' : 'dark'] || APPEARANCE_PRESETS.body[isLight ? 'light' : 'dark'];
+  const preset = { ...basePreset, color };
+  if (role === 'edges') {
+    return { color };
+  }
+  if (role === 'housing') {
+    return { color, opacity: basePreset.opacity ?? (isLight ? 0.24 : 0.22) };
+  }
+  return preset;
+}
+
+export function createAppearancePresets(baseColor) {
+  if (!baseColor) return APPEARANCE_PRESETS;
+  const color = new THREE.Color(baseColor);
+  const baseHex = toHex(color);
+  const roles = Object.keys(APPEARANCE_PRESETS);
+  const presets = {};
+  roles.forEach((role) => {
+    presets[role] = {
+      dark: createRolePreset(baseHex, role, 'dark'),
+      light: createRolePreset(baseHex, role, 'light'),
+    };
+  });
+  return presets;
+}
 
 const SHARED_APPEARANCE = [
   [matBody, 'body'],
@@ -148,13 +245,14 @@ function applyPreset(material, preset) {
  * are updated in place so every cached/cloned generated component follows the
  * theme; scene-local materials opt in with userData.appearanceRole.
  */
-export function applyModelAppearance(theme, scene) {
+export function applyModelAppearance(theme, scene, appearancePresets = APPEARANCE_PRESETS) {
   const nextTheme = normalizeTheme(theme);
+  const presets = appearancePresets || APPEARANCE_PRESETS;
   const seen = new Set();
 
   SHARED_APPEARANCE.forEach(([material, role]) => {
     seen.add(material);
-    applyPreset(material, APPEARANCE_PRESETS[role]?.[nextTheme]);
+    applyPreset(material, presets[role]?.[nextTheme]);
   });
 
   if (!scene || typeof scene.traverse !== 'function') return;
@@ -164,7 +262,7 @@ export function applyModelAppearance(theme, scene) {
       const role = material?.userData?.appearanceRole;
       if (!role || seen.has(material)) return;
       seen.add(material);
-      applyPreset(material, APPEARANCE_PRESETS[role]?.[nextTheme]);
+      applyPreset(material, presets[role]?.[nextTheme]);
     });
   });
 }
@@ -298,11 +396,16 @@ export function createThreeThemeSync({
   renderer,
   lights = {},
   background = true,
+  appearancePresets = null,
+  baseColor = null,
+  backgroundColor = null,
 } = {}) {
   let currentTheme = 'dark';
   let appliedTheme = null;
   let shade = 0;
   let targetShade = 0;
+  let activePresets = appearancePresets || (baseColor ? createAppearancePresets(baseColor) : APPEARANCE_PRESETS);
+  let backgroundOverride = backgroundColor || null;
 
   const capturedLights = captureLights(lights);
   const reflectionBase = new WeakMap();
@@ -357,6 +460,15 @@ export function createThreeThemeSync({
     restoreReflectionIntensity();
   }
 
+  function applyBackground(nextTheme) {
+    if (!background) return;
+    const palette = readThreeThemePalette(nextTheme);
+    const bg = backgroundOverride || palette.background;
+    const backgroundThreeColor = new THREE.Color(bg);
+    scene.background = backgroundThreeColor;
+    renderer.setClearColor(backgroundThreeColor, 1);
+  }
+
   return {
     update(theme, force = false) {
       const nextTheme = normalizeTheme(theme);
@@ -368,17 +480,21 @@ export function createThreeThemeSync({
       if (nextTheme === appliedTheme && !force) return;
       appliedTheme = nextTheme;
 
-      const palette = readThreeThemePalette(nextTheme);
-      const backgroundColor = new THREE.Color(palette.background);
-      if (background) {
-        scene.background = backgroundColor;
-        renderer.setClearColor(backgroundColor, 1);
-      }
-
-      applyModelAppearance(nextTheme, scene);
+      applyBackground(nextTheme);
+      applyModelAppearance(nextTheme, scene, activePresets);
       applyCurrentLighting();
       scene.environment = nextTheme === 'light' ? getLightEnvironment(renderer) : originalEnvironment;
       applyRendererAppearance(nextTheme, renderer, originalRenderer);
+    },
+
+    setAppearance({ baseColor: nextBaseColor, appearancePresets: nextPresets, backgroundColor: nextBackground } = {}) {
+      if (nextBackground !== undefined) backgroundOverride = nextBackground || null;
+      if (nextPresets) activePresets = nextPresets;
+      else if (nextBaseColor !== undefined) activePresets = nextBaseColor ? createAppearancePresets(nextBaseColor) : APPEARANCE_PRESETS;
+      if (appliedTheme) {
+        applyBackground(appliedTheme);
+        applyModelAppearance(appliedTheme, scene, activePresets);
+      }
     },
 
     setIllumination({
