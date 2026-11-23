@@ -143,6 +143,7 @@ def _clean_recipe(raw: Any) -> Optional[Dict[str, Any]]:
         for key in (
             "teeth",
             "module",
+            "outerDiameter",
             "pressureAngle",
             "helixAngle",
             "faceWidth",
@@ -399,12 +400,18 @@ def _gear_solid(gear: Dict[str, Any], analysis: Dict[str, Any]) -> cq.Workplane:
     teeth = max(6, min(200, teeth))
 
     module = _positive(gear.get("module"))
+    outer_diameter = _positive(gear.get("outerDiameter"))
     if module is None and dims["od"]:
         module = dims["od"] / (teeth + 2)
+    if module is None and outer_diameter:
+        module = outer_diameter / (teeth + 2)
     if module is None:
         module = 2.0
 
-    outer_r = (teeth * module) / 2 + module
+    if outer_diameter:
+        outer_r = outer_diameter / 2
+    else:
+        outer_r = (teeth * module) / 2 + module
     face_width = _positive(gear.get("faceWidth")) or dims["h"] or outer_r * 0.45
     bore = _positive(gear.get("boreRadius"))
     if bore is None:

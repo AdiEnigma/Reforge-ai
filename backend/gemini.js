@@ -82,6 +82,7 @@ const ANALYSIS_SCHEMA = {
           properties: {
             teeth: { type: "NUMBER" },
             module: { type: "NUMBER" },
+            outerDiameter: { type: "NUMBER" },
             gearType: { type: "STRING" },
             coneAngle: { type: "NUMBER" },
             pressureAngle: { type: "NUMBER" },
@@ -545,6 +546,7 @@ export function sanitizeRecipe(rawRecipe) {
     const g = rawRecipe.gear;
     const teeth = typeof g.teeth === "number" && isFinite(g.teeth) && g.teeth >= 3 ? Math.round(g.teeth) : null;
     const moduleVal = cleanNumber(g.module);
+    const outerDiameter = cleanNumber(g.outerDiameter) ?? (cleanNumber(g.outerRadius) != null ? cleanNumber(g.outerRadius) * 2 : null);
     const pressureAngle = cleanNumber(g.pressureAngle) ?? 20;
     const helixAngle = cleanNumber(g.helixAngle) ?? 0;
     const faceWidth = cleanNumber(g.faceWidth);
@@ -558,6 +560,7 @@ export function sanitizeRecipe(rawRecipe) {
       recipe.gear = {
         teeth,
         module: moduleVal != null && moduleVal > 0 ? moduleVal : null,
+        outerDiameter: outerDiameter != null && outerDiameter > 0 ? outerDiameter : null,
         gearType: gearType || (coneAngle ? "bevel" : null),
         coneAngle: coneAngle != null && coneAngle > 0 ? Math.min(85, Math.max(10, coneAngle)) : (gearType === "bevel" ? 45 : null),
         pressureAngle: Math.max(5, Math.min(45, pressureAngle)),

@@ -174,7 +174,8 @@ export function sanitizeRecipe(analysis) {
   const gear = {
     teeth: num(g.teeth),
     module: num(g.module),
-    gearType: typeof g.gearType === "string" ? g.gearType : null,
+    outerDiameter: num(g.outerDiameter ?? (num(g.outerRadius) != null ? num(g.outerRadius) * 2 : null)),
+    gearType: typeof g.gearType === "string" ? g.gearType : (typeof g.type === "string" ? g.type : null),
     coneAngle: num(g.coneAngle),
     pressureAngle: num(g.pressureAngle),
     helixAngle: num(g.helixAngle),
@@ -235,7 +236,7 @@ export function sanitizeRecipe(analysis) {
   for (const h of recipe.holes || []) dims.push(h.radius);
   if (recipe.depth != null) dims.push(recipe.depth);
   if (recipe.gear) {
-    for (const key of ["module", "faceWidth", "boreRadius"]) {
+    for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius"]) {
       if (recipe.gear[key] != null) dims.push(Math.abs(recipe.gear[key]));
     }
   }
@@ -261,7 +262,7 @@ export function sanitizeRecipe(analysis) {
     for (const h of recipe.holes || []) h.radius = clip(h.radius);
     if (recipe.depth != null) recipe.depth = clip(recipe.depth);
     if (recipe.gear) {
-      for (const key of ["module", "faceWidth", "boreRadius"]) {
+      for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius"]) {
         if (recipe.gear[key] != null) recipe.gear[key] = clip(recipe.gear[key]);
       }
     }
@@ -377,10 +378,15 @@ function buildGearFromRecipe(gear) {
   const faceWidth = gear.faceWidth != null && gear.faceWidth > 0 ? gear.faceWidth : null;
   const boreRadius = gear.boreRadius != null && gear.boreRadius > 0 ? gear.boreRadius : 0;
   const helixAngle = gear.helixAngle != null && gear.helixAngle > 0 ? Math.min(gear.helixAngle, 45) : 0;
+  const outerDiameter = gear.outerDiameter != null && gear.outerDiameter > 0 ? gear.outerDiameter : null;
 
   let outerR;
   let toothHeight;
-  if (module) {
+  if (outerDiameter) {
+    outerR = outerDiameter / 2;
+    const effectiveModule = module || outerDiameter / (teeth + 2);
+    toothHeight = 2.25 * effectiveModule;
+  } else if (module) {
     outerR = (teeth * module) / 2 + module;
     toothHeight = 2.25 * module;
   } else {

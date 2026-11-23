@@ -3839,6 +3839,67 @@ nav {
   flex-shrink: 0
 }
 
+.param-card.param-recommended {
+  border-color: #de822b80
+}
+
+.param-recommendation {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--low);
+  border: 1px dashed #de822b70;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease
+}
+
+.param-recommendation:hover {
+  background: var(--high)
+}
+
+.param-recommendation.is-selected {
+  border-style: solid;
+  border-color: var(--tenne)
+}
+
+.param-recommendation>input[type="checkbox"] {
+  margin: 1px 0 0;
+  accent-color: var(--tenne);
+  cursor: pointer
+}
+
+.param-recommendation>.icon {
+  font-size: 15px;
+  line-height: 1.1;
+  color: var(--gold);
+  flex-shrink: 0
+}
+
+.recommendation-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0
+}
+
+.recommendation-label {
+  font: 700 10px 'JetBrains Mono';
+  color: var(--gold);
+  letter-spacing: .04em
+}
+
+.recommendation-label small {
+  font-size: 9px;
+  color: var(--muted);
+  font-weight: 400
+}
+
+.recommendation-reason {
+  font: 400 10px/1.45 'Hanken Grotesk';
+  color: var(--muted)
+}
+
 .whatif-actions {
   margin-top: auto;
   padding-top: 6px;
@@ -3847,6 +3908,7 @@ nav {
 }
 
 .btn-reset-scenario,
+.btn-confirm-scenario,
 .btn-report-action {
   flex: 1;
   border: 1px solid var(--line);
@@ -3870,9 +3932,22 @@ nav {
   background: var(--high)
 }
 
-.btn-reset-scenario:disabled {
+.btn-reset-scenario:disabled,
+.btn-confirm-scenario:disabled {
   opacity: .4;
   cursor: not-allowed
+}
+
+.btn-confirm-scenario {
+  flex: 1.4;
+  background: var(--tenne);
+  border-color: var(--tenne);
+  color: #fff
+}
+
+.btn-confirm-scenario:not(:disabled):hover {
+  filter: brightness(1.08);
+  border-color: var(--primary)
 }
 
 .btn-report-action {

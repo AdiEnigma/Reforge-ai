@@ -22,7 +22,7 @@ export function extractBaseDimensions(analysis) {
   const dims = analysis?.dimensions || {};
   const recipe = analysis?.geometryRecipe || {};
 
-  let outerDia = dims.outerDiameter || null;
+  let outerDia = dims.outerDiameter || analysis?.outerDiameter || null;
   let innerDia = dims.innerDiameter || null;
   let height = dims.height || dims.length || null;
   let width = dims.width || dims.outerDiameter || null;
@@ -54,7 +54,13 @@ export function extractBaseDimensions(analysis) {
     if (recipe.gear.faceWidth) height = recipe.gear.faceWidth;
     if (recipe.gear.boreRadius) innerDia = recipe.gear.boreRadius * 2;
     if (recipe.gear.spokes) spokes = recipe.gear.spokes;
-    if (teeth && module) {
+    const explicitOuterDia = [recipe.gear.outerDiameter, analysis?.outerDiameter].find(
+      (value) => typeof value === "number" && Number.isFinite(value) && value > 0
+    );
+    if (explicitOuterDia != null) {
+      outerDia = explicitOuterDia;
+      width = outerDia;
+    } else if (teeth && module) {
       outerDia = (teeth * module) + (2 * module);
       width = outerDia;
     }

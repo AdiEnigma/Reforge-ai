@@ -12,6 +12,14 @@ import { buildModel, buildAssemblyScene, dimensionList, resolveLabel, validateRe
 import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from './lib/model-illumination.js';
 import { createThreeThemeSync } from './lib/three-theme.js';
 import {
+  PARAM_DEFINITIONS,
+  isParamActive,
+  getParameterValue,
+  getParameterRecommendations,
+  applyScenarioToAnalysis,
+  getGeometryDecisionOverrides,
+} from './lib/what-if.js';
+import {
   applyReconstructionEvent,
   createReconstructionProgress,
   getReconstructionStageLabel,
@@ -58,6 +66,7 @@ import {
   evaluateTechnicalDependencies,
   computeConfiguratorStatuses,
   loadManufacturingState,
+  saveManufacturingState,
 } from './lib/manufacturing-config.js';
 
 const AppContext = createContext();
@@ -1462,32 +1471,15 @@ function Upload() {
     </div>
   );
 }
-const PARAM_DEFINITIONS = [
-  { key: 'outerDiameter', label: 'Outer Ø', unit: 'mm', min: 1, step: 0.5, isDim: true },
-  { key: 'innerDiameter', label: 'Inner Ø (bore)', unit: 'mm', min: 0.5, step: 0.5, isDim: true },
-  { key: 'height', label: 'Height / Length', unit: 'mm', min: 1, step: 0.5, isDim: true },
-  { key: 'width', label: 'Width', unit: 'mm', min: 1, step: 0.5, isDim: true },
-  { key: 'length', label: 'Length', unit: 'mm', min: 1, step: 0.5, isDim: true },
-  { key: 'thickness', label: 'Thickness / Width', unit: 'mm', min: 0.5, step: 0.5, isDim: true },
-  { key: 'teeth', label: 'Teeth', unit: 'count', min: 6, max: 120, step: 1, isDim: false, isInteger: true },
-  { key: 'module', label: 'Module', unit: 'mm', min: 0.2, max: 20, step: 0.1, isDim: false },
-  { key: 'helixAngle', label: 'Helix Angle', unit: 'deg', min: 1, max: 45, step: 1, isDim: false },
-];
-
-function isParamActive(def, analysis) {
-  if (!analysis) return false;
-  const val = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
-  if (typeof val !== 'number' || !isFinite(val)) return false;
-  if (def.key === 'helixAngle') return val > 0;
-  if (def.key === 'innerDiameter') return val > 0;
-  if (def.key === 'teeth') return val >= 6;
-  return val > 0;
-}
-
 function WhatIfSimulator({
   analysis,
   scenarioParams,
   setScenarioParams,
+  recommendations = [],
+  deselectedRecommendations = {},
+  onToggleRecommendation,
+  onResetRecommendations,
+  onConfirm,
   isGeometryValid,
   geometryError,
   warnings,
@@ -1511,6 +1503,10 @@ function WhatIfSimulator({
 
 
   const hasModifications = Object.keys(scenarioParams).length > 0;
+  const selectedRecommendationCount = recommendations.filter(
+    rec => !deselectedRecommendations[rec.key]
+  ).length;
+  const confirmCount = hasModifications ? selectedRecommendationCount + Object.keys(scenarioParams).length : 0;
 
   const handleParamChange = (key, rawValue, isInteger) => {
     const num = isInteger ? parseInt(rawValue, 10) : parseFloat(rawValue);
@@ -1520,13 +1516,14 @@ function WhatIfSimulator({
 
   const handleReset = () => {
     setScenarioParams({});
+    onResetRecommendations?.();
   };
 
   return (
     <div className="whatif-container">
       <div className="whatif-header">
         <h3><Icon>tune</Icon> ENGINEERING WHAT-IF</h3>
-        <p>Modify a design parameter and preview its engineering impact.</p>
+        <p>Modify a design parameter to see engineering impact and related-value recommendations. The 3D model changes only after confirmation.</p>
       </div>
 
       {!isGeometryValid && (
@@ -1560,11 +1557,13 @@ function WhatIfSimulator({
       {availableParams.length > 0 ? (
         <div className="params-list">
           {availableParams.map(def => {
-            const baselineVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+            const baselineVal = getParameterValue(analysis, def.key);
             const currentVal = scenarioParams[def.key] ?? baselineVal;
             const diff = currentVal - baselineVal;
             const pct = baselineVal !== 0 ? (diff / baselineVal) * 100 : 0;
             const isModified = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
+            const recommendation = recommendations.find(rec => rec.key === def.key);
+            const recommendationSelected = recommendation && !deselectedRecommendations[recommendation.key];
 
             const sliderMin = def.min !== undefined ? Math.min(def.min, Math.floor(baselineVal * 0.2)) : Math.max(0.1, Math.floor(baselineVal * 0.2));
             const sliderMax = Math.max(def.max || Math.ceil(baselineVal * 2.5), Math.ceil(baselineVal + 20));
@@ -1574,7 +1573,10 @@ function WhatIfSimulator({
             const pctFormatted = `${sign}${pct.toFixed(1)}%`;
 
             return (
-              <div key={def.key} className={`param-card ${isModified ? 'param-modified' : ''}`}>
+              <div
+                key={def.key}
+                className={`param-card ${isModified ? 'param-modified' : ''} ${recommendation ? 'param-recommended' : ''}`}
+              >
                 <div className="param-top">
                   <span className="param-name">{def.label}</span>
                   {isModified ? (
@@ -1597,6 +1599,24 @@ function WhatIfSimulator({
                     <span className="readout-val scen-val">{currentVal} <small>{def.unit}</small></span>
                   </div>
                 </div>
+
+                {recommendation && (
+                  <label className={`param-recommendation ${recommendationSelected ? 'is-selected' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(recommendationSelected)}
+                      onChange={() => onToggleRecommendation?.(recommendation.key)}
+                      aria-label={`Apply recommended ${def.label} value ${recommendation.value} ${def.unit}`}
+                    />
+                    <Icon>warning</Icon>
+                    <span className="recommendation-copy">
+                      <span className="recommendation-label">
+                        RECOMMENDED {recommendation.value} <small>{def.unit}</small>
+                      </span>
+                      <span className="recommendation-reason">{recommendation.reason}</span>
+                    </span>
+                  </label>
+                )}
 
                 <div className="param-slider-row">
                   <input
@@ -1665,6 +1685,16 @@ function WhatIfSimulator({
           aria-label="Reset scenario to baseline"
         >
           <Icon>restart_alt</Icon> RESET SCENARIO
+        </button>
+        <button
+          type="button"
+          className="btn-confirm-scenario"
+          disabled={!hasModifications || !isGeometryValid}
+          onClick={onConfirm}
+          aria-label="Confirm and apply selected scenario changes to the 3D model"
+          title={!isGeometryValid ? 'Resolve invalid geometry before applying changes.' : undefined}
+        >
+          <Icon>check_circle</Icon> CONFIRM CHANGES{confirmCount ? ` (${confirmCount})` : ''}
         </button>
         <button
           type="button"
@@ -1836,7 +1866,7 @@ function EngineeringReportModal({
               </thead>
               <tbody>
                 {availableParams.map(def => {
-                  const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+                  const baseVal = getParameterValue(analysis, def.key);
                   const scenVal = scenarioParams[def.key] ?? baseVal;
                   const diff = scenVal - baseVal;
                   const pct = baseVal !== 0 ? (diff / baseVal) * 100 : 0;
@@ -2072,12 +2102,22 @@ function Workbench() {
     toggleTheme,
   } = useApp();
 
+  // Single source of truth for the active component specification. Every
+  // downstream consumer (3D, drawings, exports, cost/reports and copilot)
+  // derives from this analysis; scenario previews never replace it.
+  const allComponents = useMemo(() => getAllComponents(machineryState), [machineryState]);
+  const activeComp = useMemo(() => {
+    return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear;
+  }, [allComponents, activeComponentId, machineryState]);
+  const currentAnalysis = activeComp?.analysis || analysis;
+
   const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
   const [copilotTab, setCopilotTab] = useState('chat'); // 'chat' | 'components'
   const [activeTab, setActiveTab] = useState('workbench'); // Workbench tab open by default
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [pipVisible, setPipVisible] = useState(false); // PiP disabled by default as requested
   const [scenarioParams, setScenarioParams] = useState({});
+  const [deselectedRecommendations, setDeselectedRecommendations] = useState({});
   const [showReport, setShowReport] = useState(false);
   const [wire, setWire] = useState(false);
   const [grid, setGrid] = useState(false);
@@ -2148,7 +2188,7 @@ function Workbench() {
     isWorkspaceClosed = false,
   } = layoutState;
 
-  const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(analysis);
+  const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(currentAnalysis);
   const isMfgActive = Boolean(ready && isManufacturingActive);
 
   // Drag and Drop Panel Repositioning State
@@ -2459,9 +2499,9 @@ function Workbench() {
   }, [messages, thinking]);
 
   useEffect(() => {
-    if (!analysis || stage !== 'extracting' || isReconstructionCancelled()) return;
-    if (meshBuildStartedRef.current === analysis) return;
-    meshBuildStartedRef.current = analysis;
+    if (!currentAnalysis || stage !== 'extracting' || isReconstructionCancelled()) return;
+    if (meshBuildStartedRef.current === currentAnalysis) return;
+    meshBuildStartedRef.current = currentAnalysis;
     applyReconstructionProgress({
       stage: 'mesh-generation',
       status: 'running',
@@ -2470,14 +2510,14 @@ function Workbench() {
       message: 'Building parametric mesh…',
     });
     setStage('reconstructing');
-  }, [stage, analysis, setStage, applyReconstructionProgress, isReconstructionCancelled]);
+  }, [stage, currentAnalysis, setStage, applyReconstructionProgress, isReconstructionCancelled]);
 
   useEffect(() => {
-    if (!analysis || stage !== 'reconstructing' || isReconstructionCancelled()) return;
+    if (!currentAnalysis || stage !== 'reconstructing' || isReconstructionCancelled()) return;
 
     try {
       const analysedComponents = getAllComponents(machineryState).filter((component) => component.analysis);
-      const targets = analysedComponents.length ? analysedComponents : [{ id: 'primary', analysis }];
+      const targets = analysedComponents.length ? analysedComponents : [{ id: 'primary', analysis: currentAnalysis }];
       const generated = targets.map((component, index) => {
         const model = buildModel(component.analysis);
         applyReconstructionProgress({
@@ -2518,26 +2558,26 @@ function Workbench() {
       });
       setStage('idle');
     }
-  }, [stage, analysis, machineryState, setStage, applyReconstructionProgress, isReconstructionCancelled]);
+  }, [stage, currentAnalysis, machineryState, setStage, applyReconstructionProgress, isReconstructionCancelled]);
 
-  const features = useMemo(() => normalizeFeatures(analysis), [analysis]);
+  const features = useMemo(() => normalizeFeatures(currentAnalysis), [currentAnalysis]);
 
   // Ensure manufacturing data is loaded for copilot, drawings, and reports
   useEffect(() => {
-    if (!analysis) return;
+    if (!currentAnalysis) return;
     // The manufacturing engine only consumes geometry fields; sending the full
     // analysis serialises condition masks that the backend immediately drops.
     const geometryAnalysis = {
-      componentType: analysis.componentType,
-      dimensions: analysis.dimensions,
-      features: analysis.features,
-      materialEstimate: analysis.materialEstimate,
-      geometryRecipe: analysis.geometryRecipe,
+      componentType: currentAnalysis.componentType,
+      dimensions: currentAnalysis.dimensions,
+      features: currentAnalysis.features,
+      materialEstimate: currentAnalysis.materialEstimate,
+      geometryRecipe: currentAnalysis.geometryRecipe,
     };
     fetchManufacturingIntelligence(geometryAnalysis, quantity)
       .then(res => setMfgData(res))
       .catch(() => { });
-  }, [analysis, quantity]);
+  }, [currentAnalysis, quantity]);
 
   // Load sample gear helper
   const loadSampleGear = useCallback(() => {
@@ -2549,20 +2589,11 @@ function Workbench() {
     setStage('ready');
   }, [setMachineryState, setLastAnalyzedSnapshot, setAnalysis, setStage]);
 
-  // Determine active component and scope
-  const allComponents = useMemo(() => getAllComponents(machineryState), [machineryState]);
-  const activeComp = useMemo(() => {
-    return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear;
-  }, [allComponents, activeComponentId, machineryState]);
-
-  // Derive active component analysis or fallback to top-level analysis
-  const currentAnalysis = activeComp?.analysis || analysis;
-
   // Load condition evidence only when an explicit consumer asks for it.
   useEffect(() => {
     const wantsCondition = selectedContextTool === 'health' || stress;
     if (!ready || !wantsCondition) return;
-    const targetAnalysis = currentAnalysis || analysis;
+    const targetAnalysis = currentAnalysis;
     if (!targetAnalysis || targetAnalysis.conditionAssessment) return;
     const targetImages = activeComp?.images?.length ? activeComp.images : images;
     if (!targetImages?.length) return;
@@ -2572,7 +2603,6 @@ function Workbench() {
     selectedContextTool,
     stress,
     currentAnalysis,
-    analysis,
     activeComp?.images,
     images,
     ensureConditionAssessment,
@@ -2609,6 +2639,7 @@ function Workbench() {
   // Reset scenario when a new analysis is loaded
   useEffect(() => {
     setScenarioParams({});
+    setDeselectedRecommendations({});
   }, [currentAnalysis]);
 
   const send = async (e, customMsg = null) => {
@@ -2639,14 +2670,30 @@ function Workbench() {
   const conf = currentAnalysis && typeof currentAnalysis.confidence === 'number' ? Math.round(currentAnalysis.confidence * 100) : null;
   const stageIndex = currentAnalysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
 
+  // Scenario recommendations are derived from direct edits only. They stay as
+  // suggestions until the user confirms; deselected ones are opt-out.
+  const recommendations = useMemo(
+    () => getParameterRecommendations(currentAnalysis, scenarioParams),
+    [currentAnalysis, scenarioParams]
+  );
+  const selectedRecommendationParams = useMemo(() => Object.fromEntries(
+    recommendations
+      .filter(rec => !deselectedRecommendations[rec.key])
+      .map(rec => [rec.key, rec.value])
+  ), [recommendations, deselectedRecommendations]);
+  const effectiveScenarioParams = useMemo(
+    () => ({ ...selectedRecommendationParams, ...scenarioParams }),
+    [selectedRecommendationParams, scenarioParams]
+  );
+
   // Geometry Validation
   const { isGeometryValid, geometryError } = useMemo(() => {
     if (!currentAnalysis) return { isGeometryValid: true, geometryError: null };
-    const currentOD = scenarioParams.outerDiameter ?? currentAnalysis.dimensions?.outerDiameter;
-    const currentID = scenarioParams.innerDiameter ?? currentAnalysis.dimensions?.innerDiameter;
-    const currentTeeth = scenarioParams.teeth ?? currentAnalysis.teeth;
+    const currentOD = effectiveScenarioParams.outerDiameter ?? getParameterValue(currentAnalysis, 'outerDiameter');
+    const currentID = effectiveScenarioParams.innerDiameter ?? getParameterValue(currentAnalysis, 'innerDiameter');
+    const currentTeeth = effectiveScenarioParams.teeth ?? getParameterValue(currentAnalysis, 'teeth');
 
-    for (const [k, v] of Object.entries(scenarioParams)) {
+    for (const [k, v] of Object.entries(effectiveScenarioParams)) {
       if (k !== 'innerDiameter' && k !== 'helixAngle' && typeof v === 'number' && v <= 0) {
         return { isGeometryValid: false, geometryError: 'Dimensions must be strictly positive.' };
       }
@@ -2671,61 +2718,21 @@ function Workbench() {
     }
 
     return { isGeometryValid: true, geometryError: null };
-  }, [analysis, scenarioParams]);
-
-  // Derive immutable scenario analysis for 3D reconstruction
-  const scenarioAnalysis = useMemo(() => {
-    if (!analysis) return null;
-    if (!Object.keys(scenarioParams).length || !isGeometryValid) return analysis;
-
-    const cloned = {
-      ...analysis,
-      dimensions: { ...(analysis.dimensions || {}) },
-    };
-
-    for (const def of PARAM_DEFINITIONS) {
-      if (scenarioParams[def.key] !== undefined) {
-        if (def.isDim) {
-          cloned.dimensions[def.key] = scenarioParams[def.key];
-        } else {
-          cloned[def.key] = scenarioParams[def.key];
-        }
-      }
-    }
-
-    if (analysis.geometryRecipe) {
-      cloned.geometryRecipe = JSON.parse(JSON.stringify(analysis.geometryRecipe));
-      if (cloned.geometryRecipe.gear) {
-        if (scenarioParams.teeth !== undefined) cloned.geometryRecipe.gear.teeth = scenarioParams.teeth;
-        if (scenarioParams.module !== undefined) cloned.geometryRecipe.gear.module = scenarioParams.module;
-        if (scenarioParams.helixAngle !== undefined) cloned.geometryRecipe.gear.helixAngle = scenarioParams.helixAngle;
-        if (scenarioParams.height !== undefined) cloned.geometryRecipe.gear.faceWidth = scenarioParams.height;
-        if (scenarioParams.thickness !== undefined && scenarioParams.height === undefined) cloned.geometryRecipe.gear.faceWidth = scenarioParams.thickness;
-        if (scenarioParams.innerDiameter !== undefined) cloned.geometryRecipe.gear.boreRadius = scenarioParams.innerDiameter / 2;
-      }
-      if (cloned.geometryRecipe.depth) {
-        if (scenarioParams.height !== undefined) cloned.geometryRecipe.depth = scenarioParams.height;
-        else if (scenarioParams.thickness !== undefined) cloned.geometryRecipe.depth = scenarioParams.thickness;
-        else if (scenarioParams.length !== undefined) cloned.geometryRecipe.depth = scenarioParams.length;
-      }
-    }
-
-    return cloned;
-  }, [analysis, scenarioParams, isGeometryValid]);
+  }, [currentAnalysis, effectiveScenarioParams]);
 
   // Approximate material volume impact
   const materialVolumeImpact = useMemo(() => {
-    if (!analysis) return null;
-    const od0 = analysis.dimensions?.outerDiameter;
-    const id0 = analysis.dimensions?.innerDiameter || 0;
-    const h0 = analysis.dimensions?.height || analysis.dimensions?.thickness;
+    if (!currentAnalysis) return null;
+    const od0 = getParameterValue(currentAnalysis, 'outerDiameter');
+    const id0 = getParameterValue(currentAnalysis, 'innerDiameter') || 0;
+    const h0 = getParameterValue(currentAnalysis, 'height');
     if (typeof od0 !== 'number' || typeof h0 !== 'number' || od0 <= 0 || h0 <= 0) {
       return null;
     }
 
-    const odS = scenarioParams.outerDiameter ?? od0;
-    const idS = scenarioParams.innerDiameter ?? id0;
-    const hS = scenarioParams.height ?? (scenarioParams.thickness ?? h0);
+    const odS = effectiveScenarioParams.outerDiameter ?? od0;
+    const idS = effectiveScenarioParams.innerDiameter ?? id0;
+    const hS = effectiveScenarioParams.height ?? (effectiveScenarioParams.thickness ?? h0);
 
     if (odS <= 0 || hS <= 0 || idS >= odS) return null;
 
@@ -2745,11 +2752,11 @@ function Workbench() {
       deltaCm3: `${sign}${deltaVCm3}`,
       pct: `${sign}${pctV.toFixed(1)}%`,
     };
-  }, [analysis, scenarioParams]);
+  }, [currentAnalysis, effectiveScenarioParams]);
 
   // Deterministic warnings and impact status
   const { warnings, impactStatus } = useMemo(() => {
-    if (!analysis) return { warnings: [], impactStatus: 'STABLE' };
+    if (!currentAnalysis) return { warnings: [], impactStatus: 'STABLE' };
     if (!isGeometryValid) {
       return {
         warnings: [geometryError || 'Invalid geometric configuration.'],
@@ -2762,11 +2769,11 @@ function Workbench() {
     let hasCriticalChange = false;
 
     for (const def of PARAM_DEFINITIONS) {
-      if (!isParamActive(def, analysis)) continue;
-      const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+      if (!isParamActive(def, currentAnalysis)) continue;
+      const baseVal = getParameterValue(currentAnalysis, def.key);
       if (typeof baseVal !== 'number' || !isFinite(baseVal)) continue;
 
-      const scenVal = scenarioParams[def.key] ?? baseVal;
+      const scenVal = effectiveScenarioParams[def.key] ?? baseVal;
       const absDiff = Math.abs(scenVal - baseVal);
       if (absDiff > 0.0001) {
         const pct = baseVal !== 0 ? Math.abs((scenVal - baseVal) / baseVal) * 100 : 0;
@@ -2798,7 +2805,7 @@ function Workbench() {
     }
 
     let status = 'STABLE';
-    if (Object.keys(scenarioParams).length > 0) {
+    if (Object.keys(effectiveScenarioParams).length > 0) {
       if (maxPct > 15) {
         status = 'HIGH IMPACT';
       } else if (maxPct >= 5 || hasCriticalChange) {
@@ -2809,10 +2816,63 @@ function Workbench() {
     }
 
     return { warnings: [...new Set(warnList)], impactStatus: status };
-  }, [currentAnalysis, scenarioParams, isGeometryValid, geometryError]);
+  }, [currentAnalysis, effectiveScenarioParams, isGeometryValid, geometryError]);
 
-  const activeReconstructionAnalysis = isGeometryValid && scenarioAnalysis ? scenarioAnalysis : currentAnalysis;
-  const modifiedCount = Object.keys(scenarioParams).length;
+  // Only confirmed changes are written to the analysis that drives the 3D model.
+  const activeReconstructionAnalysis = currentAnalysis;
+  const modifiedCount = Object.keys(effectiveScenarioParams).length;
+
+  const handleToggleRecommendation = useCallback((key) => {
+    setDeselectedRecommendations(prev => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const handleResetRecommendations = useCallback(() => {
+    setDeselectedRecommendations({});
+  }, []);
+
+  const handleConfirmScenario = useCallback(() => {
+    if (!currentAnalysis || !isGeometryValid || Object.keys(effectiveScenarioParams).length === 0) return;
+
+    const confirmedAnalysis = applyScenarioToAnalysis(currentAnalysis, effectiveScenarioParams);
+    const targetId = activeComp?.id || machineryState?.primaryGear?.id;
+    const replaceAnalysis = component => (
+      component && (component.id === targetId || (!targetId && component === machineryState?.primaryGear))
+        ? { ...component, analysis: confirmedAnalysis }
+        : component
+    );
+    const nextMachineryState = {
+      ...machineryState,
+      primaryGear: replaceAnalysis(machineryState?.primaryGear),
+      companionGear: replaceAnalysis(machineryState?.companionGear),
+      additionalComponents: (machineryState?.additionalComponents || []).map(replaceAnalysis),
+    };
+
+    // Cost and report panels consume manufacturing decisions. Re-derive their
+    // geometry from the same confirmed analysis so no panel keeps stale values.
+    const nextDecisions = { ...decisions, ...getGeometryDecisionOverrides(confirmedAnalysis) };
+
+    setAnalysis(confirmedAnalysis);
+    setMachineryState(nextMachineryState);
+    setLastAnalyzedSnapshot(createMachinerySnapshot(nextMachineryState));
+    setDecisions(nextDecisions);
+    saveManufacturingState(nextDecisions, confirmedCategories);
+    setMfgData(null);
+    setActiveDraftSelection(null);
+    setScenarioParams({});
+    setDeselectedRecommendations({});
+    setActiveTab('workbench');
+  }, [
+    activeComp?.id,
+    confirmedCategories,
+    currentAnalysis,
+    decisions,
+    effectiveScenarioParams,
+    isGeometryValid,
+    machineryState,
+    setAnalysis,
+    setMachineryState,
+    setLastAnalyzedSnapshot,
+  ]);
 
   return (
     <>
@@ -3018,7 +3078,7 @@ function Workbench() {
                 <div className="cad viewport-status" aria-live="polite">
                   {ready
                     ? <>● {label}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
-                    : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
+                    : <>● {label || 'NO ANALYSIS'} · {currentAnalysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
                 </div>
 
                 <ReconstructionProgress
@@ -3027,7 +3087,7 @@ function Workbench() {
                   onRetry={retryReconstruction}
                 />
 
-                {!analysis ? (
+                {!currentAnalysis ? (
                   <div className="viewport-hint">
                     <Icon>view_in_ar</Icon>
                     <p>No component analysis yet.<br />Run synthesis from the upload page or load a sample part.</p>
@@ -3392,9 +3452,14 @@ function Workbench() {
             </div>
             <div className="report-editor-body">
               <WhatIfSimulator
-                analysis={analysis}
+                analysis={currentAnalysis}
                 scenarioParams={scenarioParams}
                 setScenarioParams={setScenarioParams}
+                recommendations={recommendations}
+                deselectedRecommendations={deselectedRecommendations}
+                onToggleRecommendation={handleToggleRecommendation}
+                onResetRecommendations={handleResetRecommendations}
+                onConfirm={handleConfirmScenario}
                 isGeometryValid={isGeometryValid}
                 geometryError={geometryError}
                 warnings={warnings}
@@ -3443,7 +3508,7 @@ function Workbench() {
       {/* 2D Engineering Drawing Modal */}
       {ready && showDrawing && (
         <EngineeringDrawingModal
-          analysis={analysis}
+          analysis={activeReconstructionAnalysis}
           manufacturingIntelligence={mfgData}
           onClose={() => setShowDrawing(false)}
         />
@@ -3452,8 +3517,8 @@ function Workbench() {
       {/* Classical Report Modal if triggered directly */}
       {showReport && (
         <EngineeringReportModal
-          analysis={analysis}
-          scenarioParams={scenarioParams}
+          analysis={currentAnalysis}
+          scenarioParams={effectiveScenarioParams}
           isGeometryValid={isGeometryValid}
           geometryError={geometryError}
           warnings={warnings}
