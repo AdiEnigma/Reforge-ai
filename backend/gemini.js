@@ -33,7 +33,6 @@ const ANALYSIS_SCHEMA = {
         length: { type: "NUMBER" },
         thickness: { type: "NUMBER" },
       },
-      required: ["outerDiameter", "innerDiameter", "height", "width", "length", "thickness"],
     },
     features: { type: "ARRAY", items: { type: "STRING" } },
     teeth: { type: "NUMBER" },
@@ -167,14 +166,7 @@ const ANALYSIS_SCHEMA = {
   required: [
     "componentType",
     "confidence",
-    "geometryType",
-    "dimensions",
     "features",
-    "teeth",
-    "materialEstimate",
-    "manufacturingProcess",
-    "reasoning",
-    "uncertainties",
     "geometryRecipe",
   ],
 };
@@ -414,6 +406,7 @@ function normalizeAnalysis(raw) {
     reasoning: "",
     uncertainties: [],
     geometryRecipe: null,
+    geometrySource: null,
   };
   if (!raw || typeof raw !== "object") return out;
   const dims = raw.dimensions && typeof raw.dimensions === "object" ? raw.dimensions : {};
@@ -437,6 +430,7 @@ function normalizeAnalysis(raw) {
   out.reasoning = typeof raw.reasoning === "string" ? raw.reasoning : "";
   out.uncertainties = Array.isArray(raw.uncertainties) ? raw.uncertainties.filter((u) => typeof u === "string") : [];
   out.geometryRecipe = sanitizeRecipe(raw.geometryRecipe);
+  out.geometrySource = out.geometryRecipe ? "image_recipe" : null;
   return out;
 }
 
@@ -624,19 +618,22 @@ export function sanitizeRecipe(rawRecipe) {
     const sorted = [...positive].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
     const cap = Math.max(median * RECIPE_LIMITS.maxDimensionRatio, 1000);
-    const clip = (v) => (typeof v === "number" && isFinite(v) ? Math.max(0, Math.min(v, cap)) : v);
-    for (const p of recipe.revolvedProfile || []) { p.z = clip(p.z); p.radius = clip(p.radius); }
+    // z (axial position) and outline x/y are signed coordinates; clamping them
+    // to >= 0 would collapse every profile centred on the origin.
+    const clip = (v) => (typeof v === "number" && isFinite(v) ? Math.max(-cap, Math.min(v, cap)) : v);
+    const clipPositive = (v) => (typeof v === "number" && isFinite(v) ? Math.max(0, Math.min(v, cap)) : v);
+    for (const p of recipe.revolvedProfile || []) { p.z = clip(p.z); p.radius = clipPositive(p.radius); }
     for (const pt of recipe.outline || []) { pt.x = clip(pt.x); pt.y = clip(pt.y); }
-    for (const h of recipe.holes || []) h.radius = clip(h.radius);
-    if (recipe.depth != null) recipe.depth = clip(recipe.depth);
+    for (const h of recipe.holes || []) { h.cx = clip(h.cx); h.cy = clip(h.cy); h.radius = clipPositive(h.radius); }
+    if (recipe.depth != null) recipe.depth = clipPositive(recipe.depth);
     if (recipe.gear) {
       for (const key of ["module", "faceWidth", "boreRadius"]) {
-        if (recipe.gear[key] != null) recipe.gear[key] = clip(recipe.gear[key]);
+        if (recipe.gear[key] != null) recipe.gear[key] = clipPositive(recipe.gear[key]);
       }
     }
     for (const p of recipe.primitives || []) {
       for (const key of ["width", "height", "depth", "radius", "radiusTop", "radiusBottom", "tube"]) {
-        if (p[key] != null) p[key] = clip(p[key]);
+        if (p[key] != null) p[key] = clipPositive(p[key]);
       }
     }
   }

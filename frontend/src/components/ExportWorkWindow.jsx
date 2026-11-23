@@ -17,14 +17,10 @@ const EXPORT_CATEGORIES = [
     title: 'CAD',
     icon: 'category',
     badge: 'Neutral B-Rep Solids',
-    description: 'Universal parametric solid and surface boundary representations for interoperability across MCAD systems.',
+    description: 'Solid B-Rep geometry of the reconstructed component, generated with OpenCASCADE and validated before download.',
     formats: [
-      { name: 'STEP', ext: '.step', label: 'ISO 10303-21 Standard', action: exporters.exportSTEP },
-      { name: 'IGES', ext: '.iges', label: 'Initial Graphics Exchange Spec', action: exporters.exportIGES },
-      { name: 'Parasolid Text', ext: '.x_t', label: 'Siemens Parasolid Text Schema', action: exporters.exportParasolidText },
-      { name: 'Parasolid Binary', ext: '.x_b', label: 'Siemens Parasolid Binary Transmit', action: exporters.exportParasolidBinary },
-      { name: 'ACIS', ext: '.sat', label: 'Spatial ACIS 3D SAT Format', action: exporters.exportACIS },
-      { name: 'JT', ext: '.jt', label: 'ISO 14306 JT Open CAD', action: exporters.exportJT },
+      { name: 'STEP', ext: '.step', label: 'ISO 10303-21 Solid (FreeCAD, SolidWorks, Fusion)', action: exporters.exportSTEP },
+      { name: 'IGES', ext: '.iges', label: 'Surface exchange (use STEP for solids)', action: exporters.exportIGES },
     ],
   },
   {
@@ -44,7 +40,7 @@ const EXPORT_CATEGORIES = [
       { name: 'Siemens NX', ext: '.prt', label: 'Siemens NX Unigraphics Part', action: exporters.exportSiemensNX },
       { name: 'Creo Assembly', ext: '.asm', label: 'PTC Creo Parametric Model', action: exporters.exportCreoAssembly },
       { name: 'Rhino', ext: '.3dm', label: 'Rhino 3D OpenNURBS Geometry', action: exporters.exportRhino },
-      { name: 'FreeCAD', ext: '.FCStd', label: 'FreeCAD Native XML Document', action: exporters.exportFreeCAD },
+      { name: 'FreeCAD', ext: '.step', label: 'FreeCAD-ready STEP Solid', action: exporters.exportFreeCAD },
     ],
   },
   {
@@ -54,8 +50,8 @@ const EXPORT_CATEGORIES = [
     badge: 'Tessellated & Additive',
     description: 'Surface meshes and faceted models optimized for 3D printing, rendering, simulation, and spatial visualization.',
     formats: [
-      { name: 'STL', ext: '.stl', label: 'Stereolithography 3D Mesh', action: exporters.exportSTL },
-      { name: 'OBJ', ext: '.obj', label: 'Wavefront 3D Object with Normals', action: exporters.exportOBJ },
+      { name: 'STL', ext: '.stl', label: 'Stereolithography 3D Mesh (FreeCAD, slicers)', action: exporters.exportSTL },
+      { name: 'OBJ', ext: '.obj', label: 'Wavefront 3D Object (FreeCAD)', action: exporters.exportOBJ },
       { name: '3MF', ext: '.3mf', label: '3D Manufacturing Format', action: exporters.export3MF },
       { name: 'GLB', ext: '.glb', label: 'Binary glTF 2.0 Web Container', action: exporters.exportGLB },
       { name: 'GLTF', ext: '.gltf', label: 'glTF 2.0 JSON Scene Document', action: exporters.exportGLTF },
@@ -173,14 +169,21 @@ const EXPORT_CATEGORIES = [
 export function ExportWorkWindow({ analysis, mfgData }) {
   const [activeCategory, setActiveCategory] = useState('all');
   const [downloadedFormat, setDownloadedFormat] = useState(null);
+  const [exportingFormat, setExportingFormat] = useState(null);
+  const [exportError, setExportError] = useState(null);
 
-  const handleDownload = (format) => {
+  const handleDownload = async (format) => {
+    setExportError(null);
+    setExportingFormat(format.name);
     try {
-      format.action(analysis, mfgData);
+      await format.action(analysis, mfgData);
       setDownloadedFormat(`${format.name} (${format.ext})`);
       setTimeout(() => setDownloadedFormat(null), 3000);
     } catch (err) {
       console.error(`Export failed for ${format.name}:`, err);
+      setExportError(err?.message || `Could not export ${format.name}.`);
+    } finally {
+      setExportingFormat(null);
     }
   };
 
@@ -217,6 +220,13 @@ export function ExportWorkWindow({ analysis, mfgData }) {
         <div className="export-toast-banner" role="status">
           <Icon>check_circle</Icon>
           <span>Successfully exported <strong>{downloadedFormat}</strong> for {analysis?.label || 'Component'}</span>
+        </div>
+      )}
+
+      {exportError && (
+        <div className="export-toast-banner export-toast-error" role="alert">
+          <Icon>error</Icon>
+          <span><strong>Export failed:</strong> {exportError}</span>
         </div>
       )}
 
@@ -258,15 +268,18 @@ export function ExportWorkWindow({ analysis, mfgData }) {
                   key={idx}
                   className="export-format-btn"
                   onClick={() => handleDownload(fmt)}
+                  disabled={Boolean(exportingFormat)}
                   title={`Download ${fmt.name} (${fmt.ext})`}
                 >
                   <div className="export-format-info">
                     <span className="export-format-name">{fmt.name}</span>
-                    <span className="export-format-label">{fmt.label}</span>
+                    <span className="export-format-label">
+                      {exportingFormat === fmt.name ? 'Building solid…' : fmt.label}
+                    </span>
                   </div>
                   <div className="export-format-ext-chip">
                     <span>{fmt.ext}</span>
-                    <Icon>download</Icon>
+                    <Icon>{exportingFormat === fmt.name ? 'hourglass_top' : 'download'}</Icon>
                   </div>
                 </button>
               ))}

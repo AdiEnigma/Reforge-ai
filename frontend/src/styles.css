@@ -1920,6 +1920,12 @@ nav {
   font-size: 13px
 }
 
+.export-toast-banner.export-toast-error {
+  border-color: #e2564b;
+  color: #e2564b;
+  max-width: 460px;
+}
+
 .export-toast-banner {
   position: fixed;
   bottom: 24px;

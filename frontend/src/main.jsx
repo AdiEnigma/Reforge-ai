@@ -698,6 +698,17 @@ function MaterialComparisonPanel({ analysis, manufacturingIntelligence }) {
 
 // ─── Feature Identification Panel ──────────────────────────────────────────
 
+const GEOMETRY_SOURCE_LABELS = {
+  image_recipe: 'IMAGE RECIPE',
+  image_recipe_refined: 'IMAGE RECIPE (REFINED)',
+  template_gear: 'TEMPLATE GEAR',
+  template_flange: 'TEMPLATE FLANGE',
+  template_shaft: 'TEMPLATE SHAFT',
+  template_generic: 'TEMPLATE',
+  template_fallback: 'TEMPLATE FALLBACK',
+  vision_template: 'VISION TEMPLATE',
+};
+
 function FeatureConfidenceBadge({ confidence }) {
   if (typeof confidence !== 'number') return null;
   const level = confidence >= 0.85 ? 'high' : confidence >= 0.65 ? 'medium' : 'low';
@@ -2510,6 +2521,9 @@ function Workbench() {
 
   const label = currentAnalysis ? resolveLabel(currentAnalysis) : null;
   const conf = currentAnalysis && typeof currentAnalysis.confidence === 'number' ? Math.round(currentAnalysis.confidence * 100) : null;
+  const geometrySourceLabel = currentAnalysis?.geometrySource
+    ? (GEOMETRY_SOURCE_LABELS[currentAnalysis.geometrySource] || String(currentAnalysis.geometrySource).toUpperCase())
+    : null;
   const stageIndex = currentAnalysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
 
   // Geometry Validation
@@ -2886,7 +2900,7 @@ function Workbench() {
 
                 <div className="cad viewport-status" aria-live="polite">
                   {ready
-                    ? <>● {label}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                    ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}{geometrySourceLabel ? ` · ${geometrySourceLabel}` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
                     : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
                 </div>
 

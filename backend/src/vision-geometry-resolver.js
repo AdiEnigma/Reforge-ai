@@ -915,6 +915,8 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   const ref = reference && typeof reference === 'object' ? reference : {};
   const obs = extractVisionObservations(visionResult);
   const reconciled = { ...geminiAnalysis };
+  delete reconciled.geometrySource;
+  const hadGeminiRecipe = Boolean(geminiAnalysis?.geometryRecipe && typeof geminiAnalysis.geometryRecipe === 'object');
 
   // 1. Reconcile Dimensions: User Reference > Vision Calibration > Gemini Proposal
   reconciled.dimensions = { ...(reconciled.dimensions || {}) };
@@ -968,6 +970,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     rawFeatures.includes('worm') ||
     geminiAnalysis?.gearType === 'worm';
 
+<<<<<<< HEAD
   const isGear =
     isWormDirect ||
     rawType.includes('gear') ||
@@ -982,6 +985,10 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       finalTeeth = Math.max(12, Math.round((reconciled.dimensions.outerDiameter || 100.0) / (reconciled.module || 4.5)));
     }
     reconciled.teeth = finalTeeth;
+=======
+  if (isGear && typeof finalTeeth === 'number' && finalTeeth >= 6) {
+    reconciled.geometrySource = 'template_gear';
+>>>>>>> origin/only-export
     const od = reconciled.dimensions.outerDiameter || 100.0;
     const rawModule = reconciled.module || (od / (finalTeeth + 2));
     const cleanModule = snapToStandardModule(rawModule);
@@ -990,10 +997,6 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     reconciled.dimensions.outerDiameter = cleanModule
       ? Math.round(cleanModule * (finalTeeth + 2) * 10) / 10
       : od;
-
-    if (!reconciled.dimensions.innerDiameter || reconciled.dimensions.innerDiameter >= reconciled.dimensions.outerDiameter) {
-      reconciled.dimensions.innerDiameter = Math.round(reconciled.dimensions.outerDiameter * 0.28 * 10) / 10;
-    }
 
     const faceWidth =
       ref.thickness ||
@@ -1028,6 +1031,11 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       reconciled.spokes = spokes;
     }
 
+    const boreDiameter = Number.isFinite(reconciled.dimensions.innerDiameter) && reconciled.dimensions.innerDiameter > 0
+      ? Math.min(reconciled.dimensions.innerDiameter, reconciled.dimensions.outerDiameter * 0.9)
+      : 0;
+    const boreRadius = Math.round((boreDiameter / 2) * 10) / 10;
+
     if (isBevel) {
       reconciled.componentType = 'bevel gear';
       reconciled.geometryType = 'bevel_gear';
@@ -1043,13 +1051,14 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           coneAngle,
           pressureAngle: 20.0,
           faceWidth,
-          boreRadius: Math.round((reconciled.dimensions.innerDiameter / 2) * 10) / 10,
+          boreRadius,
           hubDiameter: Math.round(reconciled.dimensions.outerDiameter * 0.62 * 10) / 10,
           hubLength: Math.round(faceWidth * 0.85 * 10) / 10,
           spokes: spokes || null,
         },
       };
     } else {
+<<<<<<< HEAD
       const isWorm =
         compTypeLower.includes('worm') ||
         rawType.includes('worm') ||
@@ -1300,6 +1309,46 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       compTypeLower.includes('spline shaft') ||
       ((compTypeLower.includes('flange') || (Array.isArray(reconciled.features) && reconciled.features.some((f) => /flange/i.test(String(f))))) &&
         (compTypeLower.includes('shaft') || compTypeLower.includes('spline') || compTypeLower.includes('bushing'))));
+=======
+      reconciled.componentType = (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical gear' : 'spur gear';
+      reconciled.gearType = (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical' : 'spur';
+      reconciled.geometryRecipe = {
+        style: 'gear',
+        gear: {
+          gearType: reconciled.gearType,
+          teeth: finalTeeth,
+          module: reconciled.module,
+          pressureAngle: 20.0,
+          helixAngle: reconciled.helixAngle || 0.0,
+          faceWidth,
+          boreRadius,
+          spokes: spokes || null,
+        },
+      };
+    }
+  }
+
+  // 3b. Reconcile Flange Geometry and Bolt Holes
+  const compTypeLower = String(reconciled.componentType || '').toLowerCase();
+  const isFlange =
+    !isGear &&
+    (compTypeLower.includes('flange') || reconciled.geometryRecipe?.flange != null);
+
+  if (isFlange) {
+    reconciled.componentType = 'flange';
+    reconciled.geometrySource = 'template_flange';
+    const od = ref.outerDiameter || reconciled.dimensions.outerDiameter || 120.0;
+    const id = ref.innerDiameter != null ? ref.innerDiameter : (reconciled.dimensions.innerDiameter || Math.round(od * 0.35 * 10) / 10);
+    const th = ref.thickness || reconciled.dimensions.thickness || Math.round(od * 0.16 * 10) / 10;
+    const h = ref.height || reconciled.dimensions.height || Math.round(th * 1.5 * 10) / 10;
+    const boltCount = extractBoltCount(
+      reconciled.features,
+      obs,
+      ref,
+      geminiAnalysis?.geometryRecipe?.flange,
+      geminiAnalysis?.boltCount
+    );
+>>>>>>> origin/only-export
 
   let isFlange = false;
 
@@ -1469,9 +1518,13 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     (compTypeLower.includes('shaft') ||
       compTypeLower.includes('spindle') ||
       compTypeLower.includes('pin') ||
+<<<<<<< HEAD
       ((compTypeLower.includes('cylinder') || compTypeLower.includes('axle')) &&
         (reconciled.dimensions.length || reconciled.dimensions.height || 0) > (reconciled.dimensions.outerDiameter || 30) * 1.5) ||
       (Array.isArray(reconciled.features) && reconciled.features.some((f) => /stepped\s*shaft|drive\s*shaft|bearing\s*journal|spline\s*shaft/i.test(String(f)))));
+=======
+      reconciled.geometryRecipe?.revolvedProfile != null);
+>>>>>>> origin/only-export
 
   if (isShaft) {
     const isStepped =
@@ -1499,6 +1552,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     reconciled.geometryRecipe = hasRichProfile
       ? { style: 'revolved', revolvedProfile: existingProfile }
       : buildSteppedShaftRecipe({ outerDiameter: od, length, innerDiameter: id });
+<<<<<<< HEAD
 
     try {
       const segLen = length / 4;
@@ -1531,6 +1585,9 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       featuresList.unshift('Involute Spline / Keyed Drive Journal');
     }
     reconciled.features = featuresList;
+=======
+    reconciled.geometrySource = hasRichProfile ? 'image_recipe_refined' : 'template_shaft';
+>>>>>>> origin/only-export
   }
 
   // 3d. Reconcile Prismatic / Extruded Mechanical Components (Brackets, Links, Connecting Rods, Levers, Plates, Mounts, Housings)
@@ -1627,6 +1684,11 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   // 4. Ensure Geometry Recipe is always present and watertight
   if (!reconciled.geometryRecipe || typeof reconciled.geometryRecipe !== 'object') {
     reconciled.geometryRecipe = buildRecipeFromDimensions(reconciled);
+    reconciled.geometrySource = 'template_generic';
+  }
+
+  if (!reconciled.geometrySource) {
+    reconciled.geometrySource = hadGeminiRecipe ? 'image_recipe_refined' : null;
   }
 
   // 5. Direct 3D Visual Mesh Reconstruction (True image backprojection)
@@ -1773,10 +1835,109 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       };
     }
 
+<<<<<<< HEAD
     if (type.includes('bevel')) {
       const teeth = analysis.teeth || 20;
       const m = snapToStandardModule(od / (teeth + 2)) || 3.0;
       return {
+=======
+/**
+ * Guaranteed deterministic engineering fallback when Gemini is completely offline
+ * or credentials fail. Generates zero errors and produces a valid CAD model.
+ */
+const TEMPLATE_UNCERTAINTY = 'Geometry synthesized from a standard template, not measured from this image.';
+
+function buildDeterministicTemplate(reference = {}, reason = 'AI assist offline') {
+  const ref = reference && typeof reference === 'object' ? reference : {};
+  const isFlange = String(ref.componentType || '').toLowerCase().includes('flange') || typeof ref.boltCount === 'number';
+
+  if (isFlange) {
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 130.0;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.35 * 10) / 10;
+    const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.16 * 10) / 10;
+    const h = typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(th * 1.5 * 10) / 10;
+    const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 3 ? Math.round(ref.boltCount) : 4;
+
+    const recipe = buildFlangeRecipe({
+      outerDiameter: od,
+      innerDiameter: id,
+      thickness: th,
+      height: h,
+      boltCount,
+    });
+    const bcd = recipe.flange.boltCircleDiameter;
+    const bhd = recipe.flange.boltHoleDiameter;
+
+    return {
+      componentType: 'flange',
+      componentName: `Standard ${boltCount}-Hole Flange Ø${od}mm`,
+      label: `Flange (${boltCount}-Hole Ø${od}mm)`,
+      confidence: 0.90,
+      boltCount,
+      geometryType: 'flange_with_bolt_pattern',
+      dimensions: {
+        outerDiameter: od,
+        innerDiameter: id,
+        height: h,
+        thickness: th,
+        width: od,
+        length: od,
+      },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `${boltCount} Mounting Bolt Holes (Ø${bhd}mm on PCD Ø${bcd}mm)`,
+        id > 0 ? `Central Bore Ø${id}mm` : 'Solid Center (Blind Flange)',
+        `Raised Face Hub Ø${recipe.flange.bossDiameter}mm`,
+      ],
+      materialEstimate: 'ASTM A105 Carbon Steel',
+      manufacturingProcess: 'Forging + CNC Turning & PCD Drilling',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized standard ${boltCount}-hole flange.`,
+      uncertainties: [],
+      geometryRecipe: recipe,
+      provenance: 'deterministic_fallback_engine',
+    };
+  }
+
+  const isBevel =
+    String(ref.componentType || '').toLowerCase().includes('bevel') ||
+    String(ref.componentType || '').toLowerCase().includes('miter') ||
+    ref.gearType === 'bevel';
+
+  if (isBevel) {
+    const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 20;
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 90.0;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.28 * 10) / 10;
+    const m = snapToStandardModule(od / (teeth + 2)) || 3.5;
+    const coneAngle = ref.coneAngle || 45;
+    const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(m * 6 * 10) / 10;
+    const hubD = Math.round(od * 0.62 * 10) / 10;
+    const hubL = Math.round(faceWidth * 0.85 * 10) / 10;
+    return {
+      componentType: 'bevel gear',
+      componentName: `${teeth}T Industrial Bevel Pinion Gear`,
+      label: `Bevel Gear (${teeth}T Ø${od}mm)`,
+      confidence: 0.91,
+      gearType: 'bevel',
+      coneAngle,
+      geometryType: 'bevel_gear',
+      dimensions: { outerDiameter: od, innerDiameter: id, height: faceWidth, thickness: faceWidth, width: od, length: od },
+      teeth,
+      module: m,
+      helixAngle: 0.0,
+      features: [
+        `${teeth} Conical Bevel Teeth (Pitch Cone ${coneAngle}°)`,
+        `Central Mounting Bore Ø${id}mm`,
+        `Rear Shaft Hub Collar Ø${hubD}mm x ${hubL}mm`,
+        'Gleason Conical Tooth Profile',
+      ],
+      materialEstimate: 'AISI 8620 Case-Hardened Steel',
+      manufacturingProcess: 'Bevel Gear Generator (Gleason) + Case Hardening',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized miter bevel gear with ${coneAngle}° pitch cone.`,
+      uncertainties: [],
+      geometryRecipe: {
+>>>>>>> origin/only-export
         style: 'gear',
         gear: {
           gearType: 'bevel',
@@ -2542,3 +2703,146 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       provenance: 'deterministic_fallback_engine',
     });
   }
+<<<<<<< HEAD
+=======
+
+  const isShaft =
+    String(ref.componentType || '').toLowerCase().includes('shaft') ||
+    String(ref.componentType || '').toLowerCase().includes('spindle') ||
+    (ref.length && ref.length > (ref.outerDiameter || 50)) ||
+    (ref.height && ref.height > (ref.outerDiameter || 50) * 1.5);
+
+  if (isShaft) {
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 45.0;
+    const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(od * 3.5 * 10) / 10);
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : 0;
+    const recipe = buildSteppedShaftRecipe({ outerDiameter: od, length, innerDiameter: id });
+    return {
+      componentType: 'stepped shaft',
+      componentName: `Industrial Stepped Drive Shaft Ø${od}x${length}mm`,
+      label: `Stepped Shaft (Ø${od}x${length}mm)`,
+      confidence: 0.90,
+      geometryType: 'axisymmetric_stepped_shaft',
+      dimensions: { outerDiameter: od, innerDiameter: id, height: length, length, width: od, thickness: od },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `Main Center Shoulder Ø${od}mm`,
+        'Ground Bearing Journals with Transition Fillets',
+        'Drive Spline / Keyed Section',
+        id > 0 ? `Center Bore Ø${id}mm` : 'Solid Steel Core',
+      ],
+      materialEstimate: 'AISI 4340 / EN24 Quenched & Tempered Alloy Steel',
+      manufacturingProcess: 'CNC Turning + Induction Hardening & Cylindrical Grinding',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized multi-diameter stepped shaft with bearing seats.`,
+      uncertainties: [],
+      geometryRecipe: recipe,
+      provenance: 'deterministic_fallback_engine',
+    };
+  }
+
+  const hasTeethIndicator = typeof ref.teeth === 'number' && ref.teeth >= 4;
+  if (!hasTeethIndicator) {
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 130.0;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.35 * 10) / 10;
+    const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.16 * 10) / 10;
+    const h = typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(th * 1.5 * 10) / 10;
+    const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 3 ? Math.round(ref.boltCount) : 4;
+
+    const recipe = buildFlangeRecipe({ outerDiameter: od, innerDiameter: id, thickness: th, height: h, boltCount });
+    return {
+      componentType: 'flange',
+      componentName: `Standard ${boltCount}-Hole Flange Ø${od}mm`,
+      label: `Flange (${boltCount}-Hole Ø${od}mm)`,
+      confidence: 0.88,
+      geometryType: 'flange_with_bolt_pattern',
+      dimensions: { outerDiameter: od, innerDiameter: id, height: h, thickness: th, width: od, length: od },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `${boltCount} Mounting Bolt Holes (Ø${recipe.flange.boltHoleDiameter}mm on PCD Ø${recipe.flange.boltCircleDiameter}mm)`,
+        id > 0 ? `Central Bore Ø${id}mm` : 'Solid Center (Blind Flange)',
+        `Raised Face Hub Ø${recipe.flange.bossDiameter}mm`,
+      ],
+      materialEstimate: 'ASTM A105 / 316 Stainless Steel',
+      manufacturingProcess: 'Forging + CNC Turning & PCD Drilling',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Non-toothed component resolved as circular flange with bolt circle.`,
+      uncertainties: [],
+      geometryRecipe: recipe,
+      provenance: 'deterministic_fallback_engine',
+    };
+  }
+
+  const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 24;
+  const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 120.0;
+  const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.25 * 10) / 10;
+  const m = snapToStandardModule(od / (teeth + 2)) || 4.5;
+  const standardOd = Math.round(m * (teeth + 2) * 10) / 10;
+  const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0
+    ? ref.thickness
+    : typeof ref.height === 'number' && ref.height > 0
+    ? ref.height
+    : Math.round(m * 9 * 10) / 10;
+
+  return {
+    componentType: 'spur gear',
+    componentName: `${teeth}T Precision Spur Gear`,
+    label: `Spur Gear (${teeth}T)`,
+    confidence: 0.90,
+    geometryType: 'toothed_gear',
+    dimensions: {
+      outerDiameter: standardOd,
+      innerDiameter: id,
+      height: faceWidth,
+      thickness: faceWidth,
+      width: standardOd,
+      length: standardOd,
+    },
+    teeth,
+    module: m,
+    helixAngle: 0.0,
+    features: [
+      `Central Bore Ø${id}mm`,
+      `${teeth} Involute Gear Teeth`,
+      `Module ${m}mm (ISO standard)`,
+      'Precision Ground Flanks',
+    ],
+    materialEstimate: 'AISI 4140 Alloy Steel',
+    manufacturingProcess: 'Hobbing + Wire EDM Bore',
+    reasoning: `Deterministic engineering solver engaged (${reason}). Parameters synthesized according to ISO 54 gear specifications.`,
+    uncertainties: [],
+    geometryRecipe: {
+      style: 'gear',
+      gear: {
+        teeth,
+        module: m,
+        pressureAngle: 20.0,
+        helixAngle: 0.0,
+        faceWidth,
+        boreRadius: id / 2,
+      },
+    },
+    provenance: 'deterministic_fallback_engine',
+  };
+}
+
+/**
+ * Guaranteed zero-crash fallback when Gemini is offline. The geometry is a
+ * standard template, not a reconstruction, so it is labelled as such and its
+ * confidence is zero: the UI must never present it as a measured part.
+ */
+export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assist offline') {
+  const template = buildDeterministicTemplate(reference, reason);
+  return {
+    ...template,
+    confidence: 0,
+    geometrySource: 'template_fallback',
+    uncertainties: [
+      ...(Array.isArray(template.uncertainties) ? template.uncertainties : []),
+      TEMPLATE_UNCERTAINTY,
+    ],
+  };
+}
+>>>>>>> origin/only-export
