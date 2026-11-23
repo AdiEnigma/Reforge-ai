@@ -479,6 +479,37 @@ def validate_recipe(
 
             gear_spec["boreRadius"] = max(0.0, bore_val if bore_val is not None else 0.0)
 
+            # Preserve the detected/confirmed tooth form and its defining
+            # parameters. Dropping these here used to collapse every gear to a
+            # spur solid in the CAD exporter.
+            raw_type = raw_gear.get("gearType") or raw_gear.get("type")
+            if isinstance(raw_type, str):
+                gear_spec["gearType"] = raw_type.strip().lower()
+            cone_val = _clean_number(raw_gear.get("coneAngle"))
+            if cone_val is not None and cone_val > 0:
+                gear_spec["coneAngle"] = max(5.0, min(85.0, cone_val))
+            for key in ("pitch", "starts", "lead", "rootRadius", "rackLength"):
+                val = _clean_number(raw_gear.get(key))
+                if val is not None:
+                    gear_spec[key] = val
+            if isinstance(raw_gear.get("innerRing"), bool):
+                gear_spec["innerRing"] = raw_gear["innerRing"]
+            raw_stages = raw_gear.get("stages")
+            if isinstance(raw_stages, list):
+                stages = []
+                for stage in raw_stages[:8]:
+                    if not isinstance(stage, dict):
+                        continue
+                    clean_stage = {}
+                    for key in ("teeth", "module", "outerDiameter", "faceWidth"):
+                        val = _clean_number(stage.get(key))
+                        if val is not None:
+                            clean_stage[key] = val
+                    if clean_stage:
+                        stages.append(clean_stage)
+                if stages:
+                    gear_spec["stages"] = stages
+
             # Preserve measured outer diameter for gear module reconciliation
             measured_od = (
                 _clean_number(merged_params.get("outer_diameter"))

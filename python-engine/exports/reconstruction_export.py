@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -41,6 +42,31 @@ LIMITS = {
     "maxOutlinePoints": 200,
     "maxHoles": 50,
     "maxPrimitives": 30,
+}
+GEAR_TYPES = (
+    "spur", "helical", "bevel", "worm", "rack", "internal",
+    "compound", "pinion", "stepped", "flanged", "unknown",
+)
+GEAR_ALIASES = {
+    "spur": "spur", "spur gear": "spur", "straight": "spur",
+    "helical": "helical", "helical gear": "helical",
+    "helical pinion": "helical", "helical pinion shaft": "helical",
+    "bevel": "bevel", "bevel gear": "bevel", "miter": "bevel",
+    "mitre": "bevel", "conical": "bevel",
+    "worm": "worm", "worm gear": "worm", "worm spindle": "worm",
+    "worm drive": "worm", "worm drive shaft": "worm",
+    "precision worm drive shaft": "worm",
+    "rack": "rack", "rack gear": "rack", "linear gear": "rack",
+    "internal": "internal", "internal gear": "internal",
+    "internal ring gear": "internal", "annular": "internal",
+    "compound": "compound", "compound gear": "compound",
+    "cluster": "compound", "cluster gear": "compound",
+    "two-stage gear": "compound", "two stage gear": "compound",
+    "pinion": "pinion", "pinion shaft": "pinion", "gear shaft": "pinion",
+    "stepped": "stepped", "stepped gear": "stepped",
+    "flanged": "flanged", "flanged gear": "flanged", "flanged shaft": "flanged",
+    "unknown": "unknown", "unspecified": "unknown", "uncertain": "unknown",
+    "other": "unknown",
 }
 
 
@@ -77,6 +103,87 @@ def _positive(value: Any) -> Optional[float]:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _normalize_gear_type(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    key = re.sub(r"[\s_/]+", " ", value.strip().lower())
+    if key in GEAR_ALIASES:
+        return GEAR_ALIASES[key]
+    return key if key in GEAR_TYPES else None
+
+
+def _gear_type_from_text(text: str) -> Optional[str]:
+    value = str(text or "").lower()
+    if not value:
+        return None
+    if re.search(r"worm|screw\s*flight|archimedean\s*flight", value):
+        return "worm"
+    if re.search(r"internal\s*(gear|ring)|annular\s*gear|ring\s*gear", value):
+        return "internal"
+    if re.search(r"\brack\b|linear\s*(gear|tooth)|toothed\s*rail", value):
+        return "rack"
+    if re.search(r"bevel|miter|mitre|conical|pitch\s*cone", value):
+        return "bevel"
+    if re.search(r"compound|cluster|two[- ]stage|dual[- ]stage|double\s*gear", value):
+        return "compound"
+    if re.search(r"helical|helix|angled\s*teeth|slant(ed|ing)?\s*teeth", value):
+        return "helical"
+    if re.search(r"pinion\s*shaft|gear\s*shaft|integral\s*pinion", value):
+        return "pinion"
+    if re.search(r"stepped\s*(gear|shaft)|multi[- ]stage\s*shaft", value):
+        return "stepped"
+    if re.search(r"flanged\s*(gear|shaft)", value):
+        return "flanged"
+    if re.search(r"\bspur\b|straight[- ]cut\s*teeth|straight\s*teeth", value):
+        return "spur"
+    return None
+
+
+def _resolve_gear_type(gear: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+    """Resolve one canonical type or fail; never silently fall back to spur."""
+    if analysis.get("requiresGearTypeConfirmation") is True:
+        raise ExportError(
+            "Gear type is unconfirmed. Confirm spur, helical, bevel, worm, rack, "
+            "internal, compound, pinion, stepped or flanged before exporting CAD.",
+            stage="input",
+        )
+
+    explicit_raw = (
+        gear.get("gearType")
+        or gear.get("type")
+        or analysis.get("gearType")
+        or ((analysis.get("geometryRecipe") or {}).get("gear") or {}).get("gearType")
+    )
+    explicit = _normalize_gear_type(explicit_raw)
+    if explicit == "unknown":
+        raise ExportError(
+            "Gear type is unconfirmed. Confirm spur, helical, bevel, worm, rack, "
+            "internal, compound, pinion, stepped or flanged before exporting CAD.",
+            stage="input",
+        )
+
+    features = " ".join(str(f) for f in (analysis.get("features") or []))
+    text = f"{analysis.get('componentType') or ''} {features}"
+    inferred = _gear_type_from_text(text)
+    gear_type = explicit or inferred
+    if gear_type:
+        return gear_type
+
+    is_toothed = (
+        _positive(analysis.get("teeth")) is not None
+        or _positive(gear.get("teeth")) is not None
+        or bool((analysis.get("geometryRecipe") or {}).get("gear"))
+        or bool(re.search(r"gear|tooth|teeth|cog|worm|rack", text, re.I))
+    )
+    if is_toothed or analysis.get("requiresGearTypeConfirmation"):
+        raise ExportError(
+            "Gear type is unconfirmed. Confirm spur, helical, bevel, worm, rack, "
+            "internal, compound, pinion, stepped or flanged before exporting CAD.",
+            stage="input",
+        )
+    return "spur"
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +258,11 @@ def _clean_recipe(raw: Any) -> Optional[Dict[str, Any]]:
             "coneAngle",
             "hubDiameter",
             "hubLength",
+            "pitch",
+            "starts",
+            "lead",
+            "rootRadius",
+            "rackLength",
         ):
             value = _num(gear.get(key))
             if value is not None:
@@ -159,6 +271,23 @@ def _clean_recipe(raw: Any) -> Optional[Dict[str, Any]]:
             clean_gear["teeth"] = int(round(max(6.0, min(200.0, clean_gear["teeth"]))))
         if isinstance(gear.get("gearType"), str):
             clean_gear["gearType"] = gear["gearType"]
+        if isinstance(gear.get("innerRing"), bool):
+            clean_gear["innerRing"] = gear["innerRing"]
+        raw_stages = gear.get("stages")
+        if isinstance(raw_stages, list):
+            stages = []
+            for stage in raw_stages[:8]:
+                if not isinstance(stage, dict):
+                    continue
+                clean_stage = {}
+                for key in ("teeth", "module", "outerDiameter", "faceWidth"):
+                    value = _num(stage.get(key))
+                    if value is not None:
+                        clean_stage[key] = value
+                if clean_stage:
+                    stages.append(clean_stage)
+            if stages:
+                clean_gear["stages"] = stages
         if "spokes" in gear:
             spokes = _num(gear.get("spokes"))
             if spokes is not None:
@@ -394,6 +523,158 @@ def _twisted_tooth_extrusion(
     return cq.Workplane("XY").newObject([solid])
 
 
+def _rack_solid(
+    teeth: int, module: float, face_width: float, rack_length: Optional[float]
+) -> cq.Workplane:
+    pitch = math.pi * module
+    length = _positive(rack_length) or teeth * pitch
+    tooth_height = 2.25 * module
+    left = -length / 2
+    root_y = -tooth_height * 0.55
+    tip_y = tooth_height * 0.45
+    base_y = root_y - tooth_height * 0.9
+    points: List[Tuple[float, float]] = [(left, root_y)]
+    for i in range(teeth):
+        x0 = left + i * pitch
+        points.extend(
+            [
+                (x0, root_y),
+                (x0 + pitch * 0.18, tip_y),
+                (x0 + pitch * 0.50, tip_y),
+                (x0 + pitch * 0.68, root_y),
+            ]
+        )
+    points.extend([(left + length, root_y), (left + length, base_y), (left, base_y)])
+    return _tooth_extrusion(_dedupe(points), face_width).translate(
+        (0, 0, -face_width / 2)
+    )
+
+
+def _internal_gear_solid(
+    teeth: int, outer_r: float, tooth_height: float, face_width: float, pressure: float
+) -> cq.Workplane:
+    ring_outer_r = outer_r + max(tooth_height, 2.5 * (tooth_height / 2.25))
+    body = cq.Workplane("XY").circle(ring_outer_r).extrude(face_width)
+    cutter = _tooth_extrusion(
+        _gear_profile(teeth, outer_r, tooth_height, pressure), face_width + 2.0
+    ).translate((0, 0, -1.0))
+    return body.cut(cutter).translate((0, 0, -face_width / 2))
+
+
+def _coaxial_stage_solid(
+    gear: Dict[str, Any],
+    teeth: int,
+    module: float,
+    outer_r: float,
+    face_width: float,
+    bore: float,
+    pressure: float,
+    stepped: bool,
+) -> cq.Workplane:
+    raw_stages = gear.get("stages") if isinstance(gear.get("stages"), list) else []
+    if len(raw_stages) < 2:
+        second_teeth = max(8, int(round(teeth * (0.75 if stepped else 0.65))))
+        raw_stages = [
+            {"teeth": teeth, "outerDiameter": outer_r * 2, "faceWidth": face_width * 0.55},
+            {
+                "teeth": second_teeth,
+                "outerDiameter": outer_r * 2 * (0.78 if stepped else 0.62),
+                "faceWidth": face_width * 0.45,
+            },
+        ]
+
+    bodies: List[cq.Workplane] = []
+    z = 0.0
+    overlap = 0.0
+    for index, raw_stage in enumerate(raw_stages[:3]):
+        if not isinstance(raw_stage, dict):
+            continue
+        stage_teeth = int(round(_positive(raw_stage.get("teeth")) or teeth))
+        stage_teeth = max(6, min(200, stage_teeth))
+        stage_od = _positive(raw_stage.get("outerDiameter"))
+        stage_r = stage_od / 2 if stage_od else outer_r
+        stage_module = _positive(raw_stage.get("module")) or (2 * stage_r / (stage_teeth + 2))
+        stage_width = _positive(raw_stage.get("faceWidth")) or face_width / 2
+        points = _gear_profile(stage_teeth, stage_r, 2.25 * stage_module, pressure)
+        stage_body = _tooth_extrusion(points, stage_width)
+        if overlap:
+            z -= overlap
+        stage_body = stage_body.translate((0, 0, z))
+        bodies.append(stage_body)
+        z += stage_width
+        overlap = min(stage_width, face_width) * 0.15
+
+    if not bodies:
+        raise ExportError("No usable gear stages were provided.", stage="geometry")
+
+    body = _union_all(bodies)
+    total_h = z
+    if bore > 1e-6:
+        body = _cut_cylinder(body, bore, -1.0, total_h + 1.0)
+    return body.translate((0, 0, -total_h / 2))
+
+
+def _pinion_solid(
+    teeth: int,
+    module: float,
+    outer_r: float,
+    face_width: float,
+    bore: float,
+    pressure: float,
+    analysis: Dict[str, Any],
+) -> cq.Workplane:
+    points = _gear_profile(teeth, outer_r, 2.25 * module, pressure)
+    gear = _tooth_extrusion(points, face_width)
+    root_r = max(module, outer_r - 2.25 * module)
+    shaft_r = min(bore or outer_r * 0.35, root_r * 0.7)
+    shaft_length = _positive(_dims(analysis)["length"]) or max(face_width * 3, outer_r * 3)
+    shaft = cq.Workplane("XY").circle(shaft_r).extrude(shaft_length).translate(
+        (0, 0, (face_width - shaft_length) / 2)
+    )
+    body = _union_all([gear, shaft])
+    return body.translate((0, 0, -face_width / 2))
+
+
+def _flanged_gear_solid(
+    teeth: int,
+    module: float,
+    outer_r: float,
+    face_width: float,
+    bore: float,
+    pressure: float,
+    helix: float,
+) -> cq.Workplane:
+    points = _gear_profile(teeth, outer_r, 2.25 * module, pressure)
+    if abs(helix) > 0.01:
+        twist = (face_width * math.tan(math.radians(helix))) / max(1e-6, outer_r * 0.9)
+        body = _twisted_tooth_extrusion(points, face_width, twist)
+    else:
+        body = _tooth_extrusion(points, face_width)
+
+    flange_r = outer_r * 1.12
+    flange_t = max(face_width * 0.18, outer_r * 0.08)
+    overlap = flange_t * 0.1
+    flange = cq.Workplane("XY").circle(flange_r).extrude(flange_t).translate(
+        (0, 0, -flange_t + overlap)
+    )
+    body = _union_all([body, flange])
+    if bore > 1e-6:
+        body = _cut_cylinder(body, bore, -flange_t - 1.0, face_width + 1.0)
+
+    bolt_r = max(outer_r * 0.05, 0.4)
+    bolt_circle = flange_r * 0.82
+    for i in range(6):
+        angle = (i / 6) * math.pi * 2
+        x, y = math.cos(angle) * bolt_circle, math.sin(angle) * bolt_circle
+        cutter = cq.Workplane("XY").workplane(offset=-flange_t - 1.0).center(x, y).circle(
+            bolt_r
+        ).extrude(flange_t + 1.2)
+        body = body.cut(cutter)
+
+    z_min = -flange_t + overlap
+    return body.translate((0, 0, -(z_min + face_width) / 2))
+
+
 def _gear_solid(gear: Dict[str, Any], analysis: Dict[str, Any]) -> cq.Workplane:
     dims = _dims(analysis)
     teeth = int(round(_num(gear.get("teeth")) or _num(analysis.get("teeth")) or 16))
@@ -421,11 +702,9 @@ def _gear_solid(gear: Dict[str, Any], analysis: Dict[str, Any]) -> cq.Workplane:
     tooth_h = 2.25 * module
     pressure = _num(gear.get("pressureAngle")) or 20.0
     helix = _clamp(_num(gear.get("helixAngle")) or 0.0, -60.0, 60.0)
-    gear_type = str(
-        gear.get("gearType")
-        or analysis.get("gearType")
-        or ("bevel" if (gear.get("coneAngle") or analysis.get("coneAngle")) else "spur")
-    ).lower()
+    gear_type = _resolve_gear_type(gear, analysis)
+    if gear_type == "helical" and abs(helix) < 0.01:
+        helix = 20.0
 
     if gear_type == "bevel":
         return _bevel_gear_solid(
@@ -442,6 +721,55 @@ def _gear_solid(gear: Dict[str, Any], analysis: Dict[str, Any]) -> cq.Workplane:
             face_width=face_width,
             bore=bore,
             outer_r=outer_r,
+            pitch=_positive(gear.get("pitch")) or _positive(analysis.get("pitch")),
+            starts=int(round(_positive(gear.get("starts")) or _positive(analysis.get("starts")) or 1)),
+            root_radius=_positive(gear.get("rootRadius")) or _positive(gear.get("root_radius")),
+            hand="left" if helix < 0 else "right",
+        )
+
+    if gear_type == "rack":
+        return _rack_solid(
+            teeth=teeth,
+            module=module,
+            face_width=face_width,
+            rack_length=_positive(gear.get("rackLength")),
+        )
+
+    if gear_type == "internal" or gear.get("innerRing") is True:
+        return _internal_gear_solid(teeth, outer_r, tooth_h, face_width, pressure)
+
+    if gear_type in ("compound", "stepped"):
+        return _coaxial_stage_solid(
+            gear=gear,
+            teeth=teeth,
+            module=module,
+            outer_r=outer_r,
+            face_width=face_width,
+            bore=bore,
+            pressure=pressure,
+            stepped=gear_type == "stepped",
+        )
+
+    if gear_type == "pinion":
+        return _pinion_solid(
+            teeth=teeth,
+            module=module,
+            outer_r=outer_r,
+            face_width=face_width,
+            bore=bore,
+            pressure=pressure,
+            analysis=analysis,
+        )
+
+    if gear_type == "flanged":
+        return _flanged_gear_solid(
+            teeth=teeth,
+            module=module,
+            outer_r=outer_r,
+            face_width=face_width,
+            bore=bore,
+            pressure=pressure,
+            helix=helix,
         )
 
     points = _gear_profile(teeth, outer_r, tooth_h, pressure)
@@ -542,24 +870,45 @@ def _bevel_gear_solid(
     return body.translate((0, 0, -total_h / 2 + hub_h / 2))
 
 
-def _worm_solid(module: float, face_width: float, bore: float, outer_r: float) -> cq.Workplane:
-    shaft_r = max(module, outer_r * 0.35)
+def _worm_solid(
+    module: float,
+    face_width: float,
+    bore: float,
+    outer_r: float,
+    pitch: Optional[float] = None,
+    starts: int = 1,
+    root_radius: Optional[float] = None,
+    hand: str = "right",
+) -> cq.Workplane:
     length = _positive(face_width) or outer_r * 1.2
-    body = cq.Workplane("XY").circle(shaft_r).extrude(length)
-    starts = 1
+    axial_pitch = max(1e-3, _positive(pitch) or math.pi * module)
+    root_r = _positive(root_radius) or outer_r * 0.7
+    root_r = _clamp(root_r, max(1e-3, module * 0.5), outer_r * 0.92)
+    helix_r = (outer_r + root_r) / 2
+    thread_r = max(1e-3, min((outer_r - root_r) / 2, axial_pitch * 0.42))
+    core_r = max(1e-3, min(root_r * 0.85, thread_r * 1.6))
+    body = cq.Workplane("XY").circle(core_r).extrude(length)
 
-    pitch = max(1e-3, math.pi * module)
-    thread_r = max(1e-3, module * 0.35)
-    helix_r = shaft_r + thread_r * 0.3
-    for _ in range(starts):
+    built_threads = 0
+    for index in range(max(1, min(32, int(starts)))):
         try:
-            helix = cq.Wire.makeHelix(pitch, length, helix_r)
+            helix = cq.Wire.makeHelix(
+                axial_pitch, length, helix_r, lefthand=hand == "left"
+            )
             profile = cq.Workplane("XZ").center(helix_r, 0).circle(thread_r).wire().val()
-            thread_solid = cq.Solid.sweep(profile, [], helix, True, False)
-            body = body.union(cq.Workplane("XY").newObject([thread_solid]))
-        except Exception:
-            continue
+            thread = cq.Solid.sweep(profile, [], helix, True, True)
+            if index:
+                phase = (360.0 * index) / starts
+                thread = thread.rotate((0, 0, 0), (0, 0, 1), phase)
+            body = body.union(cq.Workplane("XY").newObject([thread]))
+            built_threads += 1
+        except Exception as exc:  # pragma: no cover - kernel-dependent defensive path
+            raise ExportError(
+                f"The worm flight could not be generated: {exc}", stage="geometry"
+            ) from exc
 
+    if built_threads == 0:
+        raise ExportError("The worm flight could not be generated.", stage="geometry")
     if bore > 1e-6:
         body = _cut_cylinder(body, bore, -1.0, length + 1.0)
     return body.translate((0, 0, -length / 2))
@@ -735,19 +1084,26 @@ def _combination_solid(recipe: Dict[str, Any]) -> cq.Workplane:
 def _component_type(analysis: Dict[str, Any]) -> str:
     raw = str(analysis.get("componentType") or "other").lower()
     features = " ".join(str(f) for f in (analysis.get("features") or [])).lower()
-    gear_type = str(
-        analysis.get("gearType")
-        or (analysis.get("geometryRecipe") or {}).get("gear", {}).get("gearType")
-        or ""
-    ).lower()
-    if "bevel" in raw or gear_type == "bevel" or "bevel" in features:
-        return "bevel gear"
-    if "worm" in raw or gear_type == "worm":
-        return "worm gear"
-    if "helical" in raw or gear_type == "helical":
-        return "helical gear"
-    if "gear" in raw or _positive(analysis.get("teeth")) or "gear" in features:
-        return "spur gear"
+    gear = (analysis.get("geometryRecipe") or {}).get("gear") or {}
+    explicit = _normalize_gear_type(
+        analysis.get("gearType") or gear.get("gearType") or gear.get("type")
+    )
+    inferred = _gear_type_from_text(f"{raw} {features}")
+    gear_type = explicit or inferred
+
+    if gear_type == "unknown":
+        return "unconfirmed gear"
+    if gear_type:
+        return gear_type
+
+    is_toothed = (
+        _positive(analysis.get("teeth")) is not None
+        or bool(gear)
+        or bool(re.search(r"gear|tooth|teeth|cog|worm|rack", f"{raw} {features}"))
+        or bool(analysis.get("requiresGearTypeConfirmation"))
+    )
+    if is_toothed:
+        return "unconfirmed gear"
     if "flange" in raw or "flange" in features:
         return "flange"
     if "bearing" in raw:
@@ -763,17 +1119,35 @@ def _fallback_solid(analysis: Dict[str, Any]) -> cq.Workplane:
     dims = _dims(analysis)
     kind = _component_type(analysis)
 
-    if kind in ("bevel gear", "spur gear", "helical gear", "worm gear"):
+    if kind in GEAR_TYPES and kind != "unknown":
+        recipe_gear = (analysis.get("geometryRecipe") or {}).get("gear") or {}
         gear = {
             "teeth": analysis.get("teeth") or 20,
             "module": analysis.get("module"),
-            "helixAngle": analysis.get("helixAngle") or (20 if kind == "helical gear" else 0),
-            "gearType": "bevel" if kind == "bevel gear" else ("worm" if kind == "worm gear" else "spur"),
-            "coneAngle": analysis.get("coneAngle") or 45,
-            "faceWidth": dims["h"],
+            "gearType": kind,
+            "helixAngle": analysis.get("helixAngle")
+            or recipe_gear.get("helixAngle")
+            or (20 if kind == "helical" else 0),
+            "coneAngle": analysis.get("coneAngle") or recipe_gear.get("coneAngle") or 45,
+            "pitch": analysis.get("pitch") or recipe_gear.get("pitch"),
+            "starts": analysis.get("starts") or recipe_gear.get("starts") or 1,
+            "rootRadius": analysis.get("rootRadius") or recipe_gear.get("rootRadius"),
+            "rackLength": analysis.get("rackLength") or recipe_gear.get("rackLength"),
+            "innerRing": analysis.get("innerRing")
+            if isinstance(analysis.get("innerRing"), bool)
+            else recipe_gear.get("innerRing"),
+            "stages": analysis.get("stages") or recipe_gear.get("stages"),
+            "pressureAngle": analysis.get("pressureAngle") or recipe_gear.get("pressureAngle"),
+            "faceWidth": dims["h"] or dims["thickness"],
             "boreRadius": (dims["id"] / 2) if dims["id"] else None,
         }
         return _gear_solid({k: v for k, v in gear.items() if v is not None}, analysis)
+
+    if kind == "unconfirmed gear":
+        # Reuse the shared guard so legacy/ambiguous toothed input fails loudly
+        # instead of silently becoming a spur placeholder.
+        _resolve_gear_type({}, analysis)
+        raise ExportError("Gear type is unconfirmed.", stage="input")
 
     if kind == "flange":
         return _flange_solid({}, analysis)

@@ -24,6 +24,7 @@ import {
   fallbackDeterministicAnalysis,
   extractVisionObservations,
 } from "./src/vision-geometry-resolver.js";
+import { gearTypeFromText, normalizeGearType } from "./src/gear-types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -83,7 +84,7 @@ function validateImages(images) {
   return clean;
 }
 
-const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle", "boltCount"];
+const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle", "coneAngle", "pitch", "starts", "boltCount"];
 
 function sanitizeReference(raw) {
   if (!raw || typeof raw !== "object") return {};
@@ -92,6 +93,7 @@ function sanitizeReference(raw) {
   if (typeof raw.notes === "string") clean.notes = raw.notes.slice(0, 500);
   if (typeof raw.componentType === "string") clean.componentType = raw.componentType.slice(0, 100);
   if (typeof raw.role === "string") clean.role = raw.role.slice(0, 50);
+  if (typeof raw.gearType === "string") clean.gearType = normalizeGearType(raw.gearType);
 
   for (const key of REFERENCE_KEYS) {
     const value = raw[key];
@@ -102,6 +104,10 @@ function sanitizeReference(raw) {
       if (value >= 0 && value <= 60) clean[key] = value;
     } else if (key === "module") {
       if (value > 0 && value <= 100) clean[key] = value;
+    } else if (key === "coneAngle") {
+      if (value > 0 && value <= 90) clean[key] = value;
+    } else if (key === "starts") {
+      if (value >= 1 && value <= 32) clean[key] = Math.round(value);
     } else if (key === "boltCount") {
       if (value >= 2 && value <= 64) clean[key] = Math.round(value);
     } else if (value > 0 && value <= 100000) {
@@ -521,13 +527,46 @@ async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled =
           const val = dims[key];
           cleanDims[key] = typeof val === "number" && isFinite(val) && val > 0 ? val : null;
         }
+        const cleanNumber = (value) => (
+          typeof value === "number" && isFinite(value) ? value : null
+        );
+        const geometryRecipe = sanitizeRecipe(raw.geometryRecipe);
+        const features = Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [];
+        const componentType = typeof raw.componentType === "string" ? raw.componentType : "other";
+        const rawExplicitType = raw.gearType ?? geometryRecipe?.gear?.gearType;
+        const explicitType = typeof rawExplicitType === "string" ? normalizeGearType(rawExplicitType) : null;
+        const inferredType = explicitType === null
+          ? gearTypeFromText(`${componentType} ${features.join(" ")}`)
+          : "unknown";
+        const isToothed = raw.teeth != null
+          || geometryRecipe?.gear != null
+          || /gear|tooth|teeth|cog|worm|rack/i.test(`${componentType} ${features.join(" ")}`);
+        const gearType = explicitType !== null && explicitType !== "unknown"
+          ? explicitType
+          : (inferredType !== "unknown" ? inferredType : (isToothed || explicitType === "unknown" ? "unknown" : null));
+        const requiresGearTypeConfirmation = Boolean(raw.requiresGearTypeConfirmation) || gearType === "unknown";
+        if (geometryRecipe?.gear && typeof geometryRecipe.gear === "object" && gearType) {
+          geometryRecipe.gear.gearType = gearType;
+        }
+        if (geometryRecipe && requiresGearTypeConfirmation) {
+          geometryRecipe.requiresGearTypeConfirmation = true;
+        }
 
         return {
-          componentType: typeof raw.componentType === "string" ? raw.componentType : "other",
+          componentType,
           dimensions: cleanDims,
-          features: Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [],
+          features,
           materialEstimate: typeof raw.materialEstimate === "string" ? raw.materialEstimate : "",
-          geometryRecipe: sanitizeRecipe(raw.geometryRecipe),
+          geometryRecipe,
+          gearType,
+          classificationSource: typeof raw.classificationSource === "string" ? raw.classificationSource.slice(0, 60) : null,
+          requiresGearTypeConfirmation,
+          teeth: cleanNumber(raw.teeth),
+          module: cleanNumber(raw.module),
+          helixAngle: cleanNumber(raw.helixAngle),
+          coneAngle: cleanNumber(raw.coneAngle),
+          pitch: cleanNumber(raw.pitch),
+          starts: cleanNumber(raw.starts),
         };
       }
 
@@ -660,7 +699,8 @@ async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled =
           helixAngle: pick(raw?.helixAngle, -60, 60),
           coneAngle: pick(raw?.coneAngle, 0, 90),
           boltCount: pick(raw?.boltCount, 3, 64),
-          gearType: typeof raw?.gearType === "string" ? raw.gearType.slice(0, 20) : null,
+          gearType: base.gearType,
+          requiresGearTypeConfirmation: base.requiresGearTypeConfirmation,
           datasetModel,
         };
       }
@@ -672,6 +712,11 @@ async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled =
           const format = String(req.body?.format || "step").toLowerCase();
           if (!CAD_EXPORT_FORMATS.includes(format)) {
             return res.status(400).json({ error: `Unsupported CAD export format: ${format}` });
+          }
+          if (analysis.gearType === "unknown" || analysis.requiresGearTypeConfirmation) {
+            return res.status(422).json({
+              error: "Gear type is unconfirmed. Confirm spur, helical, bevel, worm, rack, internal, compound, pinion, stepped or flanged before exporting CAD.",
+            });
           }
           const requested = typeof req.body?.baseName === "string" ? req.body.baseName.trim() : "";
           const baseName = requested || cadSlug(analysis);
@@ -731,10 +776,38 @@ async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled =
       app.post("/api/analyze-condition", async (req, res) => {
         try {
           const images = validateImages(req.body?.images);
+          const rawAnalysis = req.body?.analysis && typeof req.body.analysis === 'object'
+            ? req.body.analysis
+            : {};
+          const recipe = sanitizeRecipe(rawAnalysis.geometryRecipe);
+          const rawExplicitType = rawAnalysis.gearType ?? recipe?.gear?.gearType;
+          const explicitType = typeof rawExplicitType === 'string' ? normalizeGearType(rawExplicitType) : null;
+          const componentType = typeof rawAnalysis.componentType === 'string'
+            ? rawAnalysis.componentType.slice(0, 60)
+            : '';
+          const inferredType = explicitType === null
+            ? gearTypeFromText(`${componentType} ${(rawAnalysis.features || []).join(' ')}`)
+            : 'unknown';
+          const numeric = (value) => typeof value === 'number' && isFinite(value) ? value : null;
+          const gearType = explicitType !== null && explicitType !== 'unknown'
+            ? explicitType
+            : (inferredType !== 'unknown' ? inferredType : (explicitType === 'unknown' ? 'unknown' : null));
+          const requiresGearTypeConfirmation = Boolean(rawAnalysis.requiresGearTypeConfirmation) || gearType === 'unknown';
+          if (recipe?.gear && typeof recipe.gear === 'object' && gearType) {
+            recipe.gear.gearType = gearType;
+          }
+          if (recipe && requiresGearTypeConfirmation) {
+            recipe.requiresGearTypeConfirmation = true;
+          }
           const analysis = {
-            componentType: typeof req.body?.analysis?.componentType === 'string'
-              ? req.body.analysis.componentType.slice(0, 60)
-              : '',
+            componentType,
+            gearType,
+            requiresGearTypeConfirmation,
+            teeth: numeric(rawAnalysis.teeth),
+            module: numeric(rawAnalysis.module),
+            helixAngle: numeric(rawAnalysis.helixAngle),
+            coneAngle: numeric(rawAnalysis.coneAngle),
+            geometryRecipe: recipe,
           };
           const conditionAssessment = await attachConditionAssessment({ analysis, images });
           res.json({ conditionAssessment });

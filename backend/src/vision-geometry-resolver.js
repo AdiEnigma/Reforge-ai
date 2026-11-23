@@ -12,6 +12,11 @@
  */
 
 import { generateNeuralMesh, generateAxialManifoldMesh, buildVisualMeshFromVision } from './neural-mesh-generator.js';
+import {
+  inferGearType,
+  normalizeGearType,
+  gearTypeConfirmationMessage,
+} from './gear-types.js';
 
 export const STANDARD_MODULES = Object.freeze([
   0.5, 0.8, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.0,
@@ -576,6 +581,9 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
     });
     ans.parameterConfidence = confResult.parameterConfidence;
     ans.uncertainties = [...new Set([...(ans.uncertainties || []), ...confResult.uncertainties])];
+    if (ans.gearType && normalizeGearType(ans.gearType) !== 'unknown') {
+      ans.requiresGearTypeConfirmation = false;
+    }
     return ans;
   };
 
@@ -602,6 +610,12 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
       }
     }
   }
+
+  const gearTypeEvidence = inferGearType({
+    reference: ref,
+    observations: obs,
+    text: [ref.componentType, ref.name, ref.notes].filter(Boolean).join(' '),
+  });
 
   // Detect circular diameters (outer and inner/bore)
   let outerDiameterMm = null;
@@ -656,21 +670,31 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
     const confidence = hasStrongSymmetry ? 0.94 : 0.82;
     const maxAspectRatio = obs?.aspectRatios?.length ? Math.max(...obs.aspectRatios) : 1.0;
     const isElongated = maxAspectRatio >= 1.75;
+    const explicitGearType = typeof ref.gearType === 'string' ? normalizeGearType(ref.gearType) : null;
+    const pinionCompatible = !explicitGearType || ['spur', 'helical', 'pinion'].includes(explicitGearType);
 
-    if (isElongated) {
+    if (isElongated && pinionCompatible) {
+      const branchGearType = explicitGearType || 'helical';
+      const branchHelix = branchGearType === 'helical'
+        ? (typeof ref.helixAngle === 'number' && Math.abs(ref.helixAngle) > 0.5 ? ref.helixAngle : 20.0)
+        : (typeof ref.helixAngle === 'number' ? ref.helixAngle : 0.0);
+      const branchLabel = branchGearType === 'helical' ? 'Helical' : branchGearType === 'spur' ? 'Spur' : 'Pinion';
       const totalLength = Math.round(standardOd * Math.max(3.2, maxAspectRatio) * 10) / 10;
       const journalR1 = Math.round(standardOd * 0.28 * 10) / 10;
       const journalR2 = Math.round(standardOd * 0.25 * 10) / 10;
       const axialSegments = [
         { zStart: -totalLength / 2, zEnd: -finalFaceWidth / 2, radius: journalR1, label: 'Drive Journal (Left)' },
-        { zStart: -finalFaceWidth / 2, zEnd: finalFaceWidth / 2, teeth: detectedTeeth, module: cleanModule || 3.0, helixAngle: ref.helixAngle || 20.0, radius: standardOd / 2, label: 'Integral Pinion Gear' },
+        { zStart: -finalFaceWidth / 2, zEnd: finalFaceWidth / 2, teeth: detectedTeeth, module: cleanModule || 3.0, helixAngle: branchHelix, radius: standardOd / 2, label: `Integral ${branchLabel} Pinion Gear` },
         { zStart: finalFaceWidth / 2, zEnd: totalLength / 2, radius: journalR2, label: 'Support Journal (Right)' },
       ];
       const analysis = {
-        componentType: 'helical pinion shaft',
-        componentName: `Integral ${detectedTeeth}T Pinion Shaft Ø${standardOd}x${totalLength}mm`,
-        label: `Helical Pinion Shaft (${detectedTeeth}T)`,
+        componentType: branchGearType === 'pinion' ? 'pinion shaft' : `${branchGearType} pinion shaft`,
+        componentName: `Integral ${detectedTeeth}T ${branchLabel} Pinion Shaft Ø${standardOd}x${totalLength}mm`,
+        label: `${branchLabel} Pinion Shaft (${detectedTeeth}T)`,
         confidence,
+        gearType: branchGearType,
+        classificationSource: 'vision_geometry',
+        requiresGearTypeConfirmation: false,
         geometryType: 'integral_pinion_shaft',
         dimensions: {
           outerDiameter: standardOd,
@@ -682,9 +706,9 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
         },
         teeth: detectedTeeth,
         module: cleanModule || 3.0,
-        helixAngle: ref.helixAngle || 20.0,
+        helixAngle: branchHelix,
         features: [
-          `Integrated ${detectedTeeth}T Helical Pinion Section`,
+          `Integrated ${detectedTeeth}T ${branchLabel} Pinion Section`,
           `Left Drive Journal Ø${journalR1 * 2}mm`,
           `Right Support Journal Ø${journalR2 * 2}mm`,
           'Continuous Solid Steel Core',
@@ -698,9 +722,10 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
           operator: 'axial_segments',
           axialSegments,
           gear: {
+            gearType: branchGearType,
             teeth: detectedTeeth,
             module: cleanModule || 3.0,
-            helixAngle: ref.helixAngle || 20.0,
+            helixAngle: branchHelix,
             faceWidth: finalFaceWidth,
             outerDiameter: standardOd,
           },
@@ -720,23 +745,38 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
       };
     }
 
+    const detectedGearType = gearTypeEvidence.gearType;
+    const typeConfirmed = detectedGearType !== 'unknown';
+    const helixAngle = typeof ref.helixAngle === 'number' && Math.abs(ref.helixAngle) > 0.5
+      ? ref.helixAngle
+      : (detectedGearType === 'helical' ? 20.0 : 0.0);
+    const deterministicTypes = new Set(['spur', 'helical']);
+
     const recipe = {
       style: 'gear',
       gear: {
+        gearType: typeConfirmed ? detectedGearType : 'unknown',
         teeth: detectedTeeth,
         module: cleanModule || Math.round(rawModule * 1000) / 1000,
         pressureAngle: 20.0,
-        helixAngle: ref.helixAngle || 0.0,
+        helixAngle,
         faceWidth: finalFaceWidth,
         boreRadius: id > 0 ? Math.round((id / 2) * 10) / 10 : 0,
       },
     };
 
     const analysis = {
-      componentType: 'spur gear',
-      componentName: `${detectedTeeth}T Industrial Spur Gear`,
-      label: `Spur Gear (${detectedTeeth}T)`,
-      confidence,
+      componentType: typeConfirmed ? `${detectedGearType} gear` : 'gear (type unconfirmed)',
+      componentName: typeConfirmed
+        ? `${detectedTeeth}T Industrial ${detectedGearType.charAt(0).toUpperCase() + detectedGearType.slice(1)} Gear`
+        : `${detectedTeeth}T Toothed Component (type unconfirmed)`,
+      label: typeConfirmed
+        ? `${detectedGearType.charAt(0).toUpperCase() + detectedGearType.slice(1)} Gear (${detectedTeeth}T)`
+        : `Gear Type Unconfirmed (${detectedTeeth}T)`,
+      confidence: typeConfirmed ? confidence : Math.min(confidence, 0.65),
+      gearType: detectedGearType,
+      classificationSource: gearTypeEvidence.source,
+      requiresGearTypeConfirmation: !typeConfirmed,
       geometryType: 'toothed_gear',
       dimensions: {
         outerDiameter: standardOd,
@@ -748,7 +788,7 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
       },
       teeth: detectedTeeth,
       module: cleanModule || Math.round(rawModule * 1000) / 1000,
-      helixAngle: ref.helixAngle || 0.0,
+      helixAngle,
       features: [
         id > 0 ? `Central Bore Ø${id}mm` : 'Solid Hub (No Bore)',
         `${detectedTeeth} Precision Involute Teeth`,
@@ -758,15 +798,17 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
       materialEstimate: 'AISI 4140 Alloy Steel',
       manufacturingProcess: 'Hobbing + CNC Finish',
       reasoning: `Mathematically resolved from vision contours and rotational symmetry: ${detectedTeeth} teeth with standard module ${cleanModule}mm and tip diameter ${standardOd}mm.`,
-      uncertainties: [],
+      uncertainties: typeConfirmed ? [] : [gearTypeConfirmationMessage(detectedGearType)],
       geometryRecipe: recipe,
       provenance: 'computer_vision_direct',
     };
 
     return {
-      canResolveWithoutGemini: true,
+      // Only explicit, deterministic types may bypass Gemini. A tooth count
+      // alone proves "gear", not the tooth form, and must not become spur.
+      canResolveWithoutGemini: typeConfirmed && deterministicTypes.has(detectedGearType),
       analysis: finalize(analysis),
-      confidence,
+      confidence: analysis.confidence,
     };
   }
 
@@ -1044,6 +1086,15 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   const rawFeatures = Array.isArray(reconciled.features)
     ? reconciled.features.map((f) => String(f).toLowerCase()).join(' ')
     : '';
+  const gearTypeEvidence = inferGearType({
+    reference: {
+      ...ref,
+      gearType: ref.gearType || geminiAnalysis?.gearType || geminiAnalysis?.geometryRecipe?.gear?.gearType,
+    },
+    observations: obs,
+    text: `${rawType} ${rawFeatures} ${String(ref.componentType || '')} ${String(ref.name || '')} ${String(ref.notes || '')}`,
+  });
+  const explicitGearType = gearTypeEvidence.gearType;
   const isBevel =
     rawType.includes('bevel') ||
     rawType.includes('miter') ||
@@ -1052,7 +1103,8 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     rawFeatures.includes('miter') ||
     rawFeatures.includes('conical') ||
     geminiAnalysis?.gearType === 'bevel' ||
-    geminiAnalysis?.geometryRecipe?.gear?.gearType === 'bevel';
+    geminiAnalysis?.geometryRecipe?.gear?.gearType === 'bevel' ||
+    explicitGearType === 'bevel';
 
   const isWormDirect =
     rawType.includes('worm') ||
@@ -1094,6 +1146,13 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       Math.round((reconciled.module ? reconciled.module * 9 : 24) * 10) / 10;
     reconciled.dimensions.height = faceWidth;
     reconciled.dimensions.thickness = faceWidth;
+
+    const finalGearType = explicitGearType !== 'unknown'
+      ? explicitGearType
+      : ((reconciled.helixAngle && Math.abs(reconciled.helixAngle) > 0) ? 'helical' : 'unknown');
+    reconciled.gearType = finalGearType;
+    reconciled.classificationSource = gearTypeEvidence.source;
+    reconciled.requiresGearTypeConfirmation = finalGearType === 'unknown';
 
     let spokes = null;
     if (typeof ref.spokes === 'number' && ref.spokes >= 3) {
@@ -1145,7 +1204,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
         compTypeLower.includes('worm') ||
         rawType.includes('worm') ||
         rawFeatures.includes('worm') ||
-        geminiAnalysis?.gearType === 'worm';
+        explicitGearType === 'worm';
 
       const isExplicitCompound =
         !isWorm &&
@@ -1162,6 +1221,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           rawFeatures.includes('dual-stage') ||
           rawFeatures.includes('two-stage') ||
           geminiAnalysis?.geometryRecipe?.style === 'compound_gear' ||
+          explicitGearType === 'compound' ||
           (geminiAnalysis?.geometryRecipe?.gear?.stages && geminiAnalysis.geometryRecipe.gear.stages.length >= 2));
 
       const hasShaftExtension =
@@ -1296,7 +1356,11 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           reconciled.dimensions.length = totalLength;
           reconciled.dimensions.height = totalLength;
           reconciled.dimensions.innerDiameter = 0; // Solid integral pinion shaft has no through-bore
-          reconciled.componentType = (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical pinion shaft' : 'gear shaft';
+          reconciled.componentType = finalGearType === 'unknown'
+            ? 'pinion shaft (gear type unconfirmed)'
+            : `${finalGearType} pinion shaft`;
+          reconciled.gearType = finalGearType;
+          reconciled.requiresGearTypeConfirmation = finalGearType === 'unknown';
           reconciled.geometryType = 'integral_pinion_shaft';
 
           const journalLen = Math.max(25, Math.round((totalLength - faceWidth) / 2));
@@ -1313,7 +1377,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
             operator: 'axial_segments',
             axialSegments,
             gear: {
-              gearType: (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical' : 'spur',
+              gearType: finalGearType,
               teeth: finalTeeth,
               module: reconciled.module,
               helixAngle: reconciled.helixAngle || 0.0,
@@ -1342,8 +1406,21 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           }
           reconciled.features = featuresList;
         } else {
-          reconciled.componentType = (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical gear' : 'spur gear';
-          reconciled.gearType = (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical' : 'spur';
+          reconciled.componentType = finalGearType === 'unknown'
+            ? 'gear (type unconfirmed)'
+            : `${finalGearType} gear`;
+          reconciled.gearType = finalGearType;
+          if (finalGearType === 'helical' && !(reconciled.helixAngle > 0)) {
+            reconciled.helixAngle = 20.0;
+          }
+          if (finalGearType === 'unknown') {
+            reconciled.uncertainties = [
+              ...new Set([
+                ...(reconciled.uncertainties || []),
+                gearTypeConfirmationMessage(finalGearType),
+              ]),
+            ];
+          }
           const axialSegments = [
             { zStart: -faceWidth / 2, zEnd: faceWidth / 2, teeth: finalTeeth, module: reconciled.module, helixAngle: reconciled.helixAngle || 0.0, radius: od / 2, label: 'Gear Section' },
           ];
@@ -1889,11 +1966,11 @@ function buildRecipeFromDimensions(analysis) {
     return {
       style: 'gear',
       gear: {
-        gearType: analysis?.gearType || 'spur',
+        gearType: normalizeGearType(analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType),
         teeth,
         module: m,
         pressureAngle: 20.0,
-        helixAngle: analysis?.helixAngle || 0.0,
+        helixAngle: analysis?.helixAngle || (normalizeGearType(analysis?.gearType) === 'helical' ? 20.0 : 0.0),
         faceWidth: h,
         boreRadius: id / 2,
         spokes: analysis?.spokes || null,
@@ -1992,6 +2069,9 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
   const cleanName = String(ref.name || '').replace(/primary gear|companion gear|gear/gi, '').trim().toLowerCase();
   const cleanNotes = String(ref.notes || '').toLowerCase();
   const allText = `${refTypeLower} ${cleanName} ${cleanNotes}`.trim();
+  const gearTypeEvidence = inferGearType({ reference: ref, text: allText });
+  const gearType = gearTypeEvidence.gearType;
+  const explicitGearType = typeof ref.gearType === 'string' ? normalizeGearType(ref.gearType) : null;
 
   // Inspect image aspect ratio directly from base64 if available
   let detectedImgAspectRatio = 1.0;
@@ -2020,15 +2100,19 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
     });
     ans.parameterConfidence = confResult.parameterConfidence;
     ans.uncertainties = [...new Set([...(ans.uncertainties || []), ...confResult.uncertainties])];
+    if (ans.gearType && normalizeGearType(ans.gearType) !== 'unknown') {
+      ans.requiresGearTypeConfirmation = false;
+    }
     return ans;
   };
 
-  const isWorm =
-    allText.includes('worm') ||
-    allText.includes('screw') ||
-    allText.includes('flight') ||
-    refTypeLower.includes('worm') ||
-    ref.gearType === 'worm';
+  const isWorm = explicitGearType
+    ? explicitGearType === 'worm'
+    : (allText.includes('worm') ||
+      allText.includes('screw') ||
+      allText.includes('flight') ||
+      refTypeLower.includes('worm') ||
+      gearType === 'worm');
 
   if (isWorm) {
     const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 60.0;
@@ -2069,6 +2153,9 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
       componentName: `Precision Worm Drive Spindle Ø${od}x${length}mm (p${pitch})`,
       label: `Worm Drive Shaft (${starts}-Start p${pitch} Ø${od}mm)`,
       confidence: 0.94,
+      gearType: 'worm',
+      classificationSource: gearTypeEvidence.source,
+      requiresGearTypeConfirmation: false,
       geometryType: 'worm_drive_spindle',
       dimensions: {
         outerDiameter: od,
@@ -2109,16 +2196,26 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
     });
   }
 
+  const pinionCompatible = !explicitGearType || ['spur', 'helical', 'pinion'].includes(explicitGearType);
   const isPinionShaft =
+    pinionCompatible &&
     !isWorm &&
-    (allText.includes('shaft') || allText.includes('spindle') || isImageElongated || (ref.length && ref.length > (ref.outerDiameter || 40) * 1.5)) &&
+    (explicitGearType === 'pinion' || allText.includes('shaft') || allText.includes('spindle') || isImageElongated || (ref.length && ref.length > (ref.outerDiameter || 40) * 1.5)) &&
     (allText.includes('gear') || allText.includes('pinion') || allText.includes('helical') || typeof ref.teeth === 'number' || typeof ref.helixAngle === 'number' || isImageElongated);
 
   if (isPinionShaft) {
     const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 16;
     const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 60.0;
     const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(od * Math.max(3.2, detectedImgAspectRatio) * 10) / 10);
-    const helixAngle = typeof ref.helixAngle === 'number' ? ref.helixAngle : 22.0;
+    const resolvedGearType = explicitGearType
+      || (['spur', 'helical', 'pinion'].includes(gearType) ? gearType : 'helical');
+    const helixAngle = resolvedGearType === 'helical'
+      ? (typeof ref.helixAngle === 'number' && Math.abs(ref.helixAngle) > 0.5 ? ref.helixAngle : 22.0)
+      : (typeof ref.helixAngle === 'number' ? ref.helixAngle : 0.0);
+    const resolvedLabel = resolvedGearType === 'helical' ? 'Helical' : resolvedGearType === 'spur' ? 'Spur' : 'Pinion';
+    const resolvedComponentType = resolvedGearType === 'pinion'
+      ? 'pinion shaft'
+      : `${resolvedGearType} pinion shaft`;
     const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.7 * 10) / 10;
     const m = snapToStandardModule(od / (teeth + 2)) || 3.5;
     const journalR1 = Math.round(od * 0.28 * 10) / 10;
@@ -2126,15 +2223,18 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
 
     const axialSegments = [
       { zStart: -length / 2, zEnd: -faceWidth / 2, radius: journalR1, label: 'Drive Journal (Left)' },
-      { zStart: -faceWidth / 2, zEnd: faceWidth / 2, teeth, module: m, helixAngle, radius: od / 2, label: 'Helical Pinion Gear' },
+      { zStart: -faceWidth / 2, zEnd: faceWidth / 2, teeth, module: m, helixAngle, radius: od / 2, label: `${resolvedLabel} Pinion Gear` },
       { zStart: faceWidth / 2, zEnd: length / 2, radius: journalR2, label: 'Support Journal (Right)' },
     ];
 
     return finalize({
-      componentType: helixAngle > 0 ? 'helical pinion shaft' : 'gear shaft',
-      componentName: `Integral ${teeth}T Helical Pinion Shaft Ø${od}x${length}mm`,
-      label: `Helical Pinion Shaft (${teeth}T Ø${od}mm)`,
+      componentType: resolvedComponentType,
+      componentName: `Integral ${teeth}T ${resolvedLabel} Pinion Shaft Ø${od}x${length}mm`,
+      label: `${resolvedLabel} Pinion Shaft (${teeth}T Ø${od}mm)`,
       confidence: 0.93,
+      gearType: resolvedGearType,
+      classificationSource: explicitGearType ? 'user_reference' : gearTypeEvidence.source,
+      requiresGearTypeConfirmation: false,
       geometryType: 'integral_pinion_shaft',
       dimensions: {
         outerDiameter: od,
@@ -2148,21 +2248,21 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
       module: m,
       helixAngle,
       features: [
-        `Integrated ${teeth}T Helical Pinion (${helixAngle}° Helix Angle m${m})`,
+        `Integrated ${teeth}T ${resolvedLabel} Pinion (m${m}${helixAngle ? `, ${helixAngle}° Helix Angle` : ''})`,
         `Left Drive Journal Ø${journalR1 * 2}mm`,
         `Right Support Journal Ø${journalR2 * 2}mm`,
         'Solid Core Continuous Alloy Steel Shaft',
       ],
       materialEstimate: '18CrNiMo7-6 Case-Hardened Alloy Steel',
       manufacturingProcess: 'CNC Turning + Continuous Gear Hobbing + Carburizing & Cylindrical Grinding',
-      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized integral helical pinion shaft with dual ground bearing journals.`,
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized integral ${resolvedLabel.toLowerCase()} pinion shaft with dual ground bearing journals.`,
       uncertainties: [],
       geometryRecipe: {
         style: 'pinion_shaft',
         operator: 'axial_segments',
         axialSegments,
         gear: {
-          gearType: helixAngle > 0 ? 'helical' : 'spur',
+          gearType: resolvedGearType,
           teeth,
           module: m,
           helixAngle,
@@ -2178,21 +2278,22 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
         meshData: generateNeuralMesh({
           axialSegments,
           boreRadius: 0,
-          componentType: 'helical pinion shaft',
+          componentType: resolvedComponentType,
         }),
       },
       provenance: 'deterministic_fallback_engine',
     });
   }
 
-  const isCompound =
-    refTypeLower.includes('compound') ||
-    refTypeLower.includes('cluster') ||
-    refTypeLower.includes('two-stage') ||
-    refTypeLower.includes('companion') ||
-    refTypeLower.includes('dual') ||
-    refTypeLower.includes('double') ||
-    ref.gearType === 'compound';
+  const isCompound = explicitGearType
+    ? explicitGearType === 'compound'
+    : (refTypeLower.includes('compound') ||
+      refTypeLower.includes('cluster') ||
+      refTypeLower.includes('two-stage') ||
+      refTypeLower.includes('companion') ||
+      refTypeLower.includes('dual') ||
+      refTypeLower.includes('double') ||
+      gearType === 'compound');
 
   if (isCompound) {
     const stage1OD = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 120.0;
@@ -2383,10 +2484,11 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
     });
   }
 
-  const isBevel =
-    String(ref.componentType || '').toLowerCase().includes('bevel') ||
-    String(ref.componentType || '').toLowerCase().includes('miter') ||
-    ref.gearType === 'bevel';
+  const isBevel = explicitGearType
+    ? explicitGearType === 'bevel'
+    : (String(ref.componentType || '').toLowerCase().includes('bevel') ||
+      String(ref.componentType || '').toLowerCase().includes('miter') ||
+      gearType === 'bevel');
 
   if (isBevel) {
     const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 20;
@@ -2548,8 +2650,60 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
     });
   }
 
+  if (gearType === 'rack' || gearType === 'internal') {
+    const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : (gearType === 'internal' ? 36 : 20);
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 120.0;
+    const module = snapToStandardModule(ref.module || od / (teeth + 2)) || 4.0;
+    const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0
+      ? ref.thickness
+      : typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(module * 8 * 10) / 10;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : od * 0.58;
+    const name = gearType === 'rack' ? 'Rack Gear' : 'Internal Ring Gear';
+    return finalize({
+      componentType: `${gearType} gear`,
+      componentName: `${teeth}T ${name}`,
+      label: `${name} (${teeth}T)`,
+      confidence: 0.92,
+      gearType,
+      classificationSource: gearTypeEvidence.source,
+      requiresGearTypeConfirmation: false,
+      geometryType: gearType === 'rack' ? 'linear_rack' : 'internal_ring_gear',
+      dimensions: {
+        outerDiameter: od,
+        innerDiameter: gearType === 'internal' ? id : 0,
+        height: faceWidth,
+        thickness: faceWidth,
+        width: gearType === 'rack' ? teeth * Math.PI * module : od,
+        length: gearType === 'rack' ? teeth * Math.PI * module : od,
+      },
+      teeth,
+      module,
+      helixAngle: 0.0,
+      features: gearType === 'rack'
+        ? [`${teeth} Straight Rack Teeth`, `Module ${module}mm`, `Rack Length ${Math.round(teeth * Math.PI * module * 10) / 10}mm`]
+        : [`${teeth} Internal Ring Teeth`, `Module ${module}mm`, `Root Bore Ø${id}mm`],
+      materialEstimate: 'AISI 4140 Alloy Steel',
+      manufacturingProcess: gearType === 'rack' ? 'Gear Shaping + Surface Grinding' : 'Internal Gear Broaching + Heat Treatment',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized explicit ${name} geometry.`,
+      uncertainties: [],
+      geometryRecipe: {
+        style: 'gear',
+        gear: {
+          gearType,
+          teeth,
+          module,
+          faceWidth,
+          boreRadius: gearType === 'internal' ? id / 2 : 0,
+          outerDiameter: od,
+        },
+      },
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
+
   const hasTeethIndicator = typeof ref.teeth === 'number' && ref.teeth >= 4;
-  if (!hasTeethIndicator) {
+  const hasExplicitGearType = explicitGearType && explicitGearType !== 'unknown';
+  if (!hasTeethIndicator && !hasExplicitGearType) {
     const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 130.0;
     const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.35 * 10) / 10;
     const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.16 * 10) / 10;
@@ -2592,11 +2746,18 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
       ? ref.height
       : Math.round(m * 9 * 10) / 10;
 
+  const finalGearType = gearType === 'unknown' ? 'unknown' : gearType;
+  const typeConfirmed = finalGearType !== 'unknown';
+  const finalHelix = finalGearType === 'helical' ? (typeof ref.helixAngle === 'number' && Math.abs(ref.helixAngle) > 0.5 ? ref.helixAngle : 20.0) : 0.0;
+
   return finalize({
-    componentType: 'spur gear',
-    componentName: `${teeth}T Precision Spur Gear`,
-    label: `Spur Gear (${teeth}T)`,
-    confidence: 0.90,
+    componentType: typeConfirmed ? `${finalGearType} gear` : 'gear (type unconfirmed)',
+    componentName: typeConfirmed ? `${teeth}T Precision ${finalGearType.charAt(0).toUpperCase() + finalGearType.slice(1)} Gear` : `${teeth}T Toothed Component (type unconfirmed)`,
+    label: typeConfirmed ? `${finalGearType.charAt(0).toUpperCase() + finalGearType.slice(1)} Gear (${teeth}T)` : `Gear Type Unconfirmed (${teeth}T)`,
+    confidence: typeConfirmed ? 0.90 : 0.65,
+    gearType: finalGearType,
+    classificationSource: gearTypeEvidence.source,
+    requiresGearTypeConfirmation: !typeConfirmed,
     geometryType: 'toothed_gear',
     dimensions: {
       outerDiameter: standardOd,
@@ -2608,7 +2769,7 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
     },
     teeth,
     module: m,
-    helixAngle: 0.0,
+    helixAngle: finalHelix,
     features: [
       `Central Bore Ø${id}mm`,
       `${teeth} Involute Gear Teeth`,
@@ -2618,14 +2779,15 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
     materialEstimate: 'AISI 4140 Alloy Steel',
     manufacturingProcess: 'Hobbing + Wire EDM Bore',
     reasoning: `Deterministic engineering solver engaged (${reason}). Parameters synthesized according to ISO 54 gear specifications.`,
-    uncertainties: [],
+    uncertainties: typeConfirmed ? [] : [gearTypeConfirmationMessage(finalGearType)],
     geometryRecipe: {
       style: 'gear',
       gear: {
+        gearType: finalGearType,
         teeth,
         module: m,
         pressureAngle: 20.0,
-        helixAngle: 0.0,
+        helixAngle: finalHelix,
         faceWidth,
         boreRadius: id / 2,
       },

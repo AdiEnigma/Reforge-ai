@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
-import { executeRecipe, sanitizeRecipe } from "./recipe.js";
+import { buildGearFromRecipe, executeRecipe, sanitizeRecipe } from "./recipe.js";
+import { normalizeGearType } from "./gear-types.js";
 import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup, buildCompoundGearGroup, buildFlangedShaftGroup, buildPinionShaftGroup } from "./geo.js";
 
 // Built geometry is immutable for a given analysis object. Validation and each
@@ -18,6 +19,11 @@ export const COMPONENT_LABELS = {
   "spur gear": "SPUR GEAR",
   "helical gear": "HELICAL GEAR",
   "worm gear": "WORM GEAR",
+  "rack gear": "RACK GEAR",
+  "internal gear": "INTERNAL GEAR",
+  "stepped gear": "STEPPED GEAR",
+  "flanged gear": "FLANGED GEAR",
+  "gear (type unconfirmed)": "GEAR TYPE UNCONFIRMED",
   "cylinder/shaft": "CYLINDER / SHAFT",
   flange: "FLANGE",
   bearing: "BEARING",
@@ -28,8 +34,10 @@ export const COMPONENT_LABELS = {
 export function resolveComponentType(analysis) {
   const raw = String(analysis?.componentType || "other").toLowerCase();
   const featuresStr = Array.isArray(analysis?.features) ? analysis.features.map(f => String(f).toLowerCase()).join(" ") : "";
-  const gearType = String(analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType || "").toLowerCase();
-  const isGear = raw.includes("gear") || featuresStr.includes("gear") || featuresStr.includes("teeth") || (typeof analysis?.teeth === "number" && analysis.teeth > 0) || analysis?.geometryRecipe?.style === "gear" || analysis?.geometryRecipe?.gear;
+  const rawGearType = analysis?.gearType ?? analysis?.geometryRecipe?.gear?.gearType;
+  const gearType = normalizeGearType(rawGearType);
+  const hasExplicitGearType = rawGearType != null;
+  const isGear = raw.includes("gear") || featuresStr.includes("gear") || featuresStr.includes("teeth") || (typeof analysis?.teeth === "number" && analysis.teeth > 0) || gearType !== "unknown" || analysis?.geometryRecipe?.style === "gear" || analysis?.geometryRecipe?.gear;
 
   // 1. Detect Compound / Cluster Multi-Stage Gear (EXCLUDE pinion shafts and single gears)
   const isExplicitPinionShaft =
@@ -42,6 +50,7 @@ export function resolveComponentType(analysis) {
   if (
     isGear &&
     !isExplicitPinionShaft &&
+    gearType !== "stepped" &&
     (raw.includes("compound") ||
       raw.includes("cluster") ||
       raw.includes("double gear") ||
@@ -53,14 +62,21 @@ export function resolveComponentType(analysis) {
       featuresStr.includes("two-stage") ||
       featuresStr.includes("double gear") ||
       featuresStr.includes("dual gear") ||
+      gearType === "compound" ||
       (analysis?.geometryRecipe?.gear?.stages && analysis.geometryRecipe.gear.stages.length >= 2))
   ) {
     return "compound gear";
   }
 
+  if (isGear && gearType === "pinion") {
+    return "pinion shaft";
+  }
+
   // 2. Detect Integral Pinion Shaft / Gear Shaft
+  const pinionCompatible = ["unknown", "spur", "helical", "pinion"].includes(gearType);
   if (
     isGear &&
+    pinionCompatible &&
     (isExplicitPinionShaft ||
       (analysis?.geometryRecipe?.shaft && analysis?.geometryRecipe?.gear) ||
       ((analysis?.dimensions?.length || analysis?.dimensions?.height || 0) >= ((analysis?.dimensions?.outerDiameter || 30) * 1.5) &&
@@ -96,17 +112,30 @@ export function resolveComponentType(analysis) {
     return "bevel gear";
   }
 
-  // 5. Detect Helical / Worm Gear
-  if (isGear && (raw.includes("helical") || gearType === "helical" || (typeof analysis?.helixAngle === "number" && analysis.helixAngle > 0))) {
-    return "helical gear";
-  }
+  // 5. Prefer explicit tooth-form evidence over generic helix-angle hints.
   if (isGear && (raw.includes("worm") || gearType === "worm")) {
     return "worm gear";
   }
+  if (isGear && (raw.includes("rack") || gearType === "rack")) {
+    return "rack gear";
+  }
+  if (isGear && (raw.includes("internal") || raw.includes("annular") || gearType === "internal")) {
+    return "internal gear";
+  }
+  if (isGear && gearType === "stepped") {
+    return "stepped gear";
+  }
+  if (isGear && gearType === "flanged" && !isExplicitPinionShaft) {
+    return "flanged gear";
+  }
+  if (isGear && (raw.includes("helical") || gearType === "helical" || (!hasExplicitGearType && typeof analysis?.helixAngle === "number" && analysis.helixAngle > 0))) {
+    return "helical gear";
+  }
 
-  // 6. Detect Spur Gear (Standard)
+  // 6. Detect Spur Gear only from explicit evidence. An uncounted tooth form
+  // stays unconfirmed instead of being silently rebuilt as a spur gear.
   if (isGear) {
-    return "spur gear";
+    return gearType === "spur" || raw.includes("spur") || featuresStr.includes("straight teeth") ? "spur gear" : "gear (type unconfirmed)";
   }
 
   // 7. Detect Circular Cap / Bushing / Sleeve (avoid false-positive stepped shafts)
@@ -211,7 +240,12 @@ export function computeParams(analysis) {
     boltCount: boltCount || 4,
     spokes: spokeCount,
     coneAngle: typeof analysis?.coneAngle === "number" ? analysis.coneAngle : (analysis?.geometryRecipe?.gear?.coneAngle || 45),
-    gearType: analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType || null,
+    gearType: normalizeGearType(analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType),
+    helixAngle: analysis?.helixAngle ?? analysis?.geometryRecipe?.gear?.helixAngle ?? 0,
+    module: analysis?.module ?? analysis?.geometryRecipe?.gear?.module ?? null,
+    pitch: analysis?.pitch ?? analysis?.geometryRecipe?.gear?.pitch ?? null,
+    starts: analysis?.starts ?? analysis?.geometryRecipe?.gear?.starts ?? null,
+    requiresGearTypeConfirmation: Boolean(analysis?.requiresGearTypeConfirmation),
     outerDiameter: s(dims.outerDiameter),
     innerDiameter: s(dims.innerDiameter),
     height: s(dims.height),
@@ -711,7 +745,24 @@ export function buildModel(analysis) {
         break;
       case "spur gear":
       case "helical gear":
-        body = buildSpurGear(p);
+      case "worm gear":
+      case "rack gear":
+      case "internal gear":
+      case "stepped gear":
+      case "flanged gear":
+      case "gear (type unconfirmed)":
+        body = buildGearFromRecipe({
+          gearType: p.gearType,
+          teeth: p.teeth,
+          module: p.module,
+          outerDiameter: p.outerDiameter,
+          faceWidth: p.height || p.thickness,
+          boreRadius: p.innerDiameter ? p.innerDiameter / 2 : 0,
+          helixAngle: p.helixAngle,
+          coneAngle: p.coneAngle,
+          pitch: p.pitch,
+          starts: p.starts,
+        });
         break;
       case "cylinder/shaft":
         body = buildCylinder(p);

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyPixelEvidence,
+  conditionPrompt,
   deriveConditionAssessment,
   heatLevel,
   unknownConditionAssessment,
@@ -365,4 +366,61 @@ test("broad defect claims without pixel evidence fail closed", () => {
   assert.equal(result.status, "NEEDS INSPECTION");
   assert.equal(result.healthScore, null);
   assert.equal(result.pixelEvidence.confirmed, false);
+});
+
+test("conditionPrompt uses the confirmed gear type and reconstructed gear geometry", () => {
+  const prompt = conditionPrompt({
+    componentType: "helical gear",
+    gearType: "helical",
+    geometryRecipe: { gear: { teeth: 24, module: 4, helixAngle: 25 } },
+  });
+  assert.match(prompt, /Confirmed gear type: helical/);
+  assert.match(prompt, /angled tooth flanks/);
+  assert.match(prompt, /24 teeth, module 4 mm, helix 25°/);
+  assert.doesNotMatch(prompt, /Describe damage on straight parallel tooth flanks/);
+});
+
+test("conditionPrompt does not apply spur vocabulary to a worm gear", () => {
+  const prompt = conditionPrompt({
+    componentType: "worm gear",
+    gearType: "worm",
+    geometryRecipe: { gear: { teeth: 1, pitch: 8, starts: 1 } },
+  });
+  assert.match(prompt, /Confirmed gear type: worm/);
+  assert.match(prompt, /continuous worm flight/);
+  assert.doesNotMatch(prompt, /Describe damage on straight parallel tooth flanks/);
+});
+
+test("conditionPrompt flags unconfirmed tooth form instead of assuming spur", () => {
+  const prompt = conditionPrompt({
+    componentType: "gear (type unconfirmed)",
+    gearType: "unknown",
+    requiresGearTypeConfirmation: true,
+    geometryRecipe: { gear: { teeth: 20 } },
+  });
+  assert.match(prompt, /tooth form is unconfirmed/);
+  assert.doesNotMatch(prompt, /Confirmed gear type/);
+});
+
+test("type-specific verification follows the confirmed gear type", () => {
+  const raw = {
+    imageQuality: "adequate",
+    observations: [
+      {
+        type: "tooth_wear",
+        severity: "moderate",
+        extent: "localized",
+        evidence: "polished flight flank",
+        confidence: 0.9,
+      },
+    ],
+    suspectedInternal: [],
+    summary: "",
+  };
+  const worm = deriveConditionAssessment(raw, { gearType: "worm" });
+  const bevel = deriveConditionAssessment(raw, { gearType: "bevel" });
+  assert.equal(worm.assessedGearType, "worm");
+  assert.ok(worm.recommendedVerification.some((item) => /worm flight/i.test(item)));
+  assert.equal(bevel.assessedGearType, "bevel");
+  assert.ok(bevel.recommendedVerification.some((item) => /pitch cone/i.test(item)));
 });

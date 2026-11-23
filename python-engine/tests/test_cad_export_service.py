@@ -19,7 +19,7 @@ ENGINE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ENGINE_ROOT not in sys.path:
     sys.path.insert(0, ENGINE_ROOT)
 
-from exports.reconstruction_export import export_model  # noqa: E402
+from exports.reconstruction_export import ExportError, export_model  # noqa: E402
 
 SAMPLES = {
     "spur_gear": {
@@ -117,6 +117,102 @@ SAMPLES = {
 }
 
 
+# Each confirmed tooth form has a distinct fixture: different tooth counts,
+# diameters, face widths and type-specific parameters. The analysis-level type
+# is intentional: CAD must honour the single confirmed analysis even when a
+# partial recipe does not repeat it.
+CONFIRMED_GEAR_SAMPLES = {
+    "spur": {
+        "componentType": "spur gear",
+        "gearType": "spur",
+        "gear": {"teeth": 13, "module": 3.5, "faceWidth": 13, "boreRadius": 5},
+    },
+    "helical": {
+        "componentType": "helical gear",
+        "gearType": "helical",
+        "gear": {"teeth": 14, "module": 3.5, "faceWidth": 14, "boreRadius": 5.5, "helixAngle": 22},
+    },
+    "bevel": {
+        "componentType": "bevel gear",
+        "gearType": "bevel",
+        "gear": {"teeth": 15, "module": 3.6, "faceWidth": 15, "boreRadius": 5.5, "coneAngle": 38},
+    },
+    "worm": {
+        "componentType": "worm gear",
+        "gearType": "worm",
+        "gear": {
+            "module": 3.8, "faceWidth": 28, "outerDiameter": 44,
+            "pitch": 7, "starts": 1, "rootRadius": 15,
+        },
+    },
+    "rack": {
+        "componentType": "rack gear",
+        "gearType": "rack",
+        "gear": {"teeth": 16, "module": 3.0, "faceWidth": 11, "rackLength": 165},
+    },
+    "internal": {
+        "componentType": "internal gear",
+        "gearType": "internal",
+        "gear": {
+            "teeth": 18, "module": 3.5, "faceWidth": 13,
+            "outerDiameter": 76, "boreRadius": 20, "innerRing": True,
+        },
+    },
+    "compound": {
+        "componentType": "compound gear",
+        "gearType": "compound",
+        "gear": {
+            "teeth": 17, "module": 3.0, "faceWidth": 21, "boreRadius": 5,
+            "stages": [
+                {"teeth": 17, "module": 3.0, "faceWidth": 12, "outerDiameter": 68},
+                {"teeth": 10, "module": 3.0, "faceWidth": 9, "outerDiameter": 44},
+            ],
+        },
+    },
+    "pinion": {
+        "componentType": "pinion shaft",
+        "gearType": "pinion",
+        "gear": {"teeth": 11, "module": 3.2, "faceWidth": 13, "boreRadius": 4},
+    },
+    "stepped": {
+        "componentType": "stepped gear",
+        "gearType": "stepped",
+        "gear": {
+            "teeth": 19, "module": 3.0, "faceWidth": 23, "boreRadius": 5,
+            "stages": [
+                {"teeth": 19, "module": 3.0, "faceWidth": 13, "outerDiameter": 74},
+                {"teeth": 13, "module": 3.0, "faceWidth": 10, "outerDiameter": 54},
+            ],
+        },
+    },
+    "flanged": {
+        "componentType": "flanged gear",
+        "gearType": "flanged",
+        "gear": {"teeth": 12, "module": 3.4, "faceWidth": 12, "boreRadius": 5},
+    },
+}
+
+
+def _confirmed_analysis(gear_type):
+    spec = CONFIRMED_GEAR_SAMPLES[gear_type]
+    gear = spec["gear"]
+    outer_diameter = gear.get("outerDiameter", (gear.get("teeth", 12) + 2) * gear.get("module", 3))
+    face_width = gear["faceWidth"]
+    return {
+        "componentType": spec["componentType"],
+        "gearType": spec["gearType"],
+        "dimensions": {
+            "outerDiameter": outer_diameter,
+            "innerDiameter": gear.get("boreRadius", 0) * 2,
+            "height": face_width,
+            "thickness": face_width,
+            "width": gear.get("rackLength", outer_diameter),
+            "length": gear.get("rackLength", outer_diameter),
+        },
+        "geometryRecipe": {"style": "gear", "gear": dict(gear)},
+    }
+
+
 def _reimport_step(path):
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.STEPControl import STEPControl_Reader
@@ -149,10 +245,57 @@ def test_step_export_reimports_as_valid_solid(tmp_path, name):
     assert valid is True, f"{name}: STEP re-import failed the OpenCASCADE validity check"
 
 
-def test_iges_export_reimports_as_valid_shape(tmp_path):
+@pytest.mark.parametrize("gear_type", sorted(CONFIRMED_GEAR_SAMPLES))
+def test_confirmed_gear_type_exports_type_specific_valid_solid(tmp_path, gear_type):
+    result = export_model(
+        {
+            "analysis": _confirmed_analysis(gear_type),
+            "format": "step",
+            "outDir": str(tmp_path),
+            "baseName": f"confirmed_{gear_type}",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["valid"] is True
+    assert result["style"] == "gear", f"{gear_type} did not use the gear geometry path"
+    assert result["solids"] >= 1
+    assert os.path.getsize(result["path"]) > 1024
+
+    shape, valid = _reimport_step(result["path"])
+    assert not shape.IsNull(), f"{gear_type}: STEP re-import produced no shape"
+    assert valid is True, f"{gear_type}: STEP re-import failed the OpenCASCADE validity check"
+
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    bounds = Bnd_Box()
+    BRepBndLib.Add_s(shape, bounds)
+    xmin, ymin, zmin, xmax, ymax, zmax = bounds.Get()
+    x_length, y_length, z_length = xmax - xmin, ymax - ymin, zmax - zmin
+    assert min(x_length, y_length, z_length) > 0.1, (
+        f"{gear_type}: degenerate reconstructed geometry"
+    )
+    if gear_type == "rack":
+        assert x_length > y_length * 2, (
+            f"{gear_type}: rack must stay linear, got {x_length} x {y_length}"
+        )
+    if gear_type == "worm":
+        assert result["solids"] >= 2, "worm should keep its helical flight as separate solids"
+
+
+def _reimport_iges(path):
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.IGESControl import IGESControl_Reader
 
+    reader = IGESControl_Reader()
+    reader.ReadFile(path)
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    return shape, BRepCheck_Analyzer(shape).IsValid()
+
+
+def test_iges_export_reimports_as_valid_shape(tmp_path):
     result = export_model(
         {
             "analysis": SAMPLES["flange"],
@@ -163,12 +306,27 @@ def test_iges_export_reimports_as_valid_shape(tmp_path):
     )
     assert result["valid"] is True
 
-    reader = IGESControl_Reader()
-    reader.ReadFile(result["path"])
-    reader.TransferRoots()
-    shape = reader.OneShape()
+    shape, valid = _reimport_iges(result["path"])
     assert not shape.IsNull()
-    assert BRepCheck_Analyzer(shape).IsValid() is True
+    assert valid is True
+
+
+@pytest.mark.parametrize("gear_type", sorted(CONFIRMED_GEAR_SAMPLES))
+def test_confirmed_gear_iges_reimports_as_valid_shape(tmp_path, gear_type):
+    result = export_model(
+        {
+            "analysis": _confirmed_analysis(gear_type),
+            "format": "iges",
+            "outDir": str(tmp_path),
+            "baseName": f"confirmed_{gear_type}",
+        }
+    )
+    assert result["ok"] is True
+    assert result["valid"] is True
+
+    shape, valid = _reimport_iges(result["path"])
+    assert not shape.IsNull(), f"{gear_type}: IGES re-import produced no shape"
+    assert valid is True, f"{gear_type}: IGES re-import failed the OpenCASCADE validity check"
 
 
 def test_stl_and_obj_exports_are_non_empty(tmp_path):
@@ -208,6 +366,52 @@ def test_cli_contract_used_by_the_backend(tmp_path):
     assert manifest["ok"] is True
     assert manifest["valid"] is True
     assert manifest["baseName"] == "cli_gear"
+
+
+@pytest.mark.parametrize(
+    "analysis",
+    [
+        {
+            "componentType": "gear",
+            "gearType": "unknown",
+            "teeth": 20,
+            "dimensions": {"outerDiameter": 80},
+            "geometryRecipe": {
+                "style": "gear",
+                "gear": {"gearType": "unknown", "teeth": 20, "module": 3},
+            },
+        },
+        {
+            "componentType": "gear",
+            "teeth": 20,
+            "dimensions": {"outerDiameter": 80},
+            "geometryRecipe": {"style": "gear", "gear": {"teeth": 20, "module": 3}},
+        },
+        {
+            "componentType": "gear",
+            "gearType": "spur",
+            "requiresGearTypeConfirmation": True,
+            "teeth": 20,
+            "dimensions": {"outerDiameter": 80},
+        },
+    ],
+    ids=["explicit_unknown", "tooth_count_only", "confirmation_flag"],
+)
+def test_unconfirmed_gear_type_is_rejected(tmp_path, analysis):
+    with pytest.raises(ExportError) as excinfo:
+        export_model(
+            {
+                "analysis": analysis,
+                "format": "step",
+                "outDir": str(tmp_path),
+                "baseName": "unconfirmed",
+            }
+        )
+    assert str(excinfo.value) == (
+        "Gear type is unconfirmed. Confirm spur, helical, bevel, worm, rack, "
+        "internal, compound, pinion, stepped or flanged before exporting CAD."
+    )
+    assert excinfo.value.stage == "input"
 
 
 def test_unsupported_format_is_rejected(tmp_path):
