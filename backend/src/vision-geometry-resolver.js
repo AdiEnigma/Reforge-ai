@@ -496,6 +496,8 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   const ref = reference && typeof reference === 'object' ? reference : {};
   const obs = extractVisionObservations(visionResult);
   const reconciled = { ...geminiAnalysis };
+  delete reconciled.geometrySource;
+  const hadGeminiRecipe = Boolean(geminiAnalysis?.geometryRecipe && typeof geminiAnalysis.geometryRecipe === 'object');
 
   // 1. Reconcile Dimensions: User Reference > Vision Calibration > Gemini Proposal
   reconciled.dimensions = { ...(reconciled.dimensions || {}) };
@@ -542,6 +544,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     (typeof finalTeeth === 'number' && finalTeeth >= 6);
 
   if (isGear && typeof finalTeeth === 'number' && finalTeeth >= 6) {
+    reconciled.geometrySource = 'template_gear';
     const od = reconciled.dimensions.outerDiameter || 100.0;
     const rawModule = reconciled.module || (od / (finalTeeth + 2));
     const cleanModule = snapToStandardModule(rawModule);
@@ -550,10 +553,6 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     reconciled.dimensions.outerDiameter = cleanModule
       ? Math.round(cleanModule * (finalTeeth + 2) * 10) / 10
       : od;
-
-    if (!reconciled.dimensions.innerDiameter || reconciled.dimensions.innerDiameter >= reconciled.dimensions.outerDiameter) {
-      reconciled.dimensions.innerDiameter = Math.round(reconciled.dimensions.outerDiameter * 0.28 * 10) / 10;
-    }
 
     const faceWidth =
       ref.thickness ||
@@ -588,6 +587,11 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       reconciled.spokes = spokes;
     }
 
+    const boreDiameter = Number.isFinite(reconciled.dimensions.innerDiameter) && reconciled.dimensions.innerDiameter > 0
+      ? Math.min(reconciled.dimensions.innerDiameter, reconciled.dimensions.outerDiameter * 0.9)
+      : 0;
+    const boreRadius = Math.round((boreDiameter / 2) * 10) / 10;
+
     if (isBevel) {
       reconciled.componentType = 'bevel gear';
       reconciled.geometryType = 'bevel_gear';
@@ -603,7 +607,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           coneAngle,
           pressureAngle: 20.0,
           faceWidth,
-          boreRadius: Math.round((reconciled.dimensions.innerDiameter / 2) * 10) / 10,
+          boreRadius,
           hubDiameter: Math.round(reconciled.dimensions.outerDiameter * 0.62 * 10) / 10,
           hubLength: Math.round(faceWidth * 0.85 * 10) / 10,
           spokes: spokes || null,
@@ -621,7 +625,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           pressureAngle: 20.0,
           helixAngle: reconciled.helixAngle || 0.0,
           faceWidth,
-          boreRadius: Math.round((reconciled.dimensions.innerDiameter / 2) * 10) / 10,
+          boreRadius,
           spokes: spokes || null,
         },
       };
@@ -632,12 +636,11 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   const compTypeLower = String(reconciled.componentType || '').toLowerCase();
   const isFlange =
     !isGear &&
-    (compTypeLower.includes('flange') ||
-      (Array.isArray(reconciled.features) && reconciled.features.some((f) => /bolt\s*hole|mounting\s*hole|flange/i.test(String(f)))) ||
-      reconciled.geometryRecipe?.flange != null);
+    (compTypeLower.includes('flange') || reconciled.geometryRecipe?.flange != null);
 
   if (isFlange) {
     reconciled.componentType = 'flange';
+    reconciled.geometrySource = 'template_flange';
     const od = ref.outerDiameter || reconciled.dimensions.outerDiameter || 120.0;
     const id = ref.innerDiameter != null ? ref.innerDiameter : (reconciled.dimensions.innerDiameter || Math.round(od * 0.35 * 10) / 10);
     const th = ref.thickness || reconciled.dimensions.thickness || Math.round(od * 0.16 * 10) / 10;
@@ -691,8 +694,6 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       compTypeLower.includes('spindle') ||
       compTypeLower.includes('cylinder') ||
       compTypeLower.includes('pin') ||
-      (reconciled.dimensions.length && reconciled.dimensions.length > (reconciled.dimensions.outerDiameter || 30) * 1.5) ||
-      (Array.isArray(reconciled.features) && reconciled.features.some((f) => /shaft|spindle|spline|bearing journal|step/i.test(String(f)))) ||
       reconciled.geometryRecipe?.revolvedProfile != null);
 
   if (isShaft) {
@@ -721,20 +722,17 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     reconciled.geometryRecipe = hasRichProfile
       ? { style: 'revolved', revolvedProfile: existingProfile }
       : buildSteppedShaftRecipe({ outerDiameter: od, length, innerDiameter: id });
-
-    const featuresList = Array.isArray(reconciled.features) ? [...reconciled.features] : [];
-    if (!featuresList.some(f => /shoulder|journal|step/i.test(String(f)))) {
-      featuresList.unshift('Multi-Diameter Stepped Journals with Ground Shoulders');
-    }
-    if (!featuresList.some(f => /spline|drive/i.test(String(f)))) {
-      featuresList.unshift('Involute Spline / Keyed Drive Journal');
-    }
-    reconciled.features = featuresList;
+    reconciled.geometrySource = hasRichProfile ? 'image_recipe_refined' : 'template_shaft';
   }
 
   // 4. Ensure Geometry Recipe is always present and watertight
   if (!reconciled.geometryRecipe || typeof reconciled.geometryRecipe !== 'object') {
     reconciled.geometryRecipe = buildRecipeFromDimensions(reconciled);
+    reconciled.geometrySource = 'template_generic';
+  }
+
+  if (!reconciled.geometrySource) {
+    reconciled.geometrySource = hadGeminiRecipe ? 'image_recipe_refined' : null;
   }
 
   reconciled.provenance = obs ? 'gemini_assisted_vision' : 'gemini_pure';
@@ -820,7 +818,9 @@ function buildRecipeFromDimensions(analysis) {
  * Guaranteed deterministic engineering fallback when Gemini is completely offline
  * or credentials fail. Generates zero errors and produces a valid CAD model.
  */
-export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assist offline') {
+const TEMPLATE_UNCERTAINTY = 'Geometry synthesized from a standard template, not measured from this image.';
+
+function buildDeterministicTemplate(reference = {}, reason = 'AI assist offline') {
   const ref = reference && typeof reference === 'object' ? reference : {};
   const isFlange = String(ref.componentType || '').toLowerCase().includes('flange') || typeof ref.boltCount === 'number';
 
@@ -1046,5 +1046,23 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
       },
     },
     provenance: 'deterministic_fallback_engine',
+  };
+}
+
+/**
+ * Guaranteed zero-crash fallback when Gemini is offline. The geometry is a
+ * standard template, not a reconstruction, so it is labelled as such and its
+ * confidence is zero: the UI must never present it as a measured part.
+ */
+export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assist offline') {
+  const template = buildDeterministicTemplate(reference, reason);
+  return {
+    ...template,
+    confidence: 0,
+    geometrySource: 'template_fallback',
+    uncertainties: [
+      ...(Array.isArray(template.uncertainties) ? template.uncertainties : []),
+      TEMPLATE_UNCERTAINTY,
+    ],
   };
 }

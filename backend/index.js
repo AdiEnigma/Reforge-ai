@@ -132,6 +132,10 @@ app.post("/api/analyze-component", async (req, res) => {
       }
     }
 
+    if (analysis && !analysis.geometrySource) {
+      analysis.geometrySource = solverMode === 'deterministic_cv' ? 'vision_template' : null;
+    }
+
     // Build response — visionDiagnostics is additive and optional
     const responseBody = {
       analysis,
