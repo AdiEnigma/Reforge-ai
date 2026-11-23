@@ -15,6 +15,74 @@ export const matHighlight = new THREE.MeshStandardMaterial({
   depthWrite: false,
 });
 
+export const matLathe = new THREE.MeshStandardMaterial({
+  color: "#3d332c",
+  metalness: 0.75,
+  roughness: 0.45,
+  side: THREE.DoubleSide,
+});
+
+/**
+ * Revolves a meridian profile around the Y axis and closes it so the result is a
+ * solid of revolution instead of an open shell. A profile whose ends share a
+ * non-zero radius is treated as a closed annular loop (tube / cone shell); any
+ * other profile is capped to the axis at both ends.
+ */
+export function cappedLatheGeometry(profile, segments = 64) {
+  const points = [];
+  for (const pt of Array.isArray(profile) ? profile : []) {
+    const z = typeof pt?.z === "number" && isFinite(pt.z) ? pt.z : null;
+    const radius = typeof pt?.radius === "number" && isFinite(pt.radius) ? Math.max(0, pt.radius) : null;
+    if (z == null || radius == null) continue;
+    const prev = points[points.length - 1];
+    if (prev && Math.abs(prev.z - z) < 1e-9 && Math.abs(prev.radius - radius) < 1e-9) continue;
+    points.push({ z, radius });
+  }
+  if (points.length < 2) return null;
+  points.sort((a, b) => a.z - b.z);
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  const annular =
+    first.radius > 1e-6 &&
+    last.radius > 1e-6 &&
+    Math.abs(first.radius - last.radius) <= Math.max(1e-6, 0.02 * Math.max(first.radius, last.radius));
+
+  const loop = points.slice();
+  if (annular) {
+    loop.push({ z: first.z, radius: first.radius });
+  } else {
+    if (first.radius > 1e-6) loop.unshift({ z: first.z, radius: 0 });
+    if (last.radius > 1e-6) loop.push({ z: last.z, radius: 0 });
+  }
+
+  try {
+    const vectors = loop.map((pt) => new THREE.Vector2(pt.radius, pt.z));
+    return new THREE.LatheGeometry(vectors, Math.max(12, Math.min(128, Math.round(segments))));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bounding box of the visible solids only. Highlight helper meshes are hidden
+ * and must not drive framing or normalisation.
+ */
+export function visibleBounds(root) {
+  const box = new THREE.Box3();
+  if (!root) return box;
+  const temp = new THREE.Box3();
+  root.updateMatrixWorld(true);
+  root.traverse((node) => {
+    if (!node.isMesh || node.visible === false || node.userData?.isHighlightOnly || !node.geometry) return;
+    if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+    if (!node.geometry.boundingBox) return;
+    temp.copy(node.geometry.boundingBox).applyMatrix4(node.matrixWorld);
+    box.union(temp);
+  });
+  return box;
+}
+
 export function extrude(shape, depth, bevel = true) {
   // Clamp bevel size so it never explodes thin features, teeth, or holes
   const maxBevel = Math.min(0.35, depth * 0.02);
@@ -166,7 +234,7 @@ export function buildBevelGearGroup({
   const Ra = Math.max(0.5, outerRadius || 2.8);
   const gamma = ((coneAngleDeg || 45) * Math.PI) / 180;
   const F = faceWidth && faceWidth > 0 ? faceWidth : Ra * 0.45;
-  const boreR = boreRadius && boreRadius > 0 ? boreRadius : Ra * 0.30;
+  const boreR = boreRadius && boreRadius > 0 ? Math.min(boreRadius, Ra * 0.9) : 0;
 
   const Hcone = F * Math.cos(gamma);
   const deltaR = F * Math.sin(gamma);
@@ -177,9 +245,17 @@ export function buildBevelGearGroup({
   // In our local coordinate system, Z axis is gear axis:
   // - Front (small radius Rfront) at +Hcone / 2
   // - Back (large radius Ra) at -Hcone / 2
-  const coneGeo = new THREE.CylinderGeometry(Rfront, Ra, Hcone, Math.max(32, z * 2));
+  const coneProfile = [
+    { z: -Hcone / 2, radius: boreR },
+    { z: -Hcone / 2, radius: Ra },
+    { z: Hcone / 2, radius: Rfront },
+    { z: Hcone / 2, radius: boreR },
+  ];
+  const hollowConeGeo = boreR > 0 ? cappedLatheGeometry(coneProfile, Math.max(32, z * 2)) : null;
+  const coneGeo = hollowConeGeo || new THREE.CylinderGeometry(Rfront, Ra, Hcone, Math.max(32, z * 2));
+  // LatheGeometry revolves around Y; the gear axis is Z, same as the original cylinder.
   coneGeo.rotateX(Math.PI / 2);
-  const coneMesh = new THREE.Mesh(coneGeo, matBody);
+  const coneMesh = new THREE.Mesh(coneGeo, hollowConeGeo ? matLathe : matBody);
   coneMesh.userData = { featureId: "feature-gear-teeth-1", featureType: "gear_teeth" };
   group.add(coneMesh);
 
@@ -259,8 +335,15 @@ export function buildBevelGearGroup({
   // 3. Rear Shaft Hub Collar
   const hubR = hubRadius || Ra * 0.60;
   const hubH = hubHeight || Hcone * 0.9;
-  const hubGeo = new THREE.CylinderGeometry(hubR, hubR, hubH, 32);
-  hubGeo.rotateX(Math.PI / 2);
+  const hubRingR = boreR > 0 ? Math.max(hubR, boreR * 1.1) : hubR;
+  const hubGeo = boreR > 0
+    ? extrude(ringShape(hubRingR, boreR), hubH, false)
+    : new THREE.CylinderGeometry(hubRingR, hubRingR, hubH, 32);
+  if (boreR > 0) {
+    hubGeo.center();
+  } else {
+    hubGeo.rotateX(Math.PI / 2);
+  }
   const hubMesh = new THREE.Mesh(hubGeo, matAccent);
   hubMesh.position.z = -Hcone / 2 - hubH / 2;
   hubMesh.userData = { featureId: "feature-boss-1", featureType: "boss" };
@@ -557,6 +640,32 @@ export function buildSteppedShaftGroup({
   const maxR = outerRadius || 1.8;
   const L = length || maxR * 3.8;
   const innerR = innerRadius || 0;
+
+  // A revolved profile from the recipe is what the image measured; use it
+  // instead of the parametric five-journal template whenever it is available.
+  const profilePoints = Array.isArray(profile)
+    ? profile.filter((pt) => pt && typeof pt.z === "number" && isFinite(pt.z) && typeof pt.radius === "number" && isFinite(pt.radius))
+    : [];
+  if (profilePoints.length >= 2) {
+    const profileGeo = cappedLatheGeometry(profilePoints, 64);
+    if (profileGeo) {
+      profileGeo.rotateZ(-Math.PI / 2);
+      const mesh = new THREE.Mesh(profileGeo, matLathe);
+      mesh.userData = { featureId: "feature-shaft-1", featureType: "shaft" };
+      group.add(mesh);
+      if (innerR > 0) {
+        const boreHighlight = new THREE.Mesh(
+          new THREE.CylinderGeometry(innerR * 0.99, innerR * 0.99, L * 1.05, 32),
+          matHighlight
+        );
+        boreHighlight.rotateZ(Math.PI / 2);
+        boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
+        boreHighlight.visible = false;
+        group.add(boreHighlight);
+      }
+      return group;
+    }
+  }
 
   // Authentic 5-step industrial transmission drive shaft proportions
   const steps = [

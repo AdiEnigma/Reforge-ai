@@ -179,6 +179,7 @@ test("reconcileGeminiWithVision locks ground-truth dimensions and overwrites Gem
   assert.equal(reconciled.geometryRecipe.style, "gear");
   assert.equal(reconciled.geometryRecipe.gear.teeth, 24);
   assert.equal(reconciled.provenance, "gemini_assisted_vision");
+  assert.equal(reconciled.geometrySource, "template_gear");
 });
 
 test("fallbackDeterministicAnalysis produces watertight valid CAD model when Gemini fails", () => {
@@ -193,6 +194,9 @@ test("fallbackDeterministicAnalysis produces watertight valid CAD model when Gem
   assert.equal(fallback.geometryRecipe.style, "gear");
   assert.equal(fallback.geometryRecipe.gear.teeth, 30);
   assert.equal(fallback.provenance, "deterministic_fallback_engine");
+  assert.equal(fallback.confidence, 0);
+  assert.equal(fallback.geometrySource, "template_fallback");
+  assert.ok(fallback.uncertainties.some((u) => /synthesized from a standard template/i.test(u)));
 
   // Non-toothed component defaults to flange with bolt holes, NOT a spur gear!
   const nonGearFallback = fallbackDeterministicAnalysis({ outerDiameter: 140 }, "Gemini offline");
@@ -225,6 +229,7 @@ test("reconcileGeminiWithVision accurately resolves flange and generates bolt ho
   assert.equal(reconciled.geometryRecipe.flange.boltCount, 8);
   assert.ok(reconciled.geometryRecipe.holes.length >= 9); // 1 center bore + 8 bolt holes
   assert.equal(reconciled.dimensions.outerDiameter, 160);
+  assert.equal(reconciled.geometrySource, "template_flange");
 });
 
 test("resolveGeometryFromVision deterministically resolves flange with bolt holes", () => {
@@ -292,6 +297,7 @@ test("reconcileGeminiWithVision accurately resolves bevel gear with conical pitc
   assert.equal(reconciled.geometryRecipe.gear.coneAngle, 45);
   assert.ok(reconciled.geometryRecipe.gear.hubDiameter > 0);
   assert.ok(reconciled.geometryRecipe.gear.hubLength > 0);
+  assert.equal(reconciled.geometrySource, "template_gear");
 });
 
 test("reconcileGeminiWithVision accurately resolves stepped shaft with multi-diameter profile", () => {
@@ -313,6 +319,11 @@ test("reconcileGeminiWithVision accurately resolves stepped shaft with multi-dia
   assert.ok(reconciled.geometryRecipe.revolvedProfile.length >= 8);
   const radii = new Set(reconciled.geometryRecipe.revolvedProfile.map(p => p.radius));
   assert.ok(radii.size >= 3, "Profile must have multiple stepped radii");
+  assert.equal(reconciled.geometrySource, "template_shaft");
+  assert.ok(
+    !reconciled.features.some((f) => /Involute Spline/i.test(String(f))),
+    "the reconciler must not invent a spline feature"
+  );
 });
 
 test("fallbackDeterministicAnalysis produces stepped shaft and bevel gear according to reference hints", () => {
@@ -326,6 +337,71 @@ test("fallbackDeterministicAnalysis produces stepped shaft and bevel gear accord
   assert.equal(shaftFallback.componentType, "stepped shaft");
   assert.equal(shaftFallback.geometryRecipe.style, "revolved");
   assert.ok(shaftFallback.geometryRecipe.revolvedProfile.length >= 8);
+  assert.equal(shaftFallback.geometrySource, "template_fallback");
+});
+
+test("reconcileGeminiWithVision keeps an extruded bracket recipe instead of forcing a flange", () => {
+  const geminiProposal = {
+    componentType: "mounting bracket",
+    features: ["4 mounting holes", "counterbored", "gusset"],
+    dimensions: { outerDiameter: 120, innerDiameter: 0, height: 40, width: 80, length: 120, thickness: 10 },
+    geometryRecipe: {
+      style: "extruded",
+      depth: 10,
+      outline: [
+        { x: -40, y: -20 },
+        { x: 40, y: -20 },
+        { x: 40, y: 20 },
+        { x: -40, y: 20 },
+      ],
+      holes: [
+        { cx: 0, cy: 0, radius: 8 },
+        { cx: -30, cy: 0, radius: 4 },
+        { cx: 30, cy: 0, radius: 4 },
+      ],
+    },
+  };
+
+  const reconciled = reconcileGeminiWithVision(geminiProposal, null, {});
+  assert.equal(reconciled.componentType, "mounting bracket");
+  assert.equal(reconciled.geometryRecipe.style, "extruded");
+  assert.equal(reconciled.geometrySource, "image_recipe_refined");
+});
+
+test("reconcileGeminiWithVision does not turn a long plate into a stepped shaft", () => {
+  const geminiProposal = {
+    componentType: "mounting plate",
+    features: ["through holes", "chamfered corners"],
+    dimensions: { outerDiameter: 60, innerDiameter: 0, height: 12, width: 60, length: 200, thickness: 12 },
+    geometryRecipe: {
+      style: "extruded",
+      depth: 12,
+      outline: [
+        { x: -30, y: -100 },
+        { x: 30, y: -100 },
+        { x: 30, y: 100 },
+        { x: -30, y: 100 },
+      ],
+      holes: [],
+    },
+  };
+
+  const reconciled = reconcileGeminiWithVision(geminiProposal, null, {});
+  assert.equal(reconciled.componentType, "mounting plate");
+  assert.equal(reconciled.geometryRecipe.style, "extruded");
+});
+
+test("reconcileGeminiWithVision does not invent a gear bore", () => {
+  const geminiProposal = {
+    componentType: "spur gear",
+    teeth: 24,
+    dimensions: { outerDiameter: 96, innerDiameter: null, height: 20, thickness: 20 },
+  };
+
+  const reconciled = reconcileGeminiWithVision(geminiProposal, null, {});
+  assert.equal(reconciled.geometryRecipe.style, "gear");
+  assert.equal(reconciled.geometryRecipe.gear.boreRadius, 0);
+  assert.equal(reconciled.dimensions.innerDiameter, null);
 });
 
 test("reconcileGeminiWithVision accurately resolves and preserves prismatic extruded components (brackets/links)", () => {

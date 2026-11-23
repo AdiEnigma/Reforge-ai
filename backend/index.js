@@ -18,6 +18,9 @@ import {
   resolveDatasetAsset,
 } from './dataset-catalog.js';
 import { storeSpatialEvidence, getSpatialEvidence } from './src/spatial-evidence-store.js';
+=======
+import { exportCadModel, isCadExportScriptPresent } from './cad-export-adapter.js';
+>>>>>>> origin/only-export
 import {
   resolveGeometryFromVision,
   reconcileGeminiWithVision,
@@ -187,7 +190,7 @@ class ReconstructionCancelledError extends Error {
   }
 }
 
-async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled = () => false }) {
+async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled = () => false }) {
   const emit = (stage, status, detail = {}) => {
     if (!isCancelled()) onProgress({ stage, status, ...detail });
   };
@@ -306,6 +309,7 @@ async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled =
     checkCancelled();
   }
 
+<<<<<<< HEAD
   // Anchor spatial evidence to analysis object
   if (analysis && typeof analysis === 'object') {
     if (spatialEvidenceRef) {
@@ -314,6 +318,10 @@ async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled =
     if (rawVisionResult) {
       analysis.spatialObservations = extractVisionObservations(rawVisionResult);
     }
+=======
+    if (analysis && !analysis.geometrySource) {
+      analysis.geometrySource = solverMode === 'deterministic_cv' ? 'vision_template' : null;
+>>>>>>> origin/only-export
   }
 
   const responseBody = {
@@ -343,535 +351,535 @@ async function runComponentAnalysis({ body, onProgress = () => {}, isCancelled =
 }
 
 
-      app.post("/api/analyze-component", async (req, res) => {
-        try {
-          res.json(await runComponentAnalysis({ body: req.body }));
-        } catch (error) {
-          res.status(error.status || 500).json({ error: error.message || "Analysis failed." });
-        }
+app.post("/api/analyze-component", async (req, res) => {
+  try {
+    res.json(await runComponentAnalysis({ body: req.body }));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Analysis failed." });
+  }
+});
+
+app.post("/api/analyze-component/stream", async (req, res) => {
+  res.status(200);
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  let cancelled = false;
+  res.on('close', () => {
+    if (!res.writableEnded) cancelled = true;
+  });
+
+  const emit = (event) => {
+    if (cancelled || res.destroyed || res.writableEnded) return;
+    res.write(`${JSON.stringify(event)}\n`);
+  };
+
+  try {
+    const result = await runComponentAnalysis({
+      body: req.body,
+      onProgress: emit,
+      isCancelled: () => cancelled,
+    });
+    if (cancelled || res.destroyed) return;
+    emit({ type: 'result', ...result });
+    res.end();
+  } catch (error) {
+    if (cancelled || res.destroyed) return;
+    emit({
+      type: 'failed',
+      stage: error.stage,
+      message: error.message || 'Analysis failed.',
+    });
+    res.end();
+  }
+});
+
+app.get("/api/spatial-evidence/:evidenceId", async (req, res) => {
+  try {
+    const { evidenceId } = req.params;
+    const evidence = getSpatialEvidence(evidenceId);
+    if (!evidence) {
+      return res.status(404).json({ error: "Spatial evidence not found or expired." });
+    }
+    res.json(evidence);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Failed to retrieve spatial evidence." });
+  }
+});
+
+app.post("/api/chat", async (req, res) => {
+  try {
+    const rawContext = req.body?.engineeringContext;
+    const engineeringContext = rawContext ? validateEngineeringContext(rawContext) : null;
+    const rawAnalysis = req.body?.analysis;
+    const analysis = rawAnalysis ? validateAnalysisShape(rawAnalysis) : null;
+
+    const result = await chatWithEngineer({
+      message: req.body?.message,
+      engineeringContext,
+      analysis,
+      history: req.body?.history,
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Chat failed." });
+  }
+});
+
+app.post("/api/engineering-simulate", (req, res) => {
+  try {
+    const analysis = validateAnalysisShape(req.body?.analysis);
+    const modifications = Array.isArray(req.body?.modifications) ? req.body.modifications : [];
+    const quantity = clampQuantity(req.body?.quantity);
+
+    const result = simulateEngineeringChange({ analysis, modifications, quantity });
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Simulation failed." });
+  }
+});
+
+app.post("/api/engineering-sensitivity", (req, res) => {
+  try {
+    const analysis = validateAnalysisShape(req.body?.analysis);
+    const sensitivity = analyzeDimensionSensitivity({ analysis });
+    res.json({ sensitivity });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Sensitivity analysis failed." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for /api/manufacturing-intelligence
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate and sanitize untrusted client-supplied engineeringContext.
+ */
+function validateEngineeringContext(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const comp = raw.component && typeof raw.component === "object" ? raw.component : {};
+  const dims = raw.dimensions && typeof raw.dimensions === "object" ? raw.dimensions : {};
+  const mat = raw.material && typeof raw.material === "object" ? raw.material : {};
+  const mfg = raw.manufacturing && typeof raw.manufacturing === "object" ? raw.manufacturing : null;
+  const geom = raw.geometry && typeof raw.geometry === "object" ? raw.geometry : {};
+  const conf = raw.confidence && typeof raw.confidence === "object" ? raw.confidence : {};
+
+  const cleanDims = {};
+  for (const [k, v] of Object.entries(dims)) {
+    if (typeof v === "number" && isFinite(v) && v > 0) cleanDims[k] = v;
+    else cleanDims[k] = null;
+  }
+
+  const cleanFeatures = Array.isArray(raw.features)
+    ? raw.features.slice(0, 15).map((f) => ({
+      id: typeof f.id === "string" ? f.id.slice(0, 40) : "feature",
+      type: typeof f.type === "string" ? f.type.slice(0, 30) : "other",
+      label: typeof f.label === "string" ? f.label.slice(0, 50) : "Feature",
+      confidence: typeof f.confidence === "number" ? Math.max(0, Math.min(1, f.confidence)) : 0.8,
+      metadata: f.metadata && typeof f.metadata === "object" ? f.metadata : null,
+    }))
+    : [];
+
+  return {
+    component: {
+      type: typeof comp.type === "string" ? comp.type.slice(0, 60) : "mechanical component",
+      name: typeof comp.name === "string" ? comp.name.slice(0, 60) : "COMPONENT",
+    },
+    dimensions: cleanDims,
+    material: {
+      key: typeof mat.key === "string" ? mat.key.slice(0, 30) : "mild_steel",
+      label: typeof mat.label === "string" ? mat.label.slice(0, 40) : "Mild Steel",
+      source: typeof mat.source === "string" ? mat.source.slice(0, 30) : "fallback-default",
+      densityGCm3: typeof mat.densityGCm3 === "number" ? mat.densityGCm3 : 7.85,
+      costPerKgINR: typeof mat.costPerKgINR === "number" ? mat.costPerKgINR : 65,
+      isAssumed: Boolean(mat.isAssumed),
+    },
+    geometry: {
+      style: typeof geom.style === "string" ? geom.style.slice(0, 30) : "parametric",
+      recipe: geom.recipe && typeof geom.recipe === "object" ? geom.recipe : null,
+      featureCount: typeof geom.featureCount === "number" ? geom.featureCount : cleanFeatures.length,
+      holeCount: typeof geom.holeCount === "number" ? geom.holeCount : 0,
+    },
+    features: cleanFeatures,
+    manufacturing: mfg,
+    materialAlternatives: Array.isArray(raw.materialAlternatives) ? raw.materialAlternatives.slice(0, 5) : null,
+    confidence: {
+      overall: typeof conf.overall === "number" ? Math.max(0, Math.min(1, conf.overall)) : 0.8,
+      uncertainties: Array.isArray(conf.uncertainties) ? conf.uncertainties.slice(0, 5) : [],
+    },
+    machineryContext: raw.machineryContext && typeof raw.machineryContext === "object" ? raw.machineryContext : null,
+  };
+}
+
+const DIMENSION_KEYS = ["outerDiameter", "innerDiameter", "height", "width", "length", "thickness"];
+
+/**
+ * Validate that analysis has the expected shape.
+ * Strips unknown fields; validates dimensions; re-sanitises geometryRecipe.
+ * Throws 400 on clearly malformed input.
+ */
+function validateAnalysisShape(raw) {
+  if (!raw || typeof raw !== "object") {
+    const err = new Error("analysis must be a non-null object.");
+    err.status = 400;
+    throw err;
+  }
+
+  const dims = raw.dimensions && typeof raw.dimensions === "object" ? raw.dimensions : {};
+  const cleanDims = {};
+  for (const key of DIMENSION_KEYS) {
+    const val = dims[key];
+    cleanDims[key] = typeof val === "number" && isFinite(val) && val > 0 ? val : null;
+  }
+  const cleanNumber = (value) => (
+    typeof value === "number" && isFinite(value) ? value : null
+  );
+  const geometryRecipe = sanitizeRecipe(raw.geometryRecipe);
+  const features = Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [];
+  const componentType = typeof raw.componentType === "string" ? raw.componentType : "other";
+  const rawExplicitType = raw.gearType ?? geometryRecipe?.gear?.gearType;
+  const explicitType = typeof rawExplicitType === "string" ? normalizeGearType(rawExplicitType) : null;
+  const inferredType = explicitType === null
+    ? gearTypeFromText(`${componentType} ${features.join(" ")}`)
+    : "unknown";
+  const isToothed = raw.teeth != null
+    || geometryRecipe?.gear != null
+    || /gear|tooth|teeth|cog|worm|rack/i.test(`${componentType} ${features.join(" ")}`);
+  const gearType = explicitType !== null && explicitType !== "unknown"
+    ? explicitType
+    : (inferredType !== "unknown" ? inferredType : (isToothed || explicitType === "unknown" ? "unknown" : null));
+  const requiresGearTypeConfirmation = Boolean(raw.requiresGearTypeConfirmation) || gearType === "unknown";
+  if (geometryRecipe?.gear && typeof geometryRecipe.gear === "object" && gearType) {
+    geometryRecipe.gear.gearType = gearType;
+  }
+  if (geometryRecipe && requiresGearTypeConfirmation) {
+    geometryRecipe.requiresGearTypeConfirmation = true;
+  }
+
+  return {
+    componentType,
+    dimensions: cleanDims,
+    features,
+    materialEstimate: typeof raw.materialEstimate === "string" ? raw.materialEstimate : "",
+    geometryRecipe,
+    gearType,
+    classificationSource: typeof raw.classificationSource === "string" ? raw.classificationSource.slice(0, 60) : null,
+    requiresGearTypeConfirmation,
+    teeth: cleanNumber(raw.teeth),
+    module: cleanNumber(raw.module),
+    helixAngle: cleanNumber(raw.helixAngle),
+    coneAngle: cleanNumber(raw.coneAngle),
+    pitch: cleanNumber(raw.pitch),
+    starts: cleanNumber(raw.starts),
+  };
+}
+
+/**
+ * Clamp quantity to a safe integer in [1, 100 000].
+ */
+function clampQuantity(raw) {
+  const n = Number(raw);
+  if (!isFinite(n) || n < 1) return 1;
+  return Math.max(1, Math.min(100000, Math.round(n)));
+}
+
+app.post("/api/manufacturing-intelligence", (req, res) => {
+  try {
+    const analysis = validateAnalysisShape(req.body?.analysis);
+    const quantity = clampQuantity(req.body?.quantity);
+    const result = computeManufacturingIntelligence({ analysis, quantity });
+    // result may be { error, message } if geometry is insufficient — return 200 so
+    // the frontend can display the graceful "not enough data" state without a network error.
+    res.json({ manufacturingIntelligence: result });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || "Manufacturing estimate failed." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for /api/material-alternatives
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate the manufacturingIntelligence object for the comparison endpoint.
+ * Only the fields actually consumed by computeMaterialAlternatives are checked.
+ */
+function validateManufacturingIntelligenceForComparison(raw) {
+  if (!raw || typeof raw !== "object") {
+    const err = new Error("manufacturingIntelligence must be a non-null object.");
+    err.status = 400;
+    throw err;
+  }
+  if (typeof raw.volumeCm3 !== "number" || !isFinite(raw.volumeCm3) || raw.volumeCm3 <= 0) {
+    const err = new Error(
+      "manufacturingIntelligence.volumeCm3 must be a finite positive number."
+    );
+    err.status = 400;
+    throw err;
+  }
+  return {
+    volumeCm3: raw.volumeCm3,
+    quantity:
+      typeof raw.quantity === "number" && isFinite(raw.quantity)
+        ? Math.max(1, Math.round(raw.quantity))
+        : 1,
+  };
+}
+
+app.post("/api/material-alternatives", (req, res) => {
+  try {
+    const analysis = validateAnalysisShape(req.body?.analysis);
+    const manufacturingIntelligence = validateManufacturingIntelligenceForComparison(
+      req.body?.manufacturingIntelligence
+    );
+    const result = computeMaterialAlternatives({ analysis, manufacturingIntelligence });
+    // { error: "insufficient-data" } is a graceful case — return 200 so the
+    // frontend can display the friendly state without a network error.
+    res.json({ materialAlternatives: result });
+  } catch (error) {
+    res
+      .status(error.status || 500)
+      .json({ error: error.message || "Material comparison failed." });
+  }
+});
+
+app.post("/api/reconstruct", async (req, res) => {
+  try {
+    if (!isReconstructionEnabled()) {
+      return res.json({ status: "unavailable", message: "Reconstruction pipeline is not enabled. Set RECONSTRUCTION_ENABLED=true." });
+    }
+    const result = await callReconstructionService(req.body);
+    if (!result) {
+      return res.status(503).json({ status: "unavailable", error: "Reconstruction service is unreachable." });
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ status: "failed", error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CAD export — real B-Rep solids built by python-engine (CadQuery/OpenCASCADE)
+// ---------------------------------------------------------------------------
+
+const CAD_EXPORT_FORMATS = ["step", "iges", "stl", "obj"];
+
+function cadSlug(analysis) {
+  const raw = analysis?.componentName || analysis?.componentType || "component";
+  return String(raw)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "component";
+}
+
+/**
+ * Validate analysis for CAD export: the shared shape validator plus the
+ * dimension-free hints the geometry builders rely on.
+ */
+function validateCadExportAnalysis(raw) {
+  const base = validateAnalysisShape(raw);
+  const pick = (value, min, max) => {
+    const n = Number(value);
+    if (!isFinite(n)) return null;
+    return Math.max(min, Math.min(max, n));
+  };
+  const datasetModel = raw?.datasetModel && typeof raw.datasetModel === 'object'
+    ? {
+      assetId: typeof raw.datasetModel.assetId === 'string' ? raw.datasetModel.assetId.slice(0, 120) : '',
+      formats: Array.isArray(raw.datasetModel.formats)
+        ? raw.datasetModel.formats.filter((value) => typeof value === 'string').slice(0, 20)
+        : [],
+      validation: raw.datasetModel.validation && typeof raw.datasetModel.validation === 'object'
+        ? raw.datasetModel.validation
+        : null,
+    }
+    : null;
+
+  return {
+    ...base,
+    componentName: typeof raw?.componentName === "string" ? raw.componentName.slice(0, 60) : "",
+    teeth: pick(raw?.teeth, 4, 400),
+    module: pick(raw?.module, 0.01, 100),
+    helixAngle: pick(raw?.helixAngle, -60, 60),
+    coneAngle: pick(raw?.coneAngle, 0, 90),
+    boltCount: pick(raw?.boltCount, 3, 64),
+    gearType: base.gearType,
+    requiresGearTypeConfirmation: base.requiresGearTypeConfirmation,
+    datasetModel,
+  };
+}
+
+app.post("/api/cad/export", async (req, res) => {
+  let cleanup = () => { };
+  try {
+    const analysis = validateCadExportAnalysis(req.body?.analysis);
+    const format = String(req.body?.format || "step").toLowerCase();
+    if (!CAD_EXPORT_FORMATS.includes(format)) {
+      return res.status(400).json({ error: `Unsupported CAD export format: ${format}` });
+    }
+    if (analysis.gearType === "unknown" || analysis.requiresGearTypeConfirmation) {
+      return res.status(422).json({
+        error: "Gear type is unconfirmed. Confirm spur, helical, bevel, worm, rack, internal, compound, pinion, stepped or flanged before exporting CAD.",
       });
+    }
+    const requested = typeof req.body?.baseName === "string" ? req.body.baseName.trim() : "";
+    const baseName = requested || cadSlug(analysis);
 
-      app.post("/api/analyze-component/stream", async (req, res) => {
-        res.status(200);
-        res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-        res.setHeader('Cache-Control', 'no-cache, no-transform');
-        res.setHeader('X-Accel-Buffering', 'no');
-        res.flushHeaders?.();
-
-        let cancelled = false;
-        res.on('close', () => {
-          if (!res.writableEnded) cancelled = true;
+    // Dataset-backed reconstructions export their real acquired asset. Never
+    // substitute a parametric guess when the retrieved source format exists.
+    if (analysis.datasetModel) {
+      const asset = resolveAssetForDatasetModel(analysis.datasetModel, format);
+      if (!asset) {
+        return res.status(422).json({
+          error: `Retrieved dataset asset does not include a real ${format.toUpperCase()} file. Available formats: ${(analysis.datasetModel.formats || []).join(', ') || 'none'}.`,
         });
-
-        const emit = (event) => {
-          if (cancelled || res.destroyed || res.writableEnded) return;
-          res.write(`${JSON.stringify(event)}\n`);
-        };
-
-        try {
-          const result = await runComponentAnalysis({
-            body: req.body,
-            onProgress: emit,
-            isCancelled: () => cancelled,
-          });
-          if (cancelled || res.destroyed) return;
-          emit({ type: 'result', ...result });
-          res.end();
-        } catch (error) {
-          if (cancelled || res.destroyed) return;
-          emit({
-            type: 'failed',
-            stage: error.stage,
-            message: error.message || 'Analysis failed.',
-          });
-          res.end();
-        }
-      });
-
-      app.get("/api/spatial-evidence/:evidenceId", async (req, res) => {
-        try {
-          const { evidenceId } = req.params;
-          const evidence = getSpatialEvidence(evidenceId);
-          if (!evidence) {
-            return res.status(404).json({ error: "Spatial evidence not found or expired." });
-          }
-          res.json(evidence);
-        } catch (error) {
-          res.status(500).json({ error: error.message || "Failed to retrieve spatial evidence." });
-        }
-      });
-
-      app.post("/api/chat", async (req, res) => {
-        try {
-          const rawContext = req.body?.engineeringContext;
-          const engineeringContext = rawContext ? validateEngineeringContext(rawContext) : null;
-          const rawAnalysis = req.body?.analysis;
-          const analysis = rawAnalysis ? validateAnalysisShape(rawAnalysis) : null;
-
-          const result = await chatWithEngineer({
-            message: req.body?.message,
-            engineeringContext,
-            analysis,
-            history: req.body?.history,
-          });
-          res.json(result);
-        } catch (error) {
-          res.status(error.status || 500).json({ error: error.message || "Chat failed." });
-        }
-      });
-
-      app.post("/api/engineering-simulate", (req, res) => {
-        try {
-          const analysis = validateAnalysisShape(req.body?.analysis);
-          const modifications = Array.isArray(req.body?.modifications) ? req.body.modifications : [];
-          const quantity = clampQuantity(req.body?.quantity);
-
-          const result = simulateEngineeringChange({ analysis, modifications, quantity });
-          res.json(result);
-        } catch (error) {
-          res.status(error.status || 500).json({ error: error.message || "Simulation failed." });
-        }
-      });
-
-      app.post("/api/engineering-sensitivity", (req, res) => {
-        try {
-          const analysis = validateAnalysisShape(req.body?.analysis);
-          const sensitivity = analyzeDimensionSensitivity({ analysis });
-          res.json({ sensitivity });
-        } catch (error) {
-          res.status(error.status || 500).json({ error: error.message || "Sensitivity analysis failed." });
-        }
-      });
-
-      // ---------------------------------------------------------------------------
-      // Helpers for /api/manufacturing-intelligence
-      // ---------------------------------------------------------------------------
-
-      /**
-       * Validate and sanitize untrusted client-supplied engineeringContext.
-       */
-      function validateEngineeringContext(raw) {
-        if (!raw || typeof raw !== "object") return null;
-
-        const comp = raw.component && typeof raw.component === "object" ? raw.component : {};
-        const dims = raw.dimensions && typeof raw.dimensions === "object" ? raw.dimensions : {};
-        const mat = raw.material && typeof raw.material === "object" ? raw.material : {};
-        const mfg = raw.manufacturing && typeof raw.manufacturing === "object" ? raw.manufacturing : null;
-        const geom = raw.geometry && typeof raw.geometry === "object" ? raw.geometry : {};
-        const conf = raw.confidence && typeof raw.confidence === "object" ? raw.confidence : {};
-
-        const cleanDims = {};
-        for (const [k, v] of Object.entries(dims)) {
-          if (typeof v === "number" && isFinite(v) && v > 0) cleanDims[k] = v;
-          else cleanDims[k] = null;
-        }
-
-        const cleanFeatures = Array.isArray(raw.features)
-          ? raw.features.slice(0, 15).map((f) => ({
-            id: typeof f.id === "string" ? f.id.slice(0, 40) : "feature",
-            type: typeof f.type === "string" ? f.type.slice(0, 30) : "other",
-            label: typeof f.label === "string" ? f.label.slice(0, 50) : "Feature",
-            confidence: typeof f.confidence === "number" ? Math.max(0, Math.min(1, f.confidence)) : 0.8,
-            metadata: f.metadata && typeof f.metadata === "object" ? f.metadata : null,
-          }))
-          : [];
-
-        return {
-          component: {
-            type: typeof comp.type === "string" ? comp.type.slice(0, 60) : "mechanical component",
-            name: typeof comp.name === "string" ? comp.name.slice(0, 60) : "COMPONENT",
-          },
-          dimensions: cleanDims,
-          material: {
-            key: typeof mat.key === "string" ? mat.key.slice(0, 30) : "mild_steel",
-            label: typeof mat.label === "string" ? mat.label.slice(0, 40) : "Mild Steel",
-            source: typeof mat.source === "string" ? mat.source.slice(0, 30) : "fallback-default",
-            densityGCm3: typeof mat.densityGCm3 === "number" ? mat.densityGCm3 : 7.85,
-            costPerKgINR: typeof mat.costPerKgINR === "number" ? mat.costPerKgINR : 65,
-            isAssumed: Boolean(mat.isAssumed),
-          },
-          geometry: {
-            style: typeof geom.style === "string" ? geom.style.slice(0, 30) : "parametric",
-            recipe: geom.recipe && typeof geom.recipe === "object" ? geom.recipe : null,
-            featureCount: typeof geom.featureCount === "number" ? geom.featureCount : cleanFeatures.length,
-            holeCount: typeof geom.holeCount === "number" ? geom.holeCount : 0,
-          },
-          features: cleanFeatures,
-          manufacturing: mfg,
-          materialAlternatives: Array.isArray(raw.materialAlternatives) ? raw.materialAlternatives.slice(0, 5) : null,
-          confidence: {
-            overall: typeof conf.overall === "number" ? Math.max(0, Math.min(1, conf.overall)) : 0.8,
-            uncertainties: Array.isArray(conf.uncertainties) ? conf.uncertainties.slice(0, 5) : [],
-          },
-          machineryContext: raw.machineryContext && typeof raw.machineryContext === "object" ? raw.machineryContext : null,
-        };
       }
-
-      const DIMENSION_KEYS = ["outerDiameter", "innerDiameter", "height", "width", "length", "thickness"];
-
-      /**
-       * Validate that analysis has the expected shape.
-       * Strips unknown fields; validates dimensions; re-sanitises geometryRecipe.
-       * Throws 400 on clearly malformed input.
-       */
-      function validateAnalysisShape(raw) {
-        if (!raw || typeof raw !== "object") {
-          const err = new Error("analysis must be a non-null object.");
-          err.status = 400;
-          throw err;
-        }
-
-        const dims = raw.dimensions && typeof raw.dimensions === "object" ? raw.dimensions : {};
-        const cleanDims = {};
-        for (const key of DIMENSION_KEYS) {
-          const val = dims[key];
-          cleanDims[key] = typeof val === "number" && isFinite(val) && val > 0 ? val : null;
-        }
-        const cleanNumber = (value) => (
-          typeof value === "number" && isFinite(value) ? value : null
-        );
-        const geometryRecipe = sanitizeRecipe(raw.geometryRecipe);
-        const features = Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [];
-        const componentType = typeof raw.componentType === "string" ? raw.componentType : "other";
-        const rawExplicitType = raw.gearType ?? geometryRecipe?.gear?.gearType;
-        const explicitType = typeof rawExplicitType === "string" ? normalizeGearType(rawExplicitType) : null;
-        const inferredType = explicitType === null
-          ? gearTypeFromText(`${componentType} ${features.join(" ")}`)
-          : "unknown";
-        const isToothed = raw.teeth != null
-          || geometryRecipe?.gear != null
-          || /gear|tooth|teeth|cog|worm|rack/i.test(`${componentType} ${features.join(" ")}`);
-        const gearType = explicitType !== null && explicitType !== "unknown"
-          ? explicitType
-          : (inferredType !== "unknown" ? inferredType : (isToothed || explicitType === "unknown" ? "unknown" : null));
-        const requiresGearTypeConfirmation = Boolean(raw.requiresGearTypeConfirmation) || gearType === "unknown";
-        if (geometryRecipe?.gear && typeof geometryRecipe.gear === "object" && gearType) {
-          geometryRecipe.gear.gearType = gearType;
-        }
-        if (geometryRecipe && requiresGearTypeConfirmation) {
-          geometryRecipe.requiresGearTypeConfirmation = true;
-        }
-
-        return {
-          componentType,
-          dimensions: cleanDims,
-          features,
-          materialEstimate: typeof raw.materialEstimate === "string" ? raw.materialEstimate : "",
-          geometryRecipe,
-          gearType,
-          classificationSource: typeof raw.classificationSource === "string" ? raw.classificationSource.slice(0, 60) : null,
-          requiresGearTypeConfirmation,
-          teeth: cleanNumber(raw.teeth),
-          module: cleanNumber(raw.module),
-          helixAngle: cleanNumber(raw.helixAngle),
-          coneAngle: cleanNumber(raw.coneAngle),
-          pitch: cleanNumber(raw.pitch),
-          starts: cleanNumber(raw.starts),
-        };
-      }
-
-      /**
-       * Clamp quantity to a safe integer in [1, 100 000].
-       */
-      function clampQuantity(raw) {
-        const n = Number(raw);
-        if (!isFinite(n) || n < 1) return 1;
-        return Math.max(1, Math.min(100000, Math.round(n)));
-      }
-
-      app.post("/api/manufacturing-intelligence", (req, res) => {
-        try {
-          const analysis = validateAnalysisShape(req.body?.analysis);
-          const quantity = clampQuantity(req.body?.quantity);
-          const result = computeManufacturingIntelligence({ analysis, quantity });
-          // result may be { error, message } if geometry is insufficient — return 200 so
-          // the frontend can display the graceful "not enough data" state without a network error.
-          res.json({ manufacturingIntelligence: result });
-        } catch (error) {
-          res.status(error.status || 500).json({ error: error.message || "Manufacturing estimate failed." });
+      const extension = path.extname(asset.path) || `.${format}`;
+      res.setHeader("Content-Type", asset.mimeType);
+      res.setHeader("Content-Disposition", `attachment; filename="${baseName}${extension}"`);
+      res.setHeader("Content-Length", String(asset.bytes));
+      res.setHeader("X-ReForge-CAD-Source", "dataset");
+      const datasetStream = createReadStream(asset.path);
+      datasetStream.on("error", (streamError) => {
+        if (!res.headersSent) {
+          res.status(500).json({ error: streamError.message || 'Dataset asset stream failed.' });
+        } else {
+          res.destroy(streamError);
         }
       });
+      datasetStream.pipe(res);
+      return undefined;
+    }
 
-      // ---------------------------------------------------------------------------
-      // Helpers for /api/material-alternatives
-      // ---------------------------------------------------------------------------
+    const result = await exportCadModel({ analysis, format, baseName });
+    cleanup = result.cleanup;
 
-      /**
-       * Validate the manufacturingIntelligence object for the comparison endpoint.
-       * Only the fields actually consumed by computeMaterialAlternatives are checked.
-       */
-      function validateManufacturingIntelligenceForComparison(raw) {
-        if (!raw || typeof raw !== "object") {
-          const err = new Error("manufacturingIntelligence must be a non-null object.");
-          err.status = 400;
-          throw err;
-        }
-        if (typeof raw.volumeCm3 !== "number" || !isFinite(raw.volumeCm3) || raw.volumeCm3 <= 0) {
-          const err = new Error(
-            "manufacturingIntelligence.volumeCm3 must be a finite positive number."
-          );
-          err.status = 400;
-          throw err;
-        }
-        return {
-          volumeCm3: raw.volumeCm3,
-          quantity:
-            typeof raw.quantity === "number" && isFinite(raw.quantity)
-              ? Math.max(1, Math.round(raw.quantity))
-              : 1,
-        };
-      }
+    res.setHeader("Content-Type", result.mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+    res.setHeader("Content-Length", String(result.bytes));
+    res.setHeader("X-ReForge-CAD-Solids", String(result.manifest.solids));
 
-      app.post("/api/material-alternatives", (req, res) => {
-        try {
-          const analysis = validateAnalysisShape(req.body?.analysis);
-          const manufacturingIntelligence = validateManufacturingIntelligenceForComparison(
-            req.body?.manufacturingIntelligence
-          );
-          const result = computeMaterialAlternatives({ analysis, manufacturingIntelligence });
-          // { error: "insufficient-data" } is a graceful case — return 200 so the
-          // frontend can display the friendly state without a network error.
-          res.json({ materialAlternatives: result });
-        } catch (error) {
-          res
-            .status(error.status || 500)
-            .json({ error: error.message || "Material comparison failed." });
-        }
-      });
-
-      app.post("/api/reconstruct", async (req, res) => {
-        try {
-          if (!isReconstructionEnabled()) {
-            return res.json({ status: "unavailable", message: "Reconstruction pipeline is not enabled. Set RECONSTRUCTION_ENABLED=true." });
-          }
-          const result = await callReconstructionService(req.body);
-          if (!result) {
-            return res.status(503).json({ status: "unavailable", error: "Reconstruction service is unreachable." });
-          }
-          res.json(result);
-        } catch (error) {
-          res.status(500).json({ status: "failed", error: error.message });
-        }
-      });
-
-      // ---------------------------------------------------------------------------
-      // CAD export — real B-Rep solids built by python-engine (CadQuery/OpenCASCADE)
-      // ---------------------------------------------------------------------------
-
-      const CAD_EXPORT_FORMATS = ["step", "iges", "stl", "obj"];
-
-      function cadSlug(analysis) {
-        const raw = analysis?.componentName || analysis?.componentType || "component";
-        return String(raw)
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]+/g, "-")
-          .replace(/^-+|-+$/g, "") || "component";
-      }
-
-      /**
-       * Validate analysis for CAD export: the shared shape validator plus the
-       * dimension-free hints the geometry builders rely on.
-       */
-      function validateCadExportAnalysis(raw) {
-        const base = validateAnalysisShape(raw);
-        const pick = (value, min, max) => {
-          const n = Number(value);
-          if (!isFinite(n)) return null;
-          return Math.max(min, Math.min(max, n));
-        };
-        const datasetModel = raw?.datasetModel && typeof raw.datasetModel === 'object'
-          ? {
-            assetId: typeof raw.datasetModel.assetId === 'string' ? raw.datasetModel.assetId.slice(0, 120) : '',
-            formats: Array.isArray(raw.datasetModel.formats)
-              ? raw.datasetModel.formats.filter((value) => typeof value === 'string').slice(0, 20)
-              : [],
-            validation: raw.datasetModel.validation && typeof raw.datasetModel.validation === 'object'
-              ? raw.datasetModel.validation
-              : null,
-          }
-          : null;
-
-        return {
-          ...base,
-          componentName: typeof raw?.componentName === "string" ? raw.componentName.slice(0, 60) : "",
-          teeth: pick(raw?.teeth, 4, 400),
-          module: pick(raw?.module, 0.01, 100),
-          helixAngle: pick(raw?.helixAngle, -60, 60),
-          coneAngle: pick(raw?.coneAngle, 0, 90),
-          boltCount: pick(raw?.boltCount, 3, 64),
-          gearType: base.gearType,
-          requiresGearTypeConfirmation: base.requiresGearTypeConfirmation,
-          datasetModel,
-        };
-      }
-
-      app.post("/api/cad/export", async (req, res) => {
-        let cleanup = () => { };
-        try {
-          const analysis = validateCadExportAnalysis(req.body?.analysis);
-          const format = String(req.body?.format || "step").toLowerCase();
-          if (!CAD_EXPORT_FORMATS.includes(format)) {
-            return res.status(400).json({ error: `Unsupported CAD export format: ${format}` });
-          }
-          if (analysis.gearType === "unknown" || analysis.requiresGearTypeConfirmation) {
-            return res.status(422).json({
-              error: "Gear type is unconfirmed. Confirm spur, helical, bevel, worm, rack, internal, compound, pinion, stepped or flanged before exporting CAD.",
-            });
-          }
-          const requested = typeof req.body?.baseName === "string" ? req.body.baseName.trim() : "";
-          const baseName = requested || cadSlug(analysis);
-
-          // Dataset-backed reconstructions export their real acquired asset. Never
-          // substitute a parametric guess when the retrieved source format exists.
-          if (analysis.datasetModel) {
-            const asset = resolveAssetForDatasetModel(analysis.datasetModel, format);
-            if (!asset) {
-              return res.status(422).json({
-                error: `Retrieved dataset asset does not include a real ${format.toUpperCase()} file. Available formats: ${(analysis.datasetModel.formats || []).join(', ') || 'none'}.`,
-              });
-            }
-            const extension = path.extname(asset.path) || `.${format}`;
-            res.setHeader("Content-Type", asset.mimeType);
-            res.setHeader("Content-Disposition", `attachment; filename="${baseName}${extension}"`);
-            res.setHeader("Content-Length", String(asset.bytes));
-            res.setHeader("X-ReForge-CAD-Source", "dataset");
-            const datasetStream = createReadStream(asset.path);
-            datasetStream.on("error", (streamError) => {
-              if (!res.headersSent) {
-                res.status(500).json({ error: streamError.message || 'Dataset asset stream failed.' });
-              } else {
-                res.destroy(streamError);
-              }
-            });
-            datasetStream.pipe(res);
-            return undefined;
-          }
-
-          const result = await exportCadModel({ analysis, format, baseName });
-          cleanup = result.cleanup;
-
-          res.setHeader("Content-Type", result.mimeType);
-          res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
-          res.setHeader("Content-Length", String(result.bytes));
-          res.setHeader("X-ReForge-CAD-Solids", String(result.manifest.solids));
-
-          const stream = createReadStream(result.path);
-          stream.on("error", (streamError) => {
-            cleanup();
-            if (!res.headersSent) {
-              res.status(500).json({ error: streamError.message || "CAD export stream failed." });
-            } else {
-              res.destroy(streamError);
-            }
-          });
-          stream.on("close", cleanup);
-          stream.pipe(res);
-          return undefined;
-        } catch (error) {
-          cleanup();
-          return res.status(error.status || 500).json({ error: error.message || "CAD export failed." });
-        }
-      });
-
-      app.post("/api/analyze-condition", async (req, res) => {
-        try {
-          const images = validateImages(req.body?.images);
-          const rawAnalysis = req.body?.analysis && typeof req.body.analysis === 'object'
-            ? req.body.analysis
-            : {};
-          const recipe = sanitizeRecipe(rawAnalysis.geometryRecipe);
-          const rawExplicitType = rawAnalysis.gearType ?? recipe?.gear?.gearType;
-          const explicitType = typeof rawExplicitType === 'string' ? normalizeGearType(rawExplicitType) : null;
-          const componentType = typeof rawAnalysis.componentType === 'string'
-            ? rawAnalysis.componentType.slice(0, 60)
-            : '';
-          const inferredType = explicitType === null
-            ? gearTypeFromText(`${componentType} ${(rawAnalysis.features || []).join(' ')}`)
-            : 'unknown';
-          const numeric = (value) => typeof value === 'number' && isFinite(value) ? value : null;
-          const gearType = explicitType !== null && explicitType !== 'unknown'
-            ? explicitType
-            : (inferredType !== 'unknown' ? inferredType : (explicitType === 'unknown' ? 'unknown' : null));
-          const requiresGearTypeConfirmation = Boolean(rawAnalysis.requiresGearTypeConfirmation) || gearType === 'unknown';
-          if (recipe?.gear && typeof recipe.gear === 'object' && gearType) {
-            recipe.gear.gearType = gearType;
-          }
-          if (recipe && requiresGearTypeConfirmation) {
-            recipe.requiresGearTypeConfirmation = true;
-          }
-          const analysis = {
-            componentType,
-            gearType,
-            requiresGearTypeConfirmation,
-            teeth: numeric(rawAnalysis.teeth),
-            module: numeric(rawAnalysis.module),
-            helixAngle: numeric(rawAnalysis.helixAngle),
-            coneAngle: numeric(rawAnalysis.coneAngle),
-            geometryRecipe: recipe,
-          };
-          const conditionAssessment = await attachConditionAssessment({ analysis, images });
-          res.json({ conditionAssessment });
-        } catch (error) {
-          res.status(error.status || 500).json({ error: error.message || 'Condition analysis failed.' });
-        }
-      });
-
-      app.get("/api/health", (_req, res) => {
-        const catalog = getCatalogSummary();
-        res.json({
-          ok: true,
-          geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
-          cadExportAvailable: isCadExportScriptPresent(),
-          datasetRetrievalEnabled: catalog.enabled,
-          datasetCatalog: {
-            indexPresent: catalog.indexPresent,
-            manifestPresent: catalog.manifestPresent,
-            counts: catalog.counts,
-          },
-        });
-      });
-
-      app.get("/api/dataset/status", async (_req, res) => {
-        try {
-          res.json(await getDatasetServiceStatus());
-        } catch (error) {
-          res.status(500).json({ error: error.message || 'Dataset status failed.' });
-        }
-      });
-
-      app.get("/api/dataset/asset/:assetId", (req, res) => {
-        const format = String(req.query.format || 'stl').toLowerCase();
-        const asset = resolveDatasetAsset(req.params.assetId, format);
-        if (!asset) {
-          return res.status(404).json({ error: 'Dataset asset not found or outside configured storage.' });
-        }
-        res.setHeader('Content-Type', asset.mimeType);
-        res.setHeader('Content-Disposition', `attachment; filename="${path.basename(asset.path)}"`);
-        if (asset.bytes) res.setHeader('Content-Length', String(asset.bytes));
-        const stream = createReadStream(asset.path);
-        stream.on('error', (error) => {
-          if (!res.headersSent) res.status(500).json({ error: error.message });
-          else res.destroy(error);
-        });
-        stream.pipe(res);
-        return undefined;
-      });
-
-      const distDir = path.resolve(__dirname, "../frontend/dist");
-      if (existsSync(distDir)) {
-        app.use(express.static(distDir));
-        app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(distDir, "index.html")));
+    const stream = createReadStream(result.path);
+    stream.on("error", (streamError) => {
+      cleanup();
+      if (!res.headersSent) {
+        res.status(500).json({ error: streamError.message || "CAD export stream failed." });
       } else {
-        app.get("/", (_req, res) => {
-          res
-            .type("text")
-            .send("ReForge AI API is running. Build the frontend (npm run build) or run the Vite dev server with the /api proxy to use the app.");
-        });
+        res.destroy(streamError);
       }
+    });
+    stream.on("close", cleanup);
+    stream.pipe(res);
+    return undefined;
+  } catch (error) {
+    cleanup();
+    return res.status(error.status || 500).json({ error: error.message || "CAD export failed." });
+  }
+});
 
-      app.use((_req, res) => res.status(404).json({ error: "Not found." }));
+app.post("/api/analyze-condition", async (req, res) => {
+  try {
+    const images = validateImages(req.body?.images);
+    const rawAnalysis = req.body?.analysis && typeof req.body.analysis === 'object'
+      ? req.body.analysis
+      : {};
+    const recipe = sanitizeRecipe(rawAnalysis.geometryRecipe);
+    const rawExplicitType = rawAnalysis.gearType ?? recipe?.gear?.gearType;
+    const explicitType = typeof rawExplicitType === 'string' ? normalizeGearType(rawExplicitType) : null;
+    const componentType = typeof rawAnalysis.componentType === 'string'
+      ? rawAnalysis.componentType.slice(0, 60)
+      : '';
+    const inferredType = explicitType === null
+      ? gearTypeFromText(`${componentType} ${(rawAnalysis.features || []).join(' ')}`)
+      : 'unknown';
+    const numeric = (value) => typeof value === 'number' && isFinite(value) ? value : null;
+    const gearType = explicitType !== null && explicitType !== 'unknown'
+      ? explicitType
+      : (inferredType !== 'unknown' ? inferredType : (explicitType === 'unknown' ? 'unknown' : null));
+    const requiresGearTypeConfirmation = Boolean(rawAnalysis.requiresGearTypeConfirmation) || gearType === 'unknown';
+    if (recipe?.gear && typeof recipe.gear === 'object' && gearType) {
+      recipe.gear.gearType = gearType;
+    }
+    if (recipe && requiresGearTypeConfirmation) {
+      recipe.requiresGearTypeConfirmation = true;
+    }
+    const analysis = {
+      componentType,
+      gearType,
+      requiresGearTypeConfirmation,
+      teeth: numeric(rawAnalysis.teeth),
+      module: numeric(rawAnalysis.module),
+      helixAngle: numeric(rawAnalysis.helixAngle),
+      coneAngle: numeric(rawAnalysis.coneAngle),
+      geometryRecipe: recipe,
+    };
+    const conditionAssessment = await attachConditionAssessment({ analysis, images });
+    res.json({ conditionAssessment });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Condition analysis failed.' });
+  }
+});
 
-      app.listen(PORT, () => {
-        console.log(`ReForge AI server listening on http://localhost:${PORT}`);
-        console.log(process.env.GEMINI_API_KEY ? "Gemini API key: configured" : "Gemini API key: NOT set — analysis/chat will fail until GEMINI_API_KEY is provided in .env.local");
-      });
+app.get("/api/health", (_req, res) => {
+  const catalog = getCatalogSummary();
+  res.json({
+    ok: true,
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    cadExportAvailable: isCadExportScriptPresent(),
+    datasetRetrievalEnabled: catalog.enabled,
+    datasetCatalog: {
+      indexPresent: catalog.indexPresent,
+      manifestPresent: catalog.manifestPresent,
+      counts: catalog.counts,
+    },
+  });
+});
+
+app.get("/api/dataset/status", async (_req, res) => {
+  try {
+    res.json(await getDatasetServiceStatus());
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Dataset status failed.' });
+  }
+});
+
+app.get("/api/dataset/asset/:assetId", (req, res) => {
+  const format = String(req.query.format || 'stl').toLowerCase();
+  const asset = resolveDatasetAsset(req.params.assetId, format);
+  if (!asset) {
+    return res.status(404).json({ error: 'Dataset asset not found or outside configured storage.' });
+  }
+  res.setHeader('Content-Type', asset.mimeType);
+  res.setHeader('Content-Disposition', `attachment; filename="${path.basename(asset.path)}"`);
+  if (asset.bytes) res.setHeader('Content-Length', String(asset.bytes));
+  const stream = createReadStream(asset.path);
+  stream.on('error', (error) => {
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+    else res.destroy(error);
+  });
+  stream.pipe(res);
+  return undefined;
+});
+
+const distDir = path.resolve(__dirname, "../frontend/dist");
+if (existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(distDir, "index.html")));
+} else {
+  app.get("/", (_req, res) => {
+    res
+      .type("text")
+      .send("ReForge AI API is running. Build the frontend (npm run build) or run the Vite dev server with the /api proxy to use the app.");
+  });
+}
+
+app.use((_req, res) => res.status(404).json({ error: "Not found." }));
+
+app.listen(PORT, () => {
+  console.log(`ReForge AI server listening on http://localhost:${PORT}`);
+  console.log(process.env.GEMINI_API_KEY ? "Gemini API key: configured" : "Gemini API key: NOT set — analysis/chat will fail until GEMINI_API_KEY is provided in .env.local");
+});
