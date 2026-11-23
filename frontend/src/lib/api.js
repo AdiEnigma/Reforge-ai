@@ -197,7 +197,16 @@ export async function analyzeCondition(images, analysis, { signal } = {}) {
     "/api/analyze-condition",
     {
       images: payloads,
-      analysis: { componentType: analysis?.componentType || '' },
+      analysis: {
+        componentType: analysis?.componentType || '',
+        gearType: analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType || null,
+        requiresGearTypeConfirmation: Boolean(analysis?.requiresGearTypeConfirmation),
+        teeth: analysis?.teeth ?? analysis?.geometryRecipe?.gear?.teeth ?? null,
+        module: analysis?.module ?? analysis?.geometryRecipe?.gear?.module ?? null,
+        helixAngle: analysis?.helixAngle ?? analysis?.geometryRecipe?.gear?.helixAngle ?? null,
+        coneAngle: analysis?.coneAngle ?? analysis?.geometryRecipe?.gear?.coneAngle ?? null,
+        geometryRecipe: analysis?.geometryRecipe || null,
+      },
     },
     { signal }
   );

@@ -14,6 +14,7 @@ import {
   getCandidateModels,
   stripFences,
 } from "./gemini.js";
+import { normalizeGearType } from "./src/gear-types.js";
 
 const DEFECT_TYPES = [
   "corrosion",
@@ -67,6 +68,20 @@ const DEFECT_LABELS = {
   discoloration: "Discoloration",
   surface_roughness: "Surface deterioration",
   contamination: "Surface contamination",
+};
+
+const GEAR_VERIFICATION = {
+  spur: "Measure tooth thickness and backlash against a known spur mating gear.",
+  helical: "Inspect helix-direction contact pattern and measure lead and backlash against the mating helical gear.",
+  bevel: "Check contact pattern on the pitch cone and verify mounting distance and backlash with the mating bevel gear.",
+  worm: "Inspect the worm flight for polishing or scoring and verify axial backlash with the mating wheel.",
+  rack: "Check straightness and measure tooth thickness at several positions along the rack.",
+  internal: "Inspect internal flanks from multiple angles and measure tooth thickness with internal-gauge equipment.",
+  compound: "Inspect each coaxial gear stage separately; compare wear between stages for alignment problems.",
+  pinion: "Check the integral pinion teeth and adjacent journals together for concentricity and contact offset.",
+  stepped: "Inspect each diameter stage separately for tooth wear and shoulder deformation.",
+  flanged: "Check the gear teeth and the flange face together for alignment and fastener distortion.",
+  unknown: "Confirm the gear type before applying tooth-form-specific wear limits.",
 };
 
 const VERIFICATION_BY_TYPE = {
@@ -326,12 +341,19 @@ function normalizeSuspectedInternal(raw) {
   return clean.slice(0, 5);
 }
 
-function buildVerification(observations, suspectedInternal, imageQuality) {
+function buildVerification(observations, suspectedInternal, imageQuality, gearType = null) {
   const recommendations = new Set();
   for (const observation of observations) {
     for (const recommendation of VERIFICATION_BY_TYPE[observation.type] || []) {
       recommendations.add(recommendation);
     }
+  }
+  const normalizedGearType = normalizeGearType(gearType);
+  if (normalizedGearType !== "unknown" && observations.some((o) => ["tooth_wear", "chipping", "deformation", "scoring"].includes(o.type))) {
+    recommendations.add(GEAR_VERIFICATION[normalizedGearType]);
+  }
+  if (normalizedGearType === "unknown" && observations.some((o) => ["tooth_wear", "chipping", "deformation", "scoring"].includes(o.type))) {
+    recommendations.add(GEAR_VERIFICATION.unknown);
   }
   if (imageQuality === "limited") {
     recommendations.add(
@@ -369,6 +391,7 @@ export function deriveConditionAssessment(raw, context = {}) {
       observedDefectTypes: [],
       damageRegions: [],
       suspectedInternal: normalizeSuspectedInternal(raw?.suspectedInternal),
+      assessedGearType: context.gearType ? normalizeGearType(context.gearType) : null,
       summary:
         cleanText(raw?.summary, 400) ||
         "Image quality or visible evidence is insufficient for a reliable visual assessment.",
@@ -426,6 +449,10 @@ export function deriveConditionAssessment(raw, context = {}) {
     ? `Visible ${observations.map((o) => DEFECT_LABELS[o.type].toLowerCase()).join(", ")} observed in the supplied photographs.`
     : "No visible surface damage was identified in the supplied photographs.";
 
+  const assessedGearType = context.gearType
+    ? normalizeGearType(context.gearType)
+    : null;
+
   return {
     status,
     imageQuality,
@@ -435,11 +462,13 @@ export function deriveConditionAssessment(raw, context = {}) {
     observedDefectTypes: observations.map((observation) => observation.type),
     damageRegions,
     suspectedInternal,
+    assessedGearType,
     summary: cleanText(raw?.summary, 400) || defaultSummary,
     recommendedVerification: buildVerification(
       observations,
       suspectedInternal,
-      imageQuality
+      imageQuality,
+      assessedGearType
     ),
     critical:
       hasObservedCrack ||
@@ -576,7 +605,7 @@ export function unknownConditionAssessment(reason = "") {
   };
 }
 
-function conditionPrompt(analysis) {
+export function conditionPrompt(analysis) {
   const lines = [
     "You are a mechanical visual condition inspector. Inspect the supplied photographs ONLY for visible surface condition.",
     "Do not assess geometry, dimensions, material grade, manufacturing process, or remaining life.",
@@ -601,6 +630,40 @@ function conditionPrompt(analysis) {
     lines.push(
       `The part has been classified as "${analysis.componentType}". Use this only for location vocabulary; it is not evidence of damage.`
     );
+  }
+  const gearType = normalizeGearType(analysis?.gearType);
+  if (gearType !== "unknown") {
+    const featureWarnings = {
+      spur: "Describe damage on straight parallel tooth flanks and tips only where they are visible.",
+      helical: "Describe damage on angled tooth flanks; inspect both ends of the helix when visible.",
+      bevel: "Describe damage relative to the conical pitch surface and toe/heel of the teeth.",
+      worm: "Describe damage on the continuous worm flight and root, not on spur-like teeth.",
+      rack: "Describe damage along a linear run of teeth; do not assume a circular gear.",
+      internal: "Describe damage on inward-facing internal teeth of a ring.",
+      compound: "Describe which coaxial gear stage shows damage when the views allow it.",
+      pinion: "Describe damage on the integral gear teeth and adjacent shaft journals separately.",
+      stepped: "Describe damage per stepped gear diameter when the views allow it.",
+      flanged: "Describe damage on gear teeth and flange face separately.",
+    };
+    lines.push(
+      `Confirmed gear type: ${gearType}. ${featureWarnings[gearType]} Do not apply spur-gear vocabulary to other tooth forms.`
+    );
+  } else if (analysis?.requiresGearTypeConfirmation || analysis?.geometryRecipe?.gear) {
+    lines.push(
+      "The tooth form is unconfirmed. Report only directly visible surface damage; do not assume spur teeth or use tooth-form-specific conclusions."
+    );
+  }
+  if (analysis?.geometryRecipe?.gear) {
+    const g = analysis.geometryRecipe.gear;
+    const details = [
+      typeof g.teeth === "number" ? `${g.teeth} teeth` : null,
+      typeof g.module === "number" ? `module ${g.module} mm` : null,
+      typeof g.helixAngle === "number" && g.helixAngle !== 0 ? `helix ${g.helixAngle}°` : null,
+      typeof g.coneAngle === "number" ? `cone ${g.coneAngle}°` : null,
+    ].filter(Boolean);
+    if (details.length) {
+      lines.push(`Reconstructed gear geometry context: ${details.join(", ")}. Use this only to localise visible findings; it is not evidence of damage.`);
+    }
   }
   return lines.join("\n");
 }
@@ -643,6 +706,8 @@ export async function assessVisualCondition({ images, analysis } = {}) {
       const raw = JSON.parse(stripFences(result.response.text()));
       return deriveConditionAssessment(raw, {
         componentType: analysis?.componentType,
+        gearType: analysis?.gearType,
+        requiresGearTypeConfirmation: analysis?.requiresGearTypeConfirmation,
         imageCount: images.length,
       });
     } catch (error) {

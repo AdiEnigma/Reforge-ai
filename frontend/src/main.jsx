@@ -6,6 +6,7 @@ import { analyzeComponent, analyzeCondition, sendChatMessage, isCancellationErro
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
 import { normalizeFeatures } from './lib/features.js';
+import { GEAR_TYPES, applyConfirmedGearType, isGearTypeUnconfirmed } from './lib/gear-types.js';
 import { buildEngineeringContext, getEngineeringSuggestions } from './lib/engineering-context.js';
 import { buildDrawingModel, renderDrawingToSvg, exportSvg, exportPng, exportPdf } from './lib/drawing/index.js';
 import { buildModel, buildAssemblyScene, dimensionList, resolveLabel, validateReconstructedModel } from './lib/reconstruct.js';
@@ -2820,6 +2821,14 @@ function Workbench() {
 
   // Only confirmed changes are written to the analysis that drives the 3D model.
   const activeReconstructionAnalysis = currentAnalysis;
+  const gearTypeNeedsConfirmation = Boolean(currentAnalysis)
+    && isGearTypeUnconfirmed(currentAnalysis)
+    && Boolean(
+      currentAnalysis.requiresGearTypeConfirmation ||
+      currentAnalysis.teeth ||
+      currentAnalysis.geometryRecipe?.gear ||
+      /gear|tooth|teeth|worm|rack/i.test(String(currentAnalysis.componentType || ''))
+    );
   const modifiedCount = Object.keys(effectiveScenarioParams).length;
 
   const handleToggleRecommendation = useCallback((key) => {
@@ -2829,6 +2838,42 @@ function Workbench() {
   const handleResetRecommendations = useCallback(() => {
     setDeselectedRecommendations({});
   }, []);
+
+  // A confirmed gear type replaces the active analysis so 3D, drawings,
+  // CAD, FEA, health, manufacturing and cost all consume the same classification.
+  const handleConfirmGearType = useCallback((rawGearType) => {
+    const confirmedAnalysis = applyConfirmedGearType(currentAnalysis, rawGearType);
+    if (!confirmedAnalysis) return;
+
+    const targetId = activeComp?.id || machineryState?.primaryGear?.id;
+    const replaceAnalysis = (component) => (
+      component && (component.id === targetId || (!targetId && component === machineryState?.primaryGear))
+        ? { ...component, analysis: confirmedAnalysis }
+        : component
+    );
+    const nextMachineryState = {
+      ...machineryState,
+      primaryGear: replaceAnalysis(machineryState?.primaryGear),
+      companionGear: replaceAnalysis(machineryState?.companionGear),
+      additionalComponents: (machineryState?.additionalComponents || []).map(replaceAnalysis),
+    };
+
+    const nextDecisions = { ...decisions, ...getGeometryDecisionOverrides(confirmedAnalysis) };
+    setAnalysis(confirmedAnalysis);
+    setMachineryState(nextMachineryState);
+    setLastAnalyzedSnapshot(createMachinerySnapshot(nextMachineryState));
+    setDecisions(nextDecisions);
+    saveManufacturingState(nextDecisions, confirmedCategories);
+    setMfgData(null);
+    setActiveDraftSelection(null);
+    setDeselectedRecommendations({});
+  }, [
+    activeComp?.id,
+    confirmedCategories,
+    currentAnalysis,
+    decisions,
+    machineryState,
+  ]);
 
   const handleConfirmScenario = useCallback(() => {
     if (!currentAnalysis || !isGeometryValid || Object.keys(effectiveScenarioParams).length === 0) return;
@@ -3086,6 +3131,26 @@ function Workbench() {
                   onCancel={cancelReconstruction}
                   onRetry={retryReconstruction}
                 />
+
+                {gearTypeNeedsConfirmation && (
+                  <div className="gear-type-confirmation" role="alert">
+                    <div className="gear-type-confirmation-copy">
+                      <strong>GEAR TYPE UNCONFIRMED</strong>
+                      <span>Tooth count alone does not identify the tooth form. Select the type before accepting geometry, CAD or health results.</span>
+                    </div>
+                    <select
+                      className="gear-type-confirmation-select"
+                      value=""
+                      aria-label="Confirm gear type"
+                      onChange={(event) => handleConfirmGearType(event.target.value)}
+                    >
+                      <option value="" disabled>Confirm gear type…</option>
+                      {GEAR_TYPES.filter((type) => type !== 'unknown').map((type) => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
                 {!currentAnalysis ? (
                   <div className="viewport-hint">
@@ -3598,6 +3663,12 @@ function App() {
   });
 
   const toggleTheme = useCallback(() => {
+    document.documentElement?.classList.add('theme-animating');
+    if (themeTransitionTimerRef.current) window.clearTimeout(themeTransitionTimerRef.current);
+    themeTransitionTimerRef.current = window.setTimeout(() => {
+      document.documentElement?.classList.remove('theme-animating');
+      themeTransitionTimerRef.current = null;
+    }, 360);
     setTheme((prev) => {
       const next = prev === 'light' ? 'dark' : 'light';
       try {
@@ -3622,6 +3693,10 @@ function App() {
     }
   }, [theme]);
 
+  useEffect(() => () => {
+    if (themeTransitionTimerRef.current) window.clearTimeout(themeTransitionTimerRef.current);
+  }, []);
+
   const [page, setPage] = useState('home');
   const [images, setImages] = useState([]);
   const [analysis, setAnalysis] = useState(null);
@@ -3635,6 +3710,7 @@ function App() {
   const reconstructionAttemptRef = useRef(0);
   const reconstructionCancelledRef = useRef(false);
   const conditionRequestRef = useRef(null);
+  const themeTransitionTimerRef = useRef(null);
 
   // Machinery Context State
   const [machineryState, setMachineryState] = useState(() => createInitialMachineryState());
