@@ -524,3 +524,66 @@ export function getGeometryDecisionOverrides(analysis) {
   }
   return overrides;
 }
+
+const GEOMETRY_DECISION_KEYS = ['outerDiameter', 'innerDiameter', 'height', 'teeth'];
+
+/**
+ * Captures the original component specification before any What-If change is
+ * confirmed. Machinery and decision state are copied so a later revert is not
+ * affected by the confirmed analysis mutating nested objects.
+ */
+export function captureWhatIfBaseline({ analysis, componentId, machineryState, decisions }) {
+  if (!analysis) return null;
+  return {
+    analysis: cloneAnalysis(analysis),
+    componentId: componentId || null,
+    machineryState: machineryState ? cloneAnalysis(machineryState) : null,
+    decisions: decisions ? cloneAnalysis(decisions) : {},
+  };
+}
+
+/** True when the active analysis no longer matches the captured original. */
+export function hasConfirmedWhatIfChanges(baseline, analysis) {
+  if (!baseline?.analysis || !analysis) return false;
+  for (const def of PARAM_DEFINITIONS) {
+    const original = getParameterValue(baseline.analysis, def.key);
+    const current = getParameterValue(analysis, def.key);
+    if (finite(original) !== finite(current)) return true;
+    if (finite(original) && Math.abs(original - current) > EPSILON) return true;
+  }
+  return false;
+}
+
+/** Restores only the active component's original analysis in current machinery state. */
+export function restoreWhatIfMachineryState(baseline, machineryState) {
+  if (!baseline?.analysis || !machineryState) return machineryState;
+  const targetId = baseline.componentId;
+  const replaceAnalysis = (component) => (
+    component && (targetId ? component.id === targetId : component === machineryState.primaryGear)
+      ? { ...component, analysis: baseline.analysis }
+      : component
+  );
+  return {
+    ...machineryState,
+    primaryGear: replaceAnalysis(machineryState.primaryGear),
+    companionGear: replaceAnalysis(machineryState.companionGear),
+    additionalComponents: (machineryState.additionalComponents || []).map(replaceAnalysis),
+  };
+}
+
+/** Re-applies original geometry decisions without discarding unrelated manufacturing choices. */
+export function restoreWhatIfDecisions(baseline, decisions) {
+  if (!baseline?.analysis) return decisions;
+  const original = getGeometryDecisionOverrides(baseline.analysis);
+  const next = { ...(decisions || {}) };
+  for (const key of GEOMETRY_DECISION_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(baseline.decisions || {}, key)) {
+      next[key] = baseline.decisions[key];
+    } else if (Object.prototype.hasOwnProperty.call(original, key)) {
+      next[key] = original[key];
+    } else {
+      delete next[key];
+    }
+  }
+  return next;
+}

@@ -3904,9 +3904,11 @@ nav {
   margin-top: auto;
   padding-top: 6px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px
 }
 
+.btn-revert-original,
 .btn-reset-scenario,
 .btn-confirm-scenario,
 .btn-report-action {
@@ -3925,6 +3927,7 @@ nav {
   transition: all .2s
 }
 
+.btn-revert-original:not(:disabled):hover,
 .btn-reset-scenario:not(:disabled):hover,
 .btn-report-action:hover {
   border-color: var(--primary);
@@ -3932,10 +3935,18 @@ nav {
   background: var(--high)
 }
 
+.btn-revert-original:disabled,
 .btn-reset-scenario:disabled,
 .btn-confirm-scenario:disabled {
   opacity: .4;
   cursor: not-allowed
+}
+
+.btn-revert-original {
+  flex-basis: 100%;
+  border-color: var(--tenne);
+  color: var(--primary);
+  background: var(--low)
 }
 
 .btn-confirm-scenario {
@@ -10790,6 +10801,25 @@ body.theme-light {
   background-image: radial-gradient(var(--line) 1px, transparent 1px);
   background-size: 8px 8px;
   color: var(--text);
+}
+
+/* ─── Smooth theme switch ───────────────────────────────────────────────── */
+html.theme-animating,
+html.theme-animating *,
+html.theme-animating *::before,
+html.theme-animating *::after {
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow, opacity !important;
+  transition-duration: .32s !important;
+  transition-timing-function: cubic-bezier(.2, .7, .25, 1) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.theme-animating,
+  html.theme-animating *,
+  html.theme-animating *::before,
+  html.theme-animating *::after {
+    transition-duration: .01ms !important;
+  }
 }
 
 /* ─── Theme Toggle Button in Nav and Ribbon ──────────────────────────────── */

@@ -18,6 +18,10 @@ import {
   getParameterRecommendations,
   applyScenarioToAnalysis,
   getGeometryDecisionOverrides,
+  captureWhatIfBaseline,
+  hasConfirmedWhatIfChanges,
+  restoreWhatIfDecisions,
+  restoreWhatIfMachineryState,
 } from './lib/what-if.js';
 import {
   applyReconstructionEvent,
@@ -1480,6 +1484,8 @@ function WhatIfSimulator({
   onToggleRecommendation,
   onResetRecommendations,
   onConfirm,
+  onRevertOriginal,
+  canRevertOriginal = false,
   isGeometryValid,
   geometryError,
   warnings,
@@ -1678,6 +1684,16 @@ function WhatIfSimulator({
       )}
 
       <div className="whatif-actions">
+        <button
+          type="button"
+          className="btn-revert-original"
+          disabled={!canRevertOriginal}
+          onClick={onRevertOriginal}
+          aria-label="Revert confirmed changes to the original component"
+          title="Restore the original dimensions and every dependent output"
+        >
+          <Icon>history</Icon> RESET / REVERT TO ORIGINAL
+        </button>
         <button
           className="btn-reset-scenario"
           disabled={!hasModifications}
@@ -2110,6 +2126,7 @@ function Workbench() {
     return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear;
   }, [allComponents, activeComponentId, machineryState]);
   const currentAnalysis = activeComp?.analysis || analysis;
+  const componentKey = activeComp?.id || 'primary';
 
   const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
   const [copilotTab, setCopilotTab] = useState('chat'); // 'chat' | 'components'
@@ -2118,6 +2135,12 @@ function Workbench() {
   const [pipVisible, setPipVisible] = useState(false); // PiP disabled by default as requested
   const [scenarioParams, setScenarioParams] = useState({});
   const [deselectedRecommendations, setDeselectedRecommendations] = useState({});
+  // Baselines are captured per component when a fresh analysis is loaded and
+  // are never replaced by a confirmed What-If scenario.
+  const [originalBaselines, setOriginalBaselines] = useState({});
+  const baselineCaptureRef = useRef(new Map());
+  const confirmedAnalysesRef = useRef(new WeakSet());
+  const originalBaseline = originalBaselines[componentKey] || null;
   const [showReport, setShowReport] = useState(false);
   const [wire, setWire] = useState(false);
   const [grid, setGrid] = useState(false);
@@ -2642,6 +2665,24 @@ function Workbench() {
     setDeselectedRecommendations({});
   }, [currentAnalysis]);
 
+  // Capture the untouched specification once per component. Every confirmed
+  // scenario is remembered so revisiting that component cannot replace its
+  // original baseline with a modified analysis.
+  useEffect(() => {
+    if (!ready || !currentAnalysis || confirmedAnalysesRef.current.has(currentAnalysis)) return;
+    if (baselineCaptureRef.current.get(componentKey) === currentAnalysis) return;
+    baselineCaptureRef.current.set(componentKey, currentAnalysis);
+    setOriginalBaselines(prev => ({
+      ...prev,
+      [componentKey]: captureWhatIfBaseline({
+        analysis: currentAnalysis,
+        componentId: activeComp?.id,
+        machineryState,
+        decisions,
+      }),
+    }));
+  }, [ready, currentAnalysis, componentKey, activeComp?.id, machineryState, decisions]);
+
   const send = async (e, customMsg = null) => {
     if (e) e.preventDefault();
     const msgToSend = typeof customMsg === 'string' ? customMsg.trim() : text.trim();
@@ -2834,6 +2875,7 @@ function Workbench() {
     if (!currentAnalysis || !isGeometryValid || Object.keys(effectiveScenarioParams).length === 0) return;
 
     const confirmedAnalysis = applyScenarioToAnalysis(currentAnalysis, effectiveScenarioParams);
+    confirmedAnalysesRef.current.add(confirmedAnalysis);
     const targetId = activeComp?.id || machineryState?.primaryGear?.id;
     const replaceAnalysis = component => (
       component && (component.id === targetId || (!targetId && component === machineryState?.primaryGear))
@@ -2869,6 +2911,34 @@ function Workbench() {
     effectiveScenarioParams,
     isGeometryValid,
     machineryState,
+    setAnalysis,
+    setMachineryState,
+    setLastAnalyzedSnapshot,
+  ]);
+
+  const handleRevertOriginal = useCallback(() => {
+    if (!originalBaseline?.analysis) return;
+    const nextMachineryState = restoreWhatIfMachineryState(originalBaseline, machineryState);
+    const restoredAnalysis = getAllComponents(nextMachineryState).find(
+      (component) => component.id === originalBaseline.componentId
+    )?.analysis || originalBaseline.analysis;
+    const nextDecisions = restoreWhatIfDecisions(originalBaseline, decisions);
+
+    setAnalysis(restoredAnalysis);
+    setMachineryState(nextMachineryState);
+    setLastAnalyzedSnapshot(createMachinerySnapshot(nextMachineryState));
+    setDecisions(nextDecisions);
+    saveManufacturingState(nextDecisions, confirmedCategories);
+    setMfgData(null);
+    setActiveDraftSelection(null);
+    setScenarioParams({});
+    setDeselectedRecommendations({});
+    setActiveTab('workbench');
+  }, [
+    confirmedCategories,
+    decisions,
+    machineryState,
+    originalBaseline,
     setAnalysis,
     setMachineryState,
     setLastAnalyzedSnapshot,
@@ -3460,6 +3530,8 @@ function Workbench() {
                 onToggleRecommendation={handleToggleRecommendation}
                 onResetRecommendations={handleResetRecommendations}
                 onConfirm={handleConfirmScenario}
+                onRevertOriginal={handleRevertOriginal}
+                canRevertOriginal={hasConfirmedWhatIfChanges(originalBaseline, currentAnalysis)}
                 isGeometryValid={isGeometryValid}
                 geometryError={geometryError}
                 warnings={warnings}
@@ -3596,8 +3668,15 @@ function App() {
     } catch (e) { }
     return 'dark';
   });
+  const themeTransitionTimerRef = useRef(null);
 
   const toggleTheme = useCallback(() => {
+    document.documentElement?.classList.add('theme-animating');
+    if (themeTransitionTimerRef.current) window.clearTimeout(themeTransitionTimerRef.current);
+    themeTransitionTimerRef.current = window.setTimeout(() => {
+      document.documentElement?.classList.remove('theme-animating');
+      themeTransitionTimerRef.current = null;
+    }, 360);
     setTheme((prev) => {
       const next = prev === 'light' ? 'dark' : 'light';
       try {
@@ -3621,6 +3700,10 @@ function App() {
       document.body?.classList?.remove('theme-light');
     }
   }, [theme]);
+
+  useEffect(() => () => {
+    if (themeTransitionTimerRef.current) window.clearTimeout(themeTransitionTimerRef.current);
+  }, []);
 
   const [page, setPage] = useState('home');
   const [images, setImages] = useState([]);

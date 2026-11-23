@@ -5,9 +5,10 @@
  */
 
 import assert from "node:assert/strict";
-import { buildDrawingModel, extractBaseDimensions } from "./projections.js";
+import { buildDrawingModel, extractBaseDimensions, validateDrawingDimensions } from "./projections.js";
 import { generateDimensions } from "./dimensions.js";
 import { renderDrawingToSvg } from "./renderer.js";
+import { applyScenarioToAnalysis } from "../what-if.js";
 
 let passed = 0;
 let failed = 0;
@@ -120,6 +121,82 @@ test("Gear: generates pitch circle, outer circle, and tooth annotations", () => 
   const svg = renderDrawingToSvg(model);
   assert.ok(svg.includes("RF-042"), "SVG should reflect custom drawing ID");
   assert.ok(svg.includes("REV"), "SVG should reflect revision block");
+});
+
+test("Gear: orthographic entities are projected from the reconstructed mesh", () => {
+  const analysis = {
+    componentType: "spur gear",
+    teeth: 24,
+    module: 4,
+    dimensions: { outerDiameter: 100, innerDiameter: 20, height: 20, thickness: 20 },
+    geometryRecipe: {
+      style: "gear",
+      gear: { teeth: 24, module: 4, boreRadius: 10, faceWidth: 20 },
+    },
+  };
+
+  const model = buildDrawingModel({ analysis });
+  assert.ok(model.geometryFacts.triangleCount > 100, "Projected mesh should contain real triangles");
+  assert.equal(model.geometryFacts.teethCount, 24, "Tooth count should be measured from the mesh profile");
+  assert.equal(model.dimensions.teeth, 24);
+  assert.equal(model.dimensions.innerDia, 20, "Bore should be validated against mesh radii");
+
+  for (const viewKey of ["front", "top", "side"]) {
+    const view = model.views[viewKey];
+    assert.ok(view.entities.length > 50, `${viewKey} should contain projected mesh edges`);
+    assert.ok(view.entities.some((entity) => entity.layer === "visible"));
+    assert.ok(view.entities.some((entity) => entity.layer === "hidden"), `${viewKey} should include hidden geometry`);
+    assert.ok(view.entities.some((entity) => entity.layer === "centerline"));
+  }
+});
+
+test("Gear: confirmed outside diameter changes drawing geometry and dimensions together", () => {
+  const analysis = {
+    componentType: "spur gear",
+    teeth: 24,
+    module: 4,
+    dimensions: { outerDiameter: 100, innerDiameter: 20, height: 20, thickness: 20 },
+    geometryRecipe: {
+      style: "gear",
+      gear: { teeth: 24, module: 4, boreRadius: 10, faceWidth: 20 },
+    },
+  };
+  const confirmed = applyScenarioToAnalysis(analysis, {
+    outerDiameter: 150,
+    innerDiameter: 30,
+    height: 30,
+    thickness: 30,
+    teeth: 24,
+  });
+
+  const model = buildDrawingModel({ analysis: confirmed });
+  assert.equal(model.dimensions.outerDia, 150);
+  assert.ok(Math.abs(model.views.front.width - 150) < 2, "Front view extent should match the rebuilt 3D geometry");
+  assert.ok(Math.abs(model.geometryFacts.outerDiameterMm - 150) < 2);
+});
+
+test("Dimensions that cannot be found in the source mesh are rejected", () => {
+  const model = buildDrawingModel({
+    analysis: {
+      componentType: "spur gear",
+      teeth: 24,
+      module: 4,
+      dimensions: { outerDiameter: 100, innerDiameter: 20, height: 20, thickness: 20 },
+      geometryRecipe: { style: "gear", gear: { teeth: 24, module: 4, boreRadius: 10, faceWidth: 20 } },
+    },
+  });
+
+  const invalid = {
+    outerDia: 999,
+    innerDia: 999,
+    width: 999,
+    height: 999,
+    depth: 999,
+    teeth: 999,
+    module: 99,
+  };
+  const validated = validateDrawingDimensions(invalid, model.geometryFacts);
+  for (const key of Object.keys(invalid)) assert.equal(validated[key], undefined, `${key} should be dropped`);
 });
 
 // ---------------------------------------------------------------------------
