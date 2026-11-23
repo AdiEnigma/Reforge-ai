@@ -9,6 +9,21 @@ import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, 
 // and clone only the lightweight Object3D wrappers per consumer.
 const modelCache = new WeakMap();
 
+function visibleBounds(object) {
+  const box = new THREE.Box3();
+  if (!object) return box;
+  object.updateWorldMatrix(true, true);
+  object.traverse((node) => {
+    if (!node.visible || !node.isMesh || !node.geometry) return;
+    if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+    if (!node.geometry.boundingBox) return;
+    const meshBox = node.geometry.boundingBox.clone();
+    meshBox.applyMatrix4(node.matrixWorld);
+    box.union(meshBox);
+  });
+  return box;
+}
+
 export const COMPONENT_LABELS = {
   "pinion shaft": "HELICAL PINION SHAFT",
   "compound gear": "COMPOUND GEAR",
@@ -807,6 +822,50 @@ export function buildModel(analysis) {
   group.position.sub(updatedCenter);
 
   return { group, params: p, label };
+}
+
+
+/**
+ * Validate a reconstructed model before it is presented as complete.
+ * Throws on invalid geometry; returns validation metadata on success.
+ */
+export function validateReconstructedModel(model) {
+  const group = model?.group;
+  if (!group || !group.isObject3D) {
+    throw new Error('Reconstruction produced no 3D model.');
+  }
+
+  const meshes = [];
+  group.traverse((node) => {
+    if (node.isMesh && node.geometry) meshes.push(node);
+  });
+  if (!meshes.length) {
+    throw new Error('Reconstruction produced no renderable mesh.');
+  }
+
+  for (const mesh of meshes) {
+    const position = mesh.geometry.getAttribute('position');
+    if (!position || position.count === 0) {
+      throw new Error('Reconstruction produced an empty mesh.');
+    }
+    const values = position.array;
+    for (let i = 0; i < values.length; i += 1) {
+      if (!Number.isFinite(values[i])) {
+        throw new Error('Reconstruction produced invalid mesh coordinates.');
+      }
+    }
+  }
+
+  const bounds = new THREE.Box3().setFromObject(group);
+  if (bounds.isEmpty()) {
+    throw new Error('Reconstructed model has no measurable bounds.');
+  }
+  const size = bounds.getSize(new THREE.Vector3());
+  if (!Number.isFinite(size.x + size.y + size.z) || size.length() === 0) {
+    throw new Error('Reconstructed model has invalid dimensions.');
+  }
+
+  return { valid: true, meshCount: meshes.length, bounds, size };
 }
 
 

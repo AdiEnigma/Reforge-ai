@@ -18,9 +18,6 @@ import {
   resolveDatasetAsset,
 } from './dataset-catalog.js';
 import { storeSpatialEvidence, getSpatialEvidence } from './src/spatial-evidence-store.js';
-=======
-import { exportCadModel, isCadExportScriptPresent } from './cad-export-adapter.js';
->>>>>>> origin/only-export
 import {
   resolveGeometryFromVision,
   reconcileGeminiWithVision,
@@ -309,7 +306,6 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
     checkCancelled();
   }
 
-<<<<<<< HEAD
   // Anchor spatial evidence to analysis object
   if (analysis && typeof analysis === 'object') {
     if (spatialEvidenceRef) {
@@ -318,10 +314,9 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
     if (rawVisionResult) {
       analysis.spatialObservations = extractVisionObservations(rawVisionResult);
     }
-=======
-    if (analysis && !analysis.geometrySource) {
+    if (!analysis.geometrySource) {
       analysis.geometrySource = solverMode === 'deterministic_cv' ? 'vision_template' : null;
->>>>>>> origin/only-export
+    }
   }
 
   const responseBody = {
