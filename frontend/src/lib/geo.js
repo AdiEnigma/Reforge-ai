@@ -630,6 +630,78 @@ export function buildPinionShaftGroup({
  * Builds an authentic 3D Stepped Shaft with multi-diameter journals,
  * transition shoulders, and optional spline head.
  */
+/**
+ * Builds an authentic 3D Circular Cap / Bushing / Bottle Cap component with a top disc,
+ * cylindrical outer wall (skirt), vertical knurling flutes, and an open hollow cavity.
+ */
+export function buildCapBushingGroup({
+  outerDiameter = 30.0,
+  innerDiameter = null,
+  height = 12.0,
+  thickness = null,
+}) {
+  const group = new THREE.Group();
+  const od = typeof outerDiameter === "number" && outerDiameter > 0 ? outerDiameter : 30.0;
+  const outerR = od / 2;
+  const h = typeof height === "number" && height > 0 ? height : Math.max(8.0, outerR * 0.75);
+
+  const wallThick = typeof thickness === "number" && thickness > 0
+    ? thickness
+    : (typeof innerDiameter === "number" && innerDiameter > 0 && innerDiameter < od
+        ? (od - innerDiameter) / 2
+        : Math.max(1.0, Math.min(2.5, outerR * 0.08)));
+  const innerR = typeof innerDiameter === "number" && innerDiameter > 0
+    ? innerDiameter / 2
+    : Math.max(0, outerR - wallThick);
+
+  const topCeilingThick = Math.max(1.2, wallThick * 1.1);
+  const hollowDepth = Math.max(1.0, h - topCeilingThick);
+
+  // 1. Solid Top Cap Disc with subtle chamfer
+  const topDiscGeo = new THREE.CylinderGeometry(outerR * 0.98, outerR, topCeilingThick, 64);
+  const topMesh = new THREE.Mesh(topDiscGeo, matBody);
+  topMesh.position.y = (h / 2) - (topCeilingThick / 2);
+  topMesh.userData = { featureId: "feature-cap-top-1", featureType: "cap_top" };
+  group.add(topMesh);
+
+  // 2. Outer Cylindrical Wall (Skirt / Rim)
+  const skirtGeo = extrude(ringShape(outerR, innerR), hollowDepth, false);
+  skirtGeo.center();
+  const skirtMesh = new THREE.Mesh(skirtGeo, matBody);
+  skirtMesh.rotation.x = Math.PI / 2;
+  skirtMesh.position.y = - (topCeilingThick / 2);
+  skirtMesh.userData = { featureId: "feature-cap-wall-1", featureType: "cap_wall" };
+  group.add(skirtMesh);
+
+  // 3. Knurled Flutes (standard plastic bottle cap ribbing)
+  const numRibs = 48;
+  const fluteGeo = new THREE.BoxGeometry(outerR * 0.035, hollowDepth * 0.95, outerR * 0.04);
+  const flutesGroup = new THREE.Group();
+  for (let i = 0; i < numRibs; i++) {
+    const angle = (i / numRibs) * Math.PI * 2;
+    const flute = new THREE.Mesh(fluteGeo, matAccent);
+    flute.position.set(Math.cos(angle) * (outerR * 0.995), -(topCeilingThick / 2), Math.sin(angle) * (outerR * 0.995));
+    flute.rotation.y = -angle;
+    flutesGroup.add(flute);
+  }
+  flutesGroup.userData = { featureId: "feature-cap-knurl-1", featureType: "knurling" };
+  group.add(flutesGroup);
+
+  // 4. Inner Hollow Bore Highlight (for interactive inspection)
+  if (innerR > 0) {
+    const boreHighlight = new THREE.Mesh(
+      new THREE.CylinderGeometry(innerR * 0.99, innerR * 0.99, hollowDepth * 1.05, 32, 1, true),
+      matHighlight
+    );
+    boreHighlight.position.y = - (topCeilingThick / 2);
+    boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
+    boreHighlight.visible = false;
+    group.add(boreHighlight);
+  }
+
+  return group;
+}
+
 export function buildSteppedShaftGroup({
   outerRadius = 1.8,
   length = 6.0,

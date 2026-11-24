@@ -408,40 +408,109 @@ export function buildParameterConfidence({
   const uncertainties = [];
   const ref = reference && typeof reference === 'object' ? reference : {};
   const hasCalibration = Boolean(obs?.calibrations?.length && obs.calibrations[0]?.mm_per_pixel > 0);
-
-  // 1. Outer Diameter / Major Width
   const calSource = obs?.calibrations?.[0]?.source || '';
   const isA4Calibrated = calSource === 'iso_216_a4_paper';
 
-  if (typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0) {
-    paramConf.outerDiameter = {
-      status: 'MEASURED',
-      confidence: 1.0,
-      source: 'user_reference',
-      value: ref.outerDiameter,
-      reason: 'User supplied verified physical diameter',
-    };
-  } else if (hasCalibration && obs?.circles?.length > 0) {
-    paramConf.outerDiameter = {
-      status: 'MEASURED',
-      confidence: isA4Calibrated ? 0.98 : 0.94,
-      source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
-      value: dimensions.outerDiameter,
-      reason: isA4Calibrated
-        ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
-        : `Calibrated from optical boundary (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
-    };
-  } else if (dimensions.outerDiameter) {
-    paramConf.outerDiameter = {
-      status: 'ESTIMATED',
-      confidence: 0.72,
-      source: provenance,
-      value: dimensions.outerDiameter,
-      reason: 'Estimated from visual envelope without absolute metric scale reference',
-    };
-    uncertainties.push('Overall envelope scale is uncalibrated without physical reference or multi-view baseline.');
+  const rawComp = String(componentType || '').toLowerCase();
+  const isPrismatic =
+    rawComp.includes('bracket') ||
+    rawComp.includes('box') ||
+    rawComp.includes('plate') ||
+    rawComp.includes('housing') ||
+    rawComp.includes('packaging') ||
+    rawComp.includes('block') ||
+    rawComp.includes('enclosure') ||
+    rawComp.includes('chassis') ||
+    rawComp.includes('extruded');
+
+  if (isPrismatic) {
+    if (typeof ref.length === 'number' && ref.length > 0) {
+      paramConf.length = {
+        status: 'MEASURED',
+        confidence: 1.0,
+        source: 'user_reference',
+        value: ref.length,
+        reason: 'User supplied verified physical length',
+      };
+    } else if (hasCalibration && obs?.boundingBoxes?.length > 0) {
+      paramConf.length = {
+        status: 'MEASURED',
+        confidence: isA4Calibrated ? 0.98 : 0.94,
+        source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
+        value: dimensions.length,
+        reason: isA4Calibrated
+          ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
+          : `Calibrated from optical bounding box (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
+      };
+    } else if (dimensions.length) {
+      paramConf.length = {
+        status: 'ESTIMATED',
+        confidence: 0.72,
+        source: provenance,
+        value: dimensions.length,
+        reason: 'Estimated from visual envelope span',
+      };
+    }
+
+    if (typeof ref.width === 'number' && ref.width > 0) {
+      paramConf.width = {
+        status: 'MEASURED',
+        confidence: 1.0,
+        source: 'user_reference',
+        value: ref.width,
+        reason: 'User supplied verified physical width',
+      };
+    } else if (hasCalibration && obs?.boundingBoxes?.length > 0) {
+      paramConf.width = {
+        status: 'MEASURED',
+        confidence: isA4Calibrated ? 0.98 : 0.94,
+        source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
+        value: dimensions.width,
+        reason: isA4Calibrated
+          ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
+          : `Calibrated from optical bounding box (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
+      };
+    } else if (dimensions.width) {
+      paramConf.width = {
+        status: 'ESTIMATED',
+        confidence: 0.72,
+        source: provenance,
+        value: dimensions.width,
+        reason: 'Estimated from visual envelope span',
+      };
+    }
   } else {
-    paramConf.outerDiameter = { status: 'UNKNOWN', confidence: 0.0, source: 'none' };
+    // 1. Outer Diameter / Major Width
+    if (typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0) {
+      paramConf.outerDiameter = {
+        status: 'MEASURED',
+        confidence: 1.0,
+        source: 'user_reference',
+        value: ref.outerDiameter,
+        reason: 'User supplied verified physical diameter',
+      };
+    } else if (hasCalibration && obs?.circles?.length > 0) {
+      paramConf.outerDiameter = {
+        status: 'MEASURED',
+        confidence: isA4Calibrated ? 0.98 : 0.94,
+        source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
+        value: dimensions.outerDiameter,
+        reason: isA4Calibrated
+          ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
+          : `Calibrated from optical boundary (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
+      };
+    } else if (dimensions.outerDiameter) {
+      paramConf.outerDiameter = {
+        status: 'ESTIMATED',
+        confidence: 0.72,
+        source: provenance,
+        value: dimensions.outerDiameter,
+        reason: 'Estimated from visual envelope without absolute metric scale reference',
+      };
+      uncertainties.push('Overall envelope scale is uncalibrated without physical reference or multi-view baseline.');
+    } else {
+      paramConf.outerDiameter = { status: 'UNKNOWN', confidence: 0.0, source: 'none' };
+    }
   }
 
   // 2. Inner Diameter / Central Bore
@@ -955,6 +1024,61 @@ export function inferDefensibleDimensions(reconciled, obs = null, ref = {}) {
   let derivedLength = null;
   let derivedBore = null;
 
+  const rawCompType = String(reconciled.componentType || '').toLowerCase();
+  const rawGeoType = String(reconciled.geometryType || '').toLowerCase();
+  const isPrismatic =
+    rawCompType.includes('bracket') ||
+    rawCompType.includes('box') ||
+    rawCompType.includes('plate') ||
+    rawCompType.includes('housing') ||
+    rawCompType.includes('packaging') ||
+    rawCompType.includes('block') ||
+    rawCompType.includes('enclosure') ||
+    rawCompType.includes('chassis') ||
+    rawGeoType.includes('prismatic') ||
+    rawGeoType.includes('bracket') ||
+    recipe.style === 'extruded';
+
+  if (isPrismatic) {
+    reconciled.dimensions.outerDiameter = null;
+    if (!reconciled.dimensions.innerDiameter || reconciled.dimensions.innerDiameter <= 0) {
+      reconciled.dimensions.innerDiameter = null;
+    }
+
+    if (obs?.calibrations?.[0]?.mm_per_pixel > 0 && obs?.boundingBoxes?.length > 0) {
+      const bbox = obs.boundingBoxes[0];
+      const sz = bbox.rotated_size_px || (bbox.axis_aligned ? [bbox.axis_aligned[2], bbox.axis_aligned[3]] : null);
+      if (sz && sz[0] > 0 && sz[1] > 0) {
+        const mmPerPx = obs.calibrations[0].mm_per_pixel;
+        reconciled.dimensions.length = Math.round(Math.max(sz[0], sz[1]) * mmPerPx * 10) / 10;
+        reconciled.dimensions.width = Math.round(Math.min(sz[0], sz[1]) * mmPerPx * 10) / 10;
+      }
+    } else if (Array.isArray(recipe.outline) && recipe.outline.length >= 3) {
+      const xs = recipe.outline.map((pt) => pt.x || 0);
+      const ys = recipe.outline.map((pt) => pt.y || 0);
+      const spanX = Math.round((Math.max(...xs) - Math.min(...xs)) * 10) / 10;
+      const spanY = Math.round((Math.max(...ys) - Math.min(...ys)) * 10) / 10;
+      if (spanX > 0 && spanY > 0) {
+        reconciled.dimensions.length = reconciled.dimensions.length || Math.max(spanX, spanY);
+        reconciled.dimensions.width = reconciled.dimensions.width || Math.min(spanX, spanY);
+      }
+    }
+
+    if (typeof reconciled.dimensions.length !== 'number' || reconciled.dimensions.length <= 0) {
+      reconciled.dimensions.length = 120.0;
+    }
+    if (typeof reconciled.dimensions.width !== 'number' || reconciled.dimensions.width <= 0) {
+      reconciled.dimensions.width = Math.round(reconciled.dimensions.length * 0.65 * 10) / 10;
+    }
+    if (typeof reconciled.dimensions.height !== 'number' || reconciled.dimensions.height <= 0) {
+      reconciled.dimensions.height = recipe.depth || 20.0;
+    }
+    if (typeof reconciled.dimensions.thickness !== 'number' || reconciled.dimensions.thickness <= 0) {
+      reconciled.dimensions.thickness = reconciled.dimensions.height;
+    }
+    return;
+  }
+
   // 1. From Revolved Profile (style: 'revolved')
   if (recipe.style === 'revolved' && Array.isArray(recipe.revolvedProfile) && recipe.revolvedProfile.length > 0) {
     const validRadii = recipe.revolvedProfile.map((p) => Math.abs(p.radius || 0)).filter((r) => r > 0);
@@ -1030,7 +1154,9 @@ export function inferDefensibleDimensions(reconciled, obs = null, ref = {}) {
   if (typeof reconciled.dimensions.thickness !== 'number' || !isFinite(reconciled.dimensions.thickness) || reconciled.dimensions.thickness <= 0) {
     reconciled.dimensions.thickness = reconciled.dimensions.length || 25.0;
   }
-  if (typeof currentBore !== 'number' || !isFinite(currentBore) || currentBore < 0) {
+  if (currentBore === null && !derivedBore) {
+    reconciled.dimensions.innerDiameter = null;
+  } else if (typeof currentBore !== 'number' || !isFinite(currentBore) || currentBore < 0) {
     reconciled.dimensions.innerDiameter = derivedBore ?? (recipe.boreRadius ? recipe.boreRadius * 2 : 0);
   }
 }
@@ -1048,7 +1174,6 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   const ref = reference && typeof reference === 'object' ? reference : {};
   const obs = extractVisionObservations(visionResult);
   const reconciled = { ...geminiAnalysis };
-  delete reconciled.geometrySource;
   const hadGeminiRecipe = Boolean(geminiAnalysis?.geometryRecipe && typeof geminiAnalysis.geometryRecipe === 'object');
 
   // 1. Reconcile Dimensions: User Reference > Vision Calibration > Gemini Proposal
@@ -1123,6 +1248,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     (typeof finalTeeth === 'number' && finalTeeth >= 4);
 
   if (isGear) {
+    reconciled.geometrySource = 'template_gear';
     if (typeof finalTeeth !== 'number' || finalTeeth < 4) {
       finalTeeth = Math.max(12, Math.round((reconciled.dimensions.outerDiameter || 100.0) / (reconciled.module || 4.5)));
     }
@@ -1554,6 +1680,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
 
     if (isFlange) {
       reconciled.componentType = 'flange';
+      reconciled.geometrySource = 'template_flange';
       const od = ref.outerDiameter || reconciled.dimensions.outerDiameter || 120.0;
       const id = ref.innerDiameter != null ? ref.innerDiameter : (reconciled.dimensions.innerDiameter || Math.round(od * 0.35 * 10) / 10);
       const th = ref.thickness || reconciled.dimensions.thickness || Math.round(od * 0.16 * 10) / 10;
@@ -2097,6 +2224,7 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
   const isImageElongated = detectedImgAspectRatio >= 1.6;
 
   const finalize = (ans) => {
+    ans.geometrySource = 'template_fallback';
     const confResult = buildParameterConfidence({
       dimensions: ans.dimensions,
       teeth: ans.teeth,
@@ -2108,7 +2236,13 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
       componentType: ans.componentType,
     });
     ans.parameterConfidence = confResult.parameterConfidence;
-    ans.uncertainties = [...new Set([...(ans.uncertainties || []), ...confResult.uncertainties])];
+    ans.uncertainties = [
+      ...new Set([
+        'Geometry synthesized from a standard template, not measured from this image.',
+        ...(ans.uncertainties || []),
+        ...confResult.uncertainties,
+      ]),
+    ];
     if (ans.gearType && normalizeGearType(ans.gearType) !== 'unknown') {
       ans.requiresGearTypeConfirmation = false;
     }
@@ -2763,7 +2897,7 @@ export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assis
     componentType: typeConfirmed ? `${finalGearType} gear` : 'gear (type unconfirmed)',
     componentName: typeConfirmed ? `${teeth}T Precision ${finalGearType.charAt(0).toUpperCase() + finalGearType.slice(1)} Gear` : `${teeth}T Toothed Component (type unconfirmed)`,
     label: typeConfirmed ? `${finalGearType.charAt(0).toUpperCase() + finalGearType.slice(1)} Gear (${teeth}T)` : `Gear Type Unconfirmed (${teeth}T)`,
-    confidence: typeConfirmed ? 0.90 : 0.65,
+    confidence: typeConfirmed ? 0.90 : 0,
     gearType: finalGearType,
     classificationSource: gearTypeEvidence.source,
     requiresGearTypeConfirmation: !typeConfirmed,

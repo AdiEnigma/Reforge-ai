@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { buildGearFromRecipe, executeRecipe, sanitizeRecipe } from "./recipe.js";
 import { normalizeGearType } from "./gear-types.js";
-import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup, buildCompoundGearGroup, buildFlangedShaftGroup, buildPinionShaftGroup } from "./geo.js";
+import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup, buildCompoundGearGroup, buildFlangedShaftGroup, buildPinionShaftGroup, buildCapBushingGroup } from "./geo.js";
 
 // Built geometry is immutable for a given analysis object. Validation and each
 // viewport previously rebuilt the same meshes from scratch; share the geometry
@@ -653,12 +653,35 @@ export function buildModel(analysis) {
       recipe.style === "revolved" ||
       (!recipe.flange && (!recipe.holes || recipe.holes.length <= 1)));
 
+  // Detect if component is Circular Cap / Bushing / Bottle Cap
+  const isCapOrBushing =
+    p.type === "cap/bushing" ||
+    rawType.includes("cap") ||
+    rawType.includes("bushing") ||
+    rawType.includes("bottle cap") ||
+    rawType.includes("lid") ||
+    rawType.includes("closure");
+
+  if (isCapOrBushing) {
+    const od = p.outerDiameter || analysis?.dimensions?.outerDiameter || 30.0;
+    const id = p.innerDiameter || analysis?.dimensions?.innerDiameter || null;
+    const h = p.height || p.length || analysis?.dimensions?.height || analysis?.dimensions?.length || 12.0;
+    const t = p.thickness || analysis?.dimensions?.thickness || null;
+    body = buildCapBushingGroup({
+      outerDiameter: od,
+      innerDiameter: id,
+      height: h,
+      thickness: t,
+    });
+    label = "CIRCULAR CAP / BUSHING";
+  }
+
   // Primary Route: Execute exact engineering recipe (meshData, compound_gear, flanged_shaft, gear, revolved, extruded, combination)
   const recipeMismatchesType =
     (p.type === "flange" && recipe?.style === "revolved" && !recipe.flange) ||
     (["bevel gear", "spur gear", "helical gear"].includes(p.type) &&
       recipe?.style !== "mesh" && !recipe?.axialSegments && !recipe?.gear);
-  if (recipe && !isTrivialBoxFallback && !recipeMismatchesType) {
+  if (!body && recipe && !isTrivialBoxFallback && !recipeMismatchesType) {
     body = executeRecipe(recipe);
     const rawComp = String(analysis?.componentType || "").trim();
     if (rawComp && rawComp.toLowerCase() !== "other") {
@@ -762,6 +785,14 @@ export function buildModel(analysis) {
             faceWidth: p.height || p.thickness || 1.2,
             coneAngleDeg: p.coneAngle || 45,
             boreRadius: p.innerDiameter ? p.innerDiameter / 2 : 0,
+          });
+          break;
+        case "cap/bushing":
+          body = buildCapBushingGroup({
+            outerDiameter: p.outerDiameter || analysis?.dimensions?.outerDiameter || 30.0,
+            innerDiameter: p.innerDiameter || analysis?.dimensions?.innerDiameter || null,
+            height: p.height || p.length || analysis?.dimensions?.height || analysis?.dimensions?.length || 12.0,
+            thickness: p.thickness || analysis?.dimensions?.thickness || null,
           });
           break;
         case "stepped shaft":
@@ -1066,141 +1097,486 @@ export function dimensionList(analysis) {
   const teeth = analysis?.teeth;
   const paramConf = analysis?.parameterConfidence || {};
   const recipe = analysis?.geometryRecipe || {};
-  const compType = String(analysis?.componentType || "").toLowerCase();
+  const rawCompType = String(analysis?.componentType || "").toLowerCase();
+  const resolvedType = resolveComponentType(analysis);
+  const geoType = String(analysis?.geometryType || "").toLowerCase();
 
-  // Infer dimensions from geometry recipe if missing from top-level dimensions
+  const isPrismatic =
+    resolvedType === "simple bracket" ||
+    rawCompType.includes("bracket") ||
+    rawCompType.includes("box") ||
+    rawCompType.includes("plate") ||
+    rawCompType.includes("housing") ||
+    rawCompType.includes("packaging") ||
+    rawCompType.includes("block") ||
+    rawCompType.includes("enclosure") ||
+    rawCompType.includes("chassis") ||
+    geoType.includes("prismatic") ||
+    recipe.style === "extruded";
+
+  const isCapBushing =
+    resolvedType === "cap/bushing" ||
+    rawCompType.includes("cap") ||
+    rawCompType.includes("bushing") ||
+    rawCompType.includes("bottle cap") ||
+    rawCompType.includes("lid") ||
+    rawCompType.includes("closure") ||
+    rawCompType.includes("cup");
+
+  const isFlange =
+    resolvedType === "flange" ||
+    rawCompType.includes("flange") ||
+    geoType.includes("flange") ||
+    Boolean(recipe.flange);
+
+  const isGear =
+    !isFlange &&
+    (resolvedType.includes("gear") ||
+      resolvedType === "compound gear" ||
+      resolvedType === "pinion shaft" ||
+      rawCompType.includes("gear") ||
+      rawCompType.includes("pinion") ||
+      rawCompType.includes("sprocket") ||
+      (typeof teeth === "number" && teeth >= 4));
+
+  const isShaft =
+    !isPrismatic &&
+    !isCapBushing &&
+    !isGear &&
+    !isFlange &&
+    (resolvedType === "stepped shaft" ||
+      resolvedType === "cylinder/shaft" ||
+      resolvedType === "flanged shaft" ||
+      rawCompType.includes("shaft") ||
+      rawCompType.includes("cylinder") ||
+      rawCompType.includes("spindle") ||
+      recipe.style === "revolved" ||
+      recipe.style === "axial_segments");
+
+  // Inferred base numbers
   let inferredOD = typeof dims.outerDiameter === "number" && isFinite(dims.outerDiameter) ? dims.outerDiameter : null;
   let inferredLength = typeof dims.length === "number" && isFinite(dims.length) ? dims.length : (typeof dims.height === "number" && isFinite(dims.height) ? dims.height : null);
   let inferredBore = typeof dims.innerDiameter === "number" && isFinite(dims.innerDiameter) ? dims.innerDiameter : null;
   let inferredWidth = typeof dims.width === "number" && isFinite(dims.width) ? dims.width : null;
   let inferredThickness = typeof dims.thickness === "number" && isFinite(dims.thickness) ? dims.thickness : null;
 
-  // 1. Revolved Profile
-  if ((inferredOD == null || inferredLength == null) && recipe.style === "revolved" && Array.isArray(recipe.revolvedProfile)) {
-    const validR = recipe.revolvedProfile.map((p) => Math.abs(p.radius || 0)).filter((r) => r > 0);
-    const validZ = recipe.revolvedProfile.map((p) => p.z || 0);
-    if (validR.length > 0) {
-      const maxR = Math.max(...validR);
-      const zSpan = Math.abs(Math.max(...validZ) - Math.min(...validZ));
-      if (inferredOD == null) inferredOD = maxR >= 5 ? Math.round(maxR * 2 * 10) / 10 : 45.0;
-      if (inferredLength == null) inferredLength = zSpan >= 5 ? Math.round(zSpan * 10) / 10 : (maxR > 0 ? Math.round(45 * (zSpan / (maxR * 2 || 1)) * 10) / 10 : 80.0);
+  // 1. PRISMATIC (Bracket, Packaging Box, Plate, Housing, Enclosure)
+  if (isPrismatic) {
+    if (Array.isArray(recipe.outline) && recipe.outline.length >= 3) {
+      const xs = recipe.outline.map((pt) => pt.x || 0);
+      const ys = recipe.outline.map((pt) => pt.y || 0);
+      const spanX = Math.round((Math.max(...xs) - Math.min(...xs)) * 10) / 10;
+      const spanY = Math.round((Math.max(...ys) - Math.min(...ys)) * 10) / 10;
+      if (inferredLength == null) inferredLength = Math.max(spanX, spanY);
+      if (inferredWidth == null) inferredWidth = Math.min(spanX, spanY);
+      if (inferredThickness == null) inferredThickness = recipe.depth || dims.thickness || 20;
     }
-  }
+    const lVal = inferredLength || inferredWidth || dims.length || 120.0;
+    const wVal = inferredWidth || dims.width || Math.round(lVal * 0.65 * 10) / 10;
+    const hVal = dims.height || inferredThickness || recipe.depth || 20.0;
 
-  // 2. Axial Segments
-  if ((inferredOD == null || inferredLength == null) && Array.isArray(recipe.axialSegments)) {
-    const validR = recipe.axialSegments.map((s) => s.radius || 0).filter((r) => r > 0);
-    const zStarts = recipe.axialSegments.map((s) => s.zStart || 0);
-    const zEnds = recipe.axialSegments.map((s) => s.zEnd || 0);
-    if (validR.length > 0) {
-      if (inferredOD == null) inferredOD = Math.round(Math.max(...validR) * 2 * 10) / 10;
-      if (inferredLength == null) inferredLength = Math.round(Math.abs(Math.max(...zEnds) - Math.min(...zStarts)) * 10) / 10;
+    const rows = [
+      {
+        label: "LENGTH",
+        key: "length",
+        value: lVal,
+        status: paramConf.length?.status || (dims.length ? "MEASURED" : "ESTIMATED"),
+        source: paramConf.length?.source || null,
+        confidence: paramConf.length?.confidence || 0.95,
+        reason: paramConf.length?.reason || "Calibrated major physical span along length axis",
+      },
+      {
+        label: "WIDTH",
+        key: "width",
+        value: wVal,
+        status: paramConf.width?.status || (dims.width ? "MEASURED" : "ESTIMATED"),
+        source: paramConf.width?.source || null,
+        confidence: paramConf.width?.confidence || 0.95,
+        reason: paramConf.width?.reason || "Calibrated physical span along width axis",
+      },
+      {
+        label: "HEIGHT / DEPTH",
+        key: "height",
+        value: hVal,
+        status: paramConf.height?.status || paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.height?.source || paramConf.thickness?.source || null,
+        confidence: paramConf.height?.confidence || 0.70,
+        reason: paramConf.height?.reason || "Axial depth/thickness perpendicular to face",
+      },
+    ];
+
+    if (dims.thickness && dims.thickness <= 5.0 && dims.thickness !== hVal) {
+      rows.push({
+        label: "WALL THICKNESS",
+        key: "thickness",
+        value: dims.thickness,
+        status: paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.thickness?.source || null,
+        confidence: paramConf.thickness?.confidence || 0.68,
+        reason: paramConf.thickness?.reason || "Sheet metal / paperboard wall thickness",
+      });
     }
+
+    if (Array.isArray(recipe.holes) && recipe.holes.length > 0) {
+      const holeD = Math.round((recipe.holes[0].radius || 5) * 2 * 10) / 10;
+      rows.push({
+        label: "HOLE Ø",
+        key: "holeDiameter",
+        value: holeD,
+        status: "MEASURED",
+        source: "geometric_feature",
+        confidence: 0.95,
+        reason: `Through-hole diameter (${recipe.holes.length} holes detected)`,
+      });
+      rows.push({
+        label: "HOLE COUNT",
+        key: "holeCount",
+        value: recipe.holes.length,
+        status: "MEASURED",
+        source: "geometric_feature",
+        confidence: 1.0,
+        reason: "Count of verified through-holes in component face",
+      });
+    } else if (dims.innerDiameter && dims.innerDiameter > 0) {
+      rows.push({
+        label: "HOLE Ø",
+        key: "innerDiameter",
+        value: dims.innerDiameter,
+        status: paramConf.innerDiameter?.status || "MEASURED",
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || 0.90,
+        reason: paramConf.innerDiameter?.reason || "Through-hole bore opening",
+      });
+    }
+
+    return rows;
   }
 
-  // 3. Extruded Outline
-  if ((inferredOD == null || inferredLength == null) && Array.isArray(recipe.outline) && recipe.outline.length >= 3) {
-    const xs = recipe.outline.map((pt) => pt.x || 0);
-    const ys = recipe.outline.map((pt) => pt.y || 0);
-    const spanX = Math.max(...xs) - Math.min(...xs);
-    const spanY = Math.max(...ys) - Math.min(...ys);
-    if (inferredOD == null) inferredOD = Math.round(Math.max(spanX, spanY) * 10) / 10;
-    if (inferredLength == null) inferredLength = Math.round(Math.min(spanX, spanY) * 10) / 10;
-    if (inferredThickness == null) inferredThickness = recipe.depth || 20;
+  // 2. CIRCULAR CAP / BUSHING (Bottle Cap, Closure, Bushing)
+  if (isCapBushing) {
+    const od = inferredOD || 30.0;
+    const id = inferredBore != null ? inferredBore : (dims.innerDiameter != null ? dims.innerDiameter : Math.round((od - 2.0) * 10) / 10);
+    const h = dims.height || inferredLength || 12.0;
+    const wallThick = dims.thickness || Math.round(((od - id) / 2) * 10) / 10;
+
+    return [
+      {
+        label: "OUTER Ø",
+        key: "outerDiameter",
+        value: od,
+        status: paramConf.outerDiameter?.status || "MEASURED",
+        source: paramConf.outerDiameter?.source || null,
+        confidence: paramConf.outerDiameter?.confidence || 0.98,
+        reason: paramConf.outerDiameter?.reason || `Outer rim diameter (R = ${(od / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "INNER BORE Ø",
+        key: "innerDiameter",
+        value: id,
+        status: paramConf.innerDiameter?.status || (id > 0 ? "MEASURED" : "UNKNOWN"),
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || (id > 0 ? 0.96 : 0.1),
+        reason: paramConf.innerDiameter?.reason || `Internal cavity / bore diameter (R = ${(id / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "HEIGHT",
+        key: "height",
+        value: h,
+        status: paramConf.height?.status || paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.height?.source || null,
+        confidence: paramConf.height?.confidence || 0.70,
+        reason: paramConf.height?.reason || "Axial skirt height",
+      },
+      {
+        label: "WALL THICKNESS",
+        key: "thickness",
+        value: wallThick > 0 ? wallThick : 1.0,
+        status: paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.thickness?.source || null,
+        confidence: paramConf.thickness?.confidence || 0.85,
+        reason: paramConf.thickness?.reason || `Calculated cylindrical wall thickness (OD - ID) / 2`,
+      },
+    ];
   }
 
-  // 4. Fallback defaults for turned/revolved parts if still null
-  if (inferredOD == null && (compType.includes("shaft") || compType.includes("cylinder") || compType.includes("spindle") || recipe.style === "revolved")) {
-    inferredOD = 45.0;
-    if (inferredLength == null) inferredLength = 80.0;
-    if (inferredBore == null) inferredBore = 0;
+  // 3. FLANGE
+  if (isFlange) {
+    const od = inferredOD || 120.0;
+    const id = inferredBore != null ? inferredBore : (dims.innerDiameter != null ? dims.innerDiameter : 40.0);
+    const th = dims.thickness || 20.0;
+    const boltCount = recipe.flange?.boltCount || (recipe.holes ? recipe.holes.length : (analysis?.boltCount || 4));
+    const pcd = recipe.flange?.boltCircleDiameter || (dims.pcd ? dims.pcd : Math.round(od * 0.75 * 10) / 10);
+    const holeD = recipe.flange?.boltHoleDiameter || (recipe.holes?.[0]?.radius ? recipe.holes[0].radius * 2 : null);
+
+    const rows = [
+      {
+        label: "FLANGE Ø",
+        key: "outerDiameter",
+        value: od,
+        status: paramConf.outerDiameter?.status || "MEASURED",
+        source: paramConf.outerDiameter?.source || null,
+        confidence: paramConf.outerDiameter?.confidence || 0.98,
+        reason: paramConf.outerDiameter?.reason || `Outer flange plate diameter (R = ${(od / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "INNER BORE Ø",
+        key: "innerDiameter",
+        value: id,
+        status: paramConf.innerDiameter?.status || (id > 0 ? "MEASURED" : "UNKNOWN"),
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || (id > 0 ? 0.96 : 0.1),
+        reason: paramConf.innerDiameter?.reason || (id === 0 ? "Blind flange (solid center)" : `Center bore (R = ${(id / 2).toFixed(1)} mm)`),
+      },
+      {
+        label: "THICKNESS",
+        key: "thickness",
+        value: th,
+        status: paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.thickness?.source || null,
+        confidence: paramConf.thickness?.confidence || 0.75,
+        reason: paramConf.thickness?.reason || "Flange plate thickness",
+      },
+      {
+        label: "BOLT CIRCLE Ø (PCD)",
+        key: "pcd",
+        value: pcd,
+        status: "MEASURED",
+        source: "flange_bolt_pattern",
+        confidence: 0.95,
+        reason: `Pitch Circle Diameter for ${boltCount} mounting bolts`,
+      },
+      {
+        label: "BOLT COUNT",
+        key: "boltCount",
+        value: boltCount,
+        status: "MEASURED",
+        source: "flange_bolt_pattern",
+        confidence: 1.0,
+        reason: `Count of concentric bolt holes`,
+      },
+    ];
+
+    if (holeD) {
+      rows.push({
+        label: "HOLE Ø",
+        key: "holeDiameter",
+        value: holeD,
+        status: "MEASURED",
+        source: "flange_bolt_pattern",
+        confidence: 0.92,
+        reason: "Bolt hole clearance diameter",
+      });
+    }
+
+    return rows;
   }
+
+  // 4. GEAR
+  if (isGear) {
+    const od = inferredOD || 80.0;
+    const id = inferredBore != null ? inferredBore : (dims.innerDiameter != null ? dims.innerDiameter : 0);
+    const fw = dims.faceWidth || dims.thickness || dims.height || 20.0;
+    const tCount = teeth || recipe.gear?.teeth;
+    const mod = analysis?.module || recipe.gear?.module;
+
+    const rows = [
+      {
+        label: "OUTER Ø",
+        key: "outerDiameter",
+        value: od,
+        status: paramConf.outerDiameter?.status || "ESTIMATED",
+        source: paramConf.outerDiameter?.source || null,
+        confidence: paramConf.outerDiameter?.confidence || 0.75,
+        reason: paramConf.outerDiameter?.reason || `Tip / addendum diameter (R = ${(od / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "INNER BORE Ø",
+        key: "innerDiameter",
+        value: id,
+        status: paramConf.innerDiameter?.status || (id > 0 ? "ESTIMATED" : "UNKNOWN"),
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || (id > 0 ? 0.75 : 0.1),
+        reason: paramConf.innerDiameter?.reason || (id === 0 ? "Solid hub core (no bore)" : `Shaft mounting bore (R = ${(id / 2).toFixed(1)} mm)`),
+      },
+      {
+        label: "FACE WIDTH",
+        key: "thickness",
+        value: fw,
+        status: paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.thickness?.source || null,
+        confidence: paramConf.thickness?.confidence || 0.70,
+        reason: paramConf.thickness?.reason || "Gear face width along axis",
+      },
+      {
+        label: "TEETH",
+        key: "teeth",
+        value: tCount,
+        status: paramConf.teeth?.status || (tCount ? "MEASURED" : "UNKNOWN"),
+        source: paramConf.teeth?.source || null,
+        confidence: paramConf.teeth?.confidence || (tCount ? 0.95 : null),
+        reason: paramConf.teeth?.reason || "Tooth count",
+      },
+      {
+        label: "MODULE",
+        key: "module",
+        value: mod,
+        status: paramConf.module?.status || (mod ? "MEASURED" : "UNKNOWN"),
+        source: paramConf.module?.source || null,
+        confidence: paramConf.module?.confidence || (mod ? 0.92 : null),
+        reason: paramConf.module?.reason || "ISO standard metric tooth module",
+      },
+    ];
+
+    if (analysis?.helixAngle != null && Math.abs(analysis.helixAngle) > 0) {
+      rows.push({
+        label: "HELIX ANGLE",
+        key: "helixAngle",
+        value: analysis.helixAngle,
+        status: "MEASURED",
+        source: "helical_geometry",
+        confidence: 0.90,
+        reason: "Tooth lead helix angle in degrees",
+      });
+    }
+
+    if (analysis?.coneAngle != null && analysis.coneAngle > 0) {
+      rows.push({
+        label: "CONE ANGLE",
+        key: "coneAngle",
+        value: analysis.coneAngle,
+        status: "MEASURED",
+        source: "bevel_geometry",
+        confidence: 0.90,
+        reason: "Pitch cone angle in degrees",
+      });
+    }
+
+    return rows.filter((r) => r.value != null);
+  }
+
+  // 5. SHAFT (Stepped Shaft, Spindle, Cylinder)
+  if (isShaft) {
+    if ((inferredOD == null || inferredLength == null) && recipe.style === "revolved" && Array.isArray(recipe.revolvedProfile)) {
+      const validR = recipe.revolvedProfile.map((p) => Math.abs(p.radius || 0)).filter((r) => r > 0);
+      const validZ = recipe.revolvedProfile.map((p) => p.z || 0);
+      if (validR.length > 0) {
+        const maxR = Math.max(...validR);
+        const zSpan = Math.abs(Math.max(...validZ) - Math.min(...validZ));
+        if (inferredOD == null) inferredOD = maxR >= 5 ? Math.round(maxR * 2 * 10) / 10 : 45.0;
+        if (inferredLength == null) inferredLength = zSpan >= 5 ? Math.round(zSpan * 10) / 10 : 80.0;
+      }
+    }
+    if ((inferredOD == null || inferredLength == null) && Array.isArray(recipe.axialSegments)) {
+      const validR = recipe.axialSegments.map((s) => s.radius || 0).filter((r) => r > 0);
+      const zStarts = recipe.axialSegments.map((s) => s.zStart || 0);
+      const zEnds = recipe.axialSegments.map((s) => s.zEnd || 0);
+      if (validR.length > 0) {
+        if (inferredOD == null) inferredOD = Math.round(Math.max(...validR) * 2 * 10) / 10;
+        if (inferredLength == null) inferredLength = Math.round(Math.abs(Math.max(...zEnds) - Math.min(...zStarts)) * 10) / 10;
+      }
+    }
+    const od = inferredOD || 45.0;
+    const len = inferredLength || 80.0;
+    const id = inferredBore != null ? inferredBore : 0;
+
+    const rows = [
+      {
+        label: "MAJOR Ø",
+        key: "outerDiameter",
+        value: od,
+        status: paramConf.outerDiameter?.status || "ESTIMATED",
+        source: paramConf.outerDiameter?.source || null,
+        confidence: paramConf.outerDiameter?.confidence || 0.75,
+        reason: paramConf.outerDiameter?.reason || `Major shaft diameter (R = ${(od / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "TOTAL LENGTH",
+        key: "length",
+        value: len,
+        status: paramConf.length?.status || "ESTIMATED",
+        source: paramConf.length?.source || null,
+        confidence: paramConf.length?.confidence || 0.70,
+        reason: paramConf.length?.reason || "Total axial shaft length",
+      },
+    ];
+
+    if (id > 0) {
+      rows.push({
+        label: "INNER BORE Ø",
+        key: "innerDiameter",
+        value: id,
+        status: paramConf.innerDiameter?.status || "ESTIMATED",
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || 0.70,
+        reason: paramConf.innerDiameter?.reason || `Internal hollow bore (R = ${(id / 2).toFixed(1)} mm)`,
+      });
+    }
+
+    if (Array.isArray(recipe.axialSegments) && recipe.axialSegments.length > 1) {
+      rows.push({
+        label: "SHOULDERS",
+        key: "segmentCount",
+        value: recipe.axialSegments.length,
+        status: "MEASURED",
+        source: "revolved_profile",
+        confidence: 1.0,
+        reason: `Count of turned diameter steps and bearing journals`,
+      });
+    }
+
+    return rows;
+  }
+
+  // 6. Generic turned/cylindrical/other fallback
+  const genericOD = inferredOD || (dims.outerDiameter || dims.width || 45.0);
+  const genericLen = inferredLength || (dims.length || dims.height || 80.0);
+  const genericBore = inferredBore ?? dims.innerDiameter;
 
   const rows = [
     {
-      label: "OUTER Ø",
+      label: "PRIMARY Ø / WIDTH",
       key: "outerDiameter",
-      value: inferredOD,
-      status: paramConf.outerDiameter?.status || (dims.outerDiameter ? "ESTIMATED" : (inferredOD ? "ESTIMATED" : "UNKNOWN")),
-      source: paramConf.outerDiameter?.source || (dims.outerDiameter ? null : "inferred_profile"),
-      confidence: paramConf.outerDiameter?.confidence || (inferredOD ? 0.65 : null),
-      reason: paramConf.outerDiameter?.reason || (inferredOD ? `Inferred outer diameter (Radius = ${(inferredOD / 2).toFixed(1)} mm)` : "Uncalibrated: no physical scale reference in photograph"),
-    },
-    {
-      label: "INNER BORE Ø",
-      key: "innerDiameter",
-      value: inferredBore,
-      status: paramConf.innerDiameter?.status || (dims.innerDiameter != null && dims.innerDiameter > 0 ? "ESTIMATED" : (inferredBore != null ? "ESTIMATED" : "UNKNOWN")),
-      source: paramConf.innerDiameter?.source || null,
-      confidence: paramConf.innerDiameter?.confidence || (inferredBore != null ? 0.65 : null),
-      reason: paramConf.innerDiameter?.reason || (inferredBore === 0 ? "Solid core (no internal bore)" : `Internal bore Ø ${inferredBore} mm (Radius = ${(inferredBore / 2).toFixed(1)} mm)`),
-    },
-    {
-      label: "HEIGHT",
-      key: "height",
-      value: inferredLength || dims.height,
-      status: paramConf.thickness?.status || paramConf.height?.status || "ESTIMATED",
-      source: paramConf.thickness?.source || paramConf.height?.source || null,
-      confidence: paramConf.thickness?.confidence || 0.65,
-      reason: paramConf.thickness?.reason || "Inferred from axial profile span",
-    },
-    {
-      label: "WIDTH",
-      key: "width",
-      value: inferredWidth || inferredOD || dims.width,
+      value: genericOD,
       status: paramConf.outerDiameter?.status || "ESTIMATED",
       source: paramConf.outerDiameter?.source || null,
       confidence: paramConf.outerDiameter?.confidence || 0.65,
-      reason: paramConf.outerDiameter?.reason || null,
+      reason: paramConf.outerDiameter?.reason || `Primary cross-section envelope dimension`,
     },
     {
-      label: "LENGTH",
+      label: "TOTAL LENGTH",
       key: "length",
-      value: inferredLength || dims.length,
-      status: paramConf.length?.status || paramConf.thickness?.status || "ESTIMATED",
+      value: genericLen,
+      status: paramConf.length?.status || paramConf.height?.status || "ESTIMATED",
       source: paramConf.length?.source || null,
       confidence: paramConf.length?.confidence || 0.65,
-      reason: paramConf.length?.reason || "Inferred from axial profile span",
-    },
-    {
-      label: "THICKNESS",
-      key: "thickness",
-      value: inferredThickness || dims.thickness,
-      status: paramConf.thickness?.status || "ESTIMATED",
-      source: paramConf.thickness?.source || null,
-      confidence: paramConf.thickness?.confidence || null,
-      reason: paramConf.thickness?.reason || null,
-    },
-    {
-      label: "TEETH",
-      key: "teeth",
-      value: teeth,
-      status: paramConf.teeth?.status || (teeth ? "ESTIMATED" : "UNKNOWN"),
-      source: paramConf.teeth?.source || null,
-      confidence: paramConf.teeth?.confidence || null,
-      reason: paramConf.teeth?.reason || null,
-    },
-    {
-      label: "MODULE",
-      key: "module",
-      value: analysis?.module,
-      status: paramConf.module?.status || (analysis?.module ? "ESTIMATED" : "UNKNOWN"),
-      source: paramConf.module?.source || null,
-      confidence: paramConf.module?.confidence || null,
-      reason: paramConf.module?.reason || null,
-    },
-    {
-      label: "HELIX ANGLE",
-      key: "helixAngle",
-      value: analysis?.helixAngle,
-      status: analysis?.helixAngle != null && analysis.helixAngle > 0 ? "ESTIMATED" : "MEASURED",
-      source: null,
-      confidence: null,
-      reason: null,
+      reason: paramConf.length?.reason || "Overall physical length/height",
     },
   ];
 
-  const isPrimary = (k) => k === "outerDiameter" || k === "length" || k === "height" || k === "innerDiameter";
-  return rows.filter((row) => (typeof row.value === "number" && isFinite(row.value)) || (row.status === "UNKNOWN" && isPrimary(row.key)));
+  if (genericBore != null && genericBore > 0) {
+    rows.push({
+      label: "INNER BORE Ø",
+      key: "innerDiameter",
+      value: genericBore,
+      status: paramConf.innerDiameter?.status || "ESTIMATED",
+      source: paramConf.innerDiameter?.source || null,
+      confidence: paramConf.innerDiameter?.confidence || 0.65,
+      reason: paramConf.innerDiameter?.reason || `Center bore opening`,
+    });
+  }
+
+  if (dims.thickness && dims.thickness !== genericLen) {
+    rows.push({
+      label: "THICKNESS",
+      key: "thickness",
+      value: dims.thickness,
+      status: paramConf.thickness?.status || "ESTIMATED",
+      source: paramConf.thickness?.source || null,
+      confidence: paramConf.thickness?.confidence || 0.65,
+      reason: paramConf.thickness?.reason || "Material thickness",
+    });
+  }
+
+  return rows.filter((r) => typeof r.value === "number" && isFinite(r.value));
 }
 

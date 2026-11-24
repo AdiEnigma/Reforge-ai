@@ -343,27 +343,6 @@ function SingleViewportCanvas({
         {headerControls}
       </div>
       <div className="single-viewport-mount" ref={mount} />
-      {dims && analysis && !isAssembly && (
-        <div className="viewport-dims-hud" aria-label="Component Dimensions">
-          <div className="dims-hud-title">
-            <Icon>straighten</Icon>
-            <span>DIMENSIONS (MM)</span>
-          </div>
-          <div className="dims-hud-items">
-            {dimensionList(analysis).map((d) => (
-              <div className="dims-hud-row" key={d.label}>
-                <span className="dims-hud-k">{d.label}</span>
-                <span className="dims-hud-v">{d.value}</span>
-                {d.status && (
-                  <span className={`dims-status-badge status-${(d.status || 'ESTIMATED').toLowerCase()}`}>
-                    {d.status === 'MEASURED' ? 'M' : d.status === 'UNKNOWN' ? '?' : 'EST'}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       {stress && (
         <DamageHeatmapOverlay analysis={analysis} images={images} />
       )}

@@ -692,6 +692,16 @@ export function buildGearFromRecipe(gear) {
     }
   }
 
+  if (gearType === "flanged") {
+    const flangeR = outerR * 1.35;
+    const flangeThick = Math.max(3, height * 0.35);
+    const flangeShape = ringShape(flangeR, bore);
+    const flangeMesh = new THREE.Mesh(extrude(flangeShape, flangeThick, false), matBody);
+    flangeMesh.position.z = -height / 2 - flangeThick / 2;
+    flangeMesh.userData = { featureId: "feature-flange-1", featureType: "flange" };
+    group.add(flangeMesh);
+  }
+
   if (bore > 0) {
     const boreHighlight = new THREE.Mesh(new THREE.CylinderGeometry(bore * 0.99, bore * 0.99, (height + hubH * 2) * 1.05, 32), matHighlight);
     boreHighlight.rotation.x = Math.PI / 2;
