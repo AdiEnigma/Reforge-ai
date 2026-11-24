@@ -675,21 +675,46 @@ export function buildGearFromRecipe(gear) {
     group.add(mesh);
   }
 
-  if (hubR > bore * 1.02 && hubH > 0) {
-    const hubGeo = bore > 0
-      ? extrude(ringShape(hubR, bore), hubH, false)
-      : new THREE.CylinderGeometry(hubR, hubR, hubH, 32);
-    if (bore > 0) {
-      hubGeo.center();
-    } else {
-      hubGeo.rotateX(Math.PI / 2);
+  if (gearType !== "flanged") {
+    if (hubR > bore * 1.02 && hubH > 0) {
+      const hubGeo = bore > 0
+        ? extrude(ringShape(hubR, bore), hubH, false)
+        : new THREE.CylinderGeometry(hubR, hubR, hubH, 32);
+      if (bore > 0) {
+        hubGeo.center();
+      } else {
+        hubGeo.rotateX(Math.PI / 2);
+      }
+      for (const z of [1, -1]) {
+        const hub = new THREE.Mesh(hubGeo, matAccent);
+        hub.position.z = z * (height / 2 + hubH / 2);
+        hub.userData = { featureId: "feature-boss-1", featureType: "boss" };
+        group.add(hub);
+      }
     }
-    for (const z of [1, -1]) {
-      const hub = new THREE.Mesh(hubGeo, matAccent);
-      hub.position.z = z * (height / 2 + hubH / 2);
-      hub.userData = { featureId: "feature-boss-1", featureType: "boss" };
-      group.add(hub);
+  } else {
+    const flangeThickness = Math.max(height * 0.18, outerR * 0.08);
+    const boltHoles = [];
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const hole = new THREE.Path();
+      hole.absarc(
+        Math.cos(a) * outerR * 0.82,
+        Math.sin(a) * outerR * 0.82,
+        Math.max(outerR * 0.05, 0.4),
+        0,
+        Math.PI * 2,
+        true
+      );
+      boltHoles.push(hole);
     }
+    const flangeShape = ringShape(outerR * 1.12, bore, boltHoles);
+    const flangeGeo = extrude(flangeShape, flangeThickness);
+    flangeGeo.center();
+    const flange = new THREE.Mesh(flangeGeo, matRim);
+    flange.position.z = -height / 2 - flangeThickness / 2;
+    flange.userData = { featureId: "feature-flange-1", featureType: "flange" };
+    group.add(flange);
   }
 
   if (bore > 0) {

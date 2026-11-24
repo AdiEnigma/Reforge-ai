@@ -14,8 +14,7 @@ import {
   serializeWorkbenchState,
   deserializeWorkbenchState,
 } from './lib/workbench-api.js';
-import { analyzeComponent, sendChatMessage } from './lib/api.js';
-import { analyzeComponent, analyzeCondition, sendChatMessage, isCancellationError } from './lib/api.js';
+import { analyzeComponent, analyzeCondition, sendChatMessage, isCancellationError } from "./lib/api.js";
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
 import { normalizeFeatures } from './lib/features.js';
@@ -1375,52 +1374,6 @@ function Upload() {
       return;
     }
     setError('');
-    setStage('analysing');
-    try {
-      const primaryRef = buildReference(reference);
-      const pAnalysis = await analyzeComponent(pImages, primaryRef);
-
-      let cAnalysis = null;
-      if (companion?.images?.length) {
-        cAnalysis = await analyzeComponent(companion.images, {});
-      }
-
-      const updatedMachinery = {
-        ...machineryState,
-        primaryGear: {
-          ...machineryState.primaryGear,
-          analysis: pAnalysis,
-          reference: primaryRef,
-        },
-        companionGear: machineryState.companionGear
-          ? {
-            ...machineryState.companionGear,
-            analysis: cAnalysis,
-          }
-          : null,
-      };
-
-      const initialSnapshot = createMachinerySnapshot(updatedMachinery);
-      setMachineryState(updatedMachinery);
-      setLastAnalyzedSnapshot(initialSnapshot);
-      setAnalysis(pAnalysis);
-      setActiveComponentId(primary.id);
-      setStage('extracting');
-      setPage('workbench');
-
-      if (saveCurrentWorkbench) {
-        saveCurrentWorkbench({
-          analysis: pAnalysis,
-          reference: primaryRef,
-          machineryState: updatedMachinery,
-          stage: 'ready',
-          activeComponentId: primary.id,
-        });
-      }
-    } catch (err) {
-      setError(err.message || 'Analysis failed. Please try again.');
-      setStage('idle');
-    }
     startReconstruction();
   };
 
@@ -4182,7 +4135,6 @@ function App() {
     if (themeTransitionTimerRef.current) window.clearTimeout(themeTransitionTimerRef.current);
   }, []);
 
-  const [page, setPage] = useState('home');
   const [images, setImages] = useState([]);
   const [analysis, setAnalysis] = useState(null);
   const [stage, setStage] = useState('idle');
