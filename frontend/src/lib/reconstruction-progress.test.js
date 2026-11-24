@@ -119,6 +119,6 @@ test('cancellation is terminal and does not complete the model', () => {
 });
 
 test('stage labels are human readable', () => {
-  assert.equal(getReconstructionStageLabel('gemini-reconstruction'), 'Gemini Reconstruction');
+  assert.equal(getReconstructionStageLabel('gemini-reconstruction'), 'Reconstructing Model');
   assert.equal(getReconstructionStageLabel('validation'), 'Validation');
 });

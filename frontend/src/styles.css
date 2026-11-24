@@ -440,7 +440,7 @@ nav {
   min-width: 0;
   position: relative;
   overflow: hidden;
-  background: #140d07;
+  background: var(--viewport-bg);
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column
@@ -992,7 +992,7 @@ nav {
   z-index: 2;
   min-width: 130px;
   border: 1px solid var(--line);
-  background: #140d07cc
+  background: color-mix(in srgb, var(--viewport-bg) 80%, transparent)
 }
 
 .dims-row {
@@ -1278,7 +1278,7 @@ nav {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #140d07
+  background: var(--viewport-bg)
 }
 
 .work-window {
@@ -1394,7 +1394,7 @@ nav {
 .pip-workbench {
   position: fixed;
   z-index: 50;
-  background: #140d07;
+  background: var(--viewport-bg);
   border: 1px solid var(--gold);
   border-radius: 4px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, .85), 0 0 0 1px rgba(222, 130, 43, .3);
@@ -1659,7 +1659,7 @@ nav {
   flex: 1;
   position: relative;
   overflow: hidden;
-  background: #0c0805
+  background: var(--viewport-bg)
 }
 
 .pip-canvas-area .model {
@@ -3888,44 +3888,30 @@ nav {
   border-color: #de822b80
 }
 
-.param-recommendation {
+.param-recommendation-msg {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   padding: 8px 10px;
   background: var(--low);
-  border: 1px dashed #de822b70;
-  cursor: pointer;
-  transition: background .15s ease, border-color .15s ease
+  border: 1px solid #de822b70;
+  border-radius: 2px;
 }
 
-.param-recommendation:hover {
-  background: var(--high)
-}
-
-.param-recommendation.is-selected {
-  border-style: solid;
-  border-color: var(--tenne)
-}
-
-.param-recommendation>input[type="checkbox"] {
-  margin: 1px 0 0;
-  accent-color: var(--tenne);
-  cursor: pointer
-}
-
-.param-recommendation>.icon {
+.param-recommendation-msg > .icon {
   font-size: 15px;
   line-height: 1.1;
   color: var(--gold);
-  flex-shrink: 0
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .recommendation-copy {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  min-width: 0
+  min-width: 0;
+  flex: 1;
 }
 
 .recommendation-label {
@@ -3943,6 +3929,52 @@ nav {
 .recommendation-reason {
   font: 400 10px/1.45 'Hanken Grotesk';
   color: var(--muted)
+}
+
+.recommendation-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.recommendation-accept {
+  background: transparent;
+  border: 1px solid var(--tenne);
+  color: var(--gold);
+  font: 700 9px 'JetBrains Mono';
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.recommendation-accept:hover {
+  background: rgba(222, 130, 43, 0.12);
+}
+
+.recommendation-dismiss {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 2px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+}
+
+.recommendation-dismiss .icon {
+  font-size: 14px;
+}
+
+.recommendation-dismiss:hover {
+  color: var(--text);
+  border-color: var(--line);
+  background: var(--high);
 }
 
 .whatif-actions {
@@ -5532,7 +5564,7 @@ nav {
   flex-direction: column;
   min-width: 0;
   position: relative;
-  background: #140d07;
+  background: var(--viewport-bg);
   overflow: hidden
 }
 
@@ -5704,7 +5736,7 @@ nav {
   flex: 1;
   min-height: 0;
   position: relative;
-  background: #0c0805
+  background: var(--viewport-bg)
 }
 
 .viewport-panes-container.mode-single {
@@ -5735,7 +5767,7 @@ nav {
   position: relative;
   height: 100%;
   width: 100%;
-  background: #140d07;
+  background: var(--viewport-bg);
   overflow: hidden;
   display: flex;
   flex-direction: column
@@ -6217,7 +6249,7 @@ body,
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #0c0805;
+  background: var(--viewport-bg);
 }
 
 .workspace-middle-row {
@@ -7710,6 +7742,82 @@ body,
 .mfg-field input:focus {
   outline: none;
   border-color: var(--lime);
+}
+
+.mfg-field.has-recommendation input {
+  border-color: rgba(222, 130, 43, 0.55);
+}
+
+.mfg-rec-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--low);
+  border: 1px solid rgba(222, 130, 43, 0.45);
+  border-radius: 4px;
+}
+
+.mfg-rec-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.mfg-rec-head .icon {
+  font-size: 15px;
+  color: var(--gold);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.mfg-rec-values {
+  font: 600 10px/1.4 'JetBrains Mono', monospace;
+  color: var(--text);
+}
+
+.mfg-rec-values strong {
+  color: var(--gold);
+}
+
+.mfg-rec-reason {
+  font: 400 10px/1.45 'Hanken Grotesk', sans-serif;
+  color: var(--muted);
+  padding-left: 21px;
+}
+
+.mfg-rec-actions {
+  display: flex;
+  gap: 6px;
+  padding-left: 21px;
+}
+
+.mfg-rec-accept,
+.mfg-rec-dismiss {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: 700 9px 'JetBrains Mono', monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.mfg-rec-accept {
+  border-color: var(--tenne);
+  color: var(--gold);
+}
+
+.mfg-rec-accept:hover {
+  background: rgba(222, 130, 43, 0.12);
+}
+
+.mfg-rec-dismiss:hover {
+  color: var(--text);
+  border-color: var(--muted);
 }
 
 .mfg-choice-list {
@@ -10183,7 +10291,7 @@ body,
   height: 100%;
   position: relative;
   overflow: hidden;
-  background: #140d07;
+  background: var(--viewport-bg);
 }
 
 .workspace-center-column.workspace-maximized-full {
@@ -10270,7 +10378,7 @@ body,
   min-width: 0;
   position: relative;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--viewport-bg);
 }
 
 .workspace-window-header {

@@ -90,16 +90,59 @@ function ProgressStepper({ index }) {
 }
 
 function ReconstructionProgress({ progress, onCancel, onRetry }) {
+  const targetPercent = Math.max(0, Math.min(100, Number(progress?.percent) || 0));
+  const [displayPercent, setDisplayPercent] = useState(targetPercent);
+  const displayRef = useRef(targetPercent);
+
+  useEffect(() => {
+    displayRef.current = displayPercent;
+  }, [displayPercent]);
+
+  useEffect(() => {
+    if (!progress || progress.status === RECONSTRUCTION_IDLE) return undefined;
+    if (progress.status === RECONSTRUCTION_COMPLETE) {
+      displayRef.current = 100;
+      setDisplayPercent(100);
+      return undefined;
+    }
+    if (progress.status !== RECONSTRUCTION_RUNNING) {
+      const next = Math.max(displayRef.current, targetPercent);
+      displayRef.current = next;
+      setDisplayPercent(next);
+      return undefined;
+    }
+
+    const cap = 99;
+    let timer = null;
+    const tick = () => {
+      const real = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+      const current = displayRef.current;
+      const floor = Math.max(current, real);
+      if (floor >= cap) {
+        displayRef.current = cap;
+        setDisplayPercent(cap);
+        return;
+      }
+      const remaining = cap - floor;
+      const step = Math.max(0.25, remaining * 0.035);
+      const next = Math.min(cap, floor + step);
+      displayRef.current = next;
+      setDisplayPercent(next);
+      timer = window.setTimeout(tick, 220);
+    };
+
+    tick();
+    return () => { if (timer) window.clearTimeout(timer); };
+  }, [progress?.status, progress?.attempt, progress?.percent, progress?.currentStage, targetPercent]);
+
   if (
     !progress ||
     progress.status === RECONSTRUCTION_IDLE ||
     progress.status === RECONSTRUCTION_COMPLETE
   ) return null;
 
-  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
-  const stageLabel = progress.status === RECONSTRUCTION_COMPLETE
-    ? 'Model Ready'
-    : getReconstructionStageLabel(progress.currentStage);
+  const percent = Math.max(0, Math.min(100, Math.round(displayPercent)));
+  const stageLabel = getReconstructionStageLabel(progress.currentStage);
   const detail = progress.message || (
     progress.status === RECONSTRUCTION_FAILED
       ? 'Reconstruction failed.'
@@ -1522,9 +1565,12 @@ function WhatIfSimulator({
   scenarioParams,
   setScenarioParams,
   recommendations = [],
-  deselectedRecommendations = {},
-  onToggleRecommendation,
+  dismissedRecommendations = {},
+  onDismissRecommendation,
+  onAcceptRecommendation,
   onResetRecommendations,
+  onRevertOriginal,
+  canRevertOriginal = false,
   onConfirm,
   isGeometryValid,
   geometryError,
@@ -1547,12 +1593,8 @@ function WhatIfSimulator({
 
   const availableParams = PARAM_DEFINITIONS.filter(def => isParamActive(def, analysis));
 
-
   const hasModifications = Object.keys(scenarioParams).length > 0;
-  const selectedRecommendationCount = recommendations.filter(
-    rec => !deselectedRecommendations[rec.key]
-  ).length;
-  const confirmCount = hasModifications ? selectedRecommendationCount + Object.keys(scenarioParams).length : 0;
+  const confirmCount = Object.keys(scenarioParams).length;
 
   const handleParamChange = (key, rawValue, isInteger) => {
     const num = isInteger ? parseInt(rawValue, 10) : parseFloat(rawValue);
@@ -1609,7 +1651,11 @@ function WhatIfSimulator({
             const pct = baselineVal !== 0 ? (diff / baselineVal) * 100 : 0;
             const isModified = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
             const recommendation = recommendations.find(rec => rec.key === def.key);
-            const recommendationSelected = recommendation && !deselectedRecommendations[recommendation.key];
+            const recVisible = Boolean(
+              recommendation
+              && !dismissedRecommendations[recommendation.key]
+              && Math.abs(Number(currentVal) - Number(recommendation.value)) > 0.0001
+            );
 
             const sliderMin = def.min !== undefined ? Math.min(def.min, Math.floor(baselineVal * 0.2)) : Math.max(0.1, Math.floor(baselineVal * 0.2));
             const sliderMax = Math.max(def.max || Math.ceil(baselineVal * 2.5), Math.ceil(baselineVal + 20));
@@ -1621,7 +1667,7 @@ function WhatIfSimulator({
             return (
               <div
                 key={def.key}
-                className={`param-card ${isModified ? 'param-modified' : ''} ${recommendation ? 'param-recommended' : ''}`}
+                className={`param-card ${isModified ? 'param-modified' : ''} ${recVisible ? 'param-recommended' : ''}`}
               >
                 <div className="param-top">
                   <span className="param-name">{def.label}</span>
@@ -1646,22 +1692,35 @@ function WhatIfSimulator({
                   </div>
                 </div>
 
-                {recommendation && (
-                  <label className={`param-recommendation ${recommendationSelected ? 'is-selected' : ''}`}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(recommendationSelected)}
-                      onChange={() => onToggleRecommendation?.(recommendation.key)}
-                      aria-label={`Apply recommended ${def.label} value ${recommendation.value} ${def.unit}`}
-                    />
-                    <Icon>warning</Icon>
-                    <span className="recommendation-copy">
+                {recVisible && (
+                  <div className="param-recommendation-msg" role="status">
+                    <Icon>lightbulb</Icon>
+                    <div className="recommendation-copy">
                       <span className="recommendation-label">
-                        RECOMMENDED {recommendation.value} <small>{def.unit}</small>
+                        Current {currentVal} {def.unit} → Recommended {recommendation.value} <small>{def.unit}</small>
                       </span>
                       <span className="recommendation-reason">{recommendation.reason}</span>
-                    </span>
-                  </label>
+                    </div>
+                    <div className="recommendation-actions">
+                      <button
+                        type="button"
+                        className="recommendation-accept"
+                        onClick={() => onAcceptRecommendation?.(recommendation.key, recommendation.value)}
+                        title={`Accept recommended ${def.label}`}
+                      >
+                        Accept
+                      </button>
+                      <button
+                        type="button"
+                        className="recommendation-dismiss"
+                        onClick={() => onDismissRecommendation?.(recommendation.key)}
+                        aria-label={`Dismiss recommendation for ${def.label}`}
+                        title="Dismiss"
+                      >
+                        <Icon>close</Icon>
+                      </button>
+                    </div>
+                  </div>
                 )}
 
                 <div className="param-slider-row">
@@ -1724,6 +1783,16 @@ function WhatIfSimulator({
       )}
 
       <div className="whatif-actions">
+        <button
+          type="button"
+          className="btn-reset-scenario"
+          disabled={!canRevertOriginal}
+          onClick={onRevertOriginal}
+          aria-label="Revert to original model"
+          title="Restore the exact original 3D model before any What-If modifications"
+        >
+          <Icon>history</Icon> REVERT TO ORIGINAL
+        </button>
         <button
           className="btn-reset-scenario"
           disabled={!hasModifications}
@@ -2163,7 +2232,7 @@ function Workbench() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [pipVisible, setPipVisible] = useState(false); // PiP disabled by default as requested
   const [scenarioParams, setScenarioParams] = useState({});
-  const [deselectedRecommendations, setDeselectedRecommendations] = useState({});
+  const [dismissedRecommendations, setDismissedRecommendations] = useState({});
   const [showReport, setShowReport] = useState(false);
   const [wire, setWire] = useState(false);
   const [grid, setGrid] = useState(false);
@@ -2237,7 +2306,8 @@ function Workbench() {
   } = layoutState;
 
   const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(currentAnalysis);
-  const isMfgActive = Boolean(ready && isManufacturingActive);
+  const canManufacture = Boolean(currentAnalysis);
+  const isMfgActive = Boolean(canManufacture && isManufacturingActive);
 
   // Drag and Drop Panel Repositioning State
   const [draggedPanel, setDraggedPanel] = useState(null); // 'contextual' | 'manufacturing' | 'cost' | 'workspace' | null
@@ -2630,10 +2700,12 @@ function Workbench() {
   // Load sample gear helper
   const loadSampleGear = useCallback(() => {
     const initial = createInitialMachineryState();
-    initial.primaryGear.analysis = DEFAULT_ANALYSIS;
+    const sample = JSON.parse(JSON.stringify(DEFAULT_ANALYSIS));
+    initial.primaryGear.analysis = sample;
+    initial.primaryGear.originalAnalysis = JSON.parse(JSON.stringify(sample));
     setMachineryState(initial);
     setLastAnalyzedSnapshot(createMachinerySnapshot(initial));
-    setAnalysis(DEFAULT_ANALYSIS);
+    setAnalysis(sample);
     setStage('ready');
   }, [setMachineryState, setLastAnalyzedSnapshot, setAnalysis, setStage]);
 
@@ -2687,7 +2759,7 @@ function Workbench() {
   // Reset scenario when a new analysis is loaded
   useEffect(() => {
     setScenarioParams({});
-    setDeselectedRecommendations({});
+    setDismissedRecommendations({});
   }, [currentAnalysis]);
 
   const send = async (e, customMsg = null) => {
@@ -2721,21 +2793,39 @@ function Workbench() {
     : null;
   const stageIndex = currentAnalysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
 
-  // Scenario recommendations are derived from direct edits only. They stay as
-  // suggestions until the user confirms; deselected ones are opt-out.
+  // Scenario recommendations are derived from direct edits only. They are
+  // suggestions; never auto-apply them. Users may accept manually.
   const recommendations = useMemo(
     () => getParameterRecommendations(currentAnalysis, scenarioParams),
     [currentAnalysis, scenarioParams]
   );
-  const selectedRecommendationParams = useMemo(() => Object.fromEntries(
-    recommendations
-      .filter(rec => !deselectedRecommendations[rec.key])
-      .map(rec => [rec.key, rec.value])
-  ), [recommendations, deselectedRecommendations]);
-  const effectiveScenarioParams = useMemo(
-    () => ({ ...selectedRecommendationParams, ...scenarioParams }),
-    [selectedRecommendationParams, scenarioParams]
-  );
+  const effectiveScenarioParams = scenarioParams;
+
+  // If a recommendation's target value changes, clear its dismissal so the new
+  // recommendation is visible. Explicit dismissal only hides the current value.
+  const prevRecValuesRef = useRef({});
+  useEffect(() => {
+    const prev = prevRecValuesRef.current;
+    const next = {};
+    let changed = false;
+    const nextDismissed = { ...dismissedRecommendations };
+    recommendations.forEach((rec) => {
+      next[rec.key] = rec.value;
+      if (Object.prototype.hasOwnProperty.call(prev, rec.key) && prev[rec.key] !== rec.value && nextDismissed[rec.key]) {
+        delete nextDismissed[rec.key];
+        changed = true;
+      }
+    });
+    // Also clear stale dismissals for keys no longer recommended.
+    Object.keys(nextDismissed).forEach((key) => {
+      if (!recommendations.some((rec) => rec.key === key)) {
+        delete nextDismissed[key];
+        changed = true;
+      }
+    });
+    prevRecValuesRef.current = next;
+    if (changed) setDismissedRecommendations(nextDismissed);
+  }, [recommendations, dismissedRecommendations]);
 
   // Geometry Validation
   const { isGeometryValid, geometryError } = useMemo(() => {
@@ -2881,12 +2971,24 @@ function Workbench() {
     );
   const modifiedCount = Object.keys(effectiveScenarioParams).length;
 
-  const handleToggleRecommendation = useCallback((key) => {
-    setDeselectedRecommendations(prev => ({ ...prev, [key]: !prev[key] }));
+  const handleDismissRecommendation = useCallback((key) => {
+    setDismissedRecommendations(prev => ({ ...prev, [key]: true }));
+  }, []);
+
+  const handleAcceptRecommendation = useCallback((key, value, _surface = 'whatif') => {
+    // Keep surfaces synchronized: accepting a recommendation updates the
+    // scenario preview so What-If and Workshop show the same value.
+    setScenarioParams(prev => ({ ...prev, [key]: value }));
+    setDismissedRecommendations(prev => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   }, []);
 
   const handleResetRecommendations = useCallback(() => {
-    setDeselectedRecommendations({});
+    setDismissedRecommendations({});
   }, []);
 
   // A confirmed gear type replaces the active analysis so 3D, drawings,
@@ -2916,7 +3018,7 @@ function Workbench() {
     saveManufacturingState(nextDecisions, confirmedCategories);
     setMfgData(null);
     setActiveDraftSelection(null);
-    setDeselectedRecommendations({});
+    setDismissedRecommendations({});
   }, [
     activeComp?.id,
     confirmedCategories,
@@ -2954,7 +3056,7 @@ function Workbench() {
     setMfgData(null);
     setActiveDraftSelection(null);
     setScenarioParams({});
-    setDeselectedRecommendations({});
+    setDismissedRecommendations({});
     setActiveTab('workbench');
   }, [
     activeComp?.id,
@@ -2969,9 +3071,53 @@ function Workbench() {
     setLastAnalyzedSnapshot,
   ]);
 
+  const handleRevertToOriginal = useCallback(() => {
+    const original = activeComp?.originalAnalysis;
+    if (!currentAnalysis || !original) return;
+
+    const restoredAnalysis = JSON.parse(JSON.stringify(original));
+    const targetId = activeComp?.id || machineryState?.primaryGear?.id;
+    const replaceAnalysis = (component) => (
+      component && (component.id === targetId || (!targetId && component === machineryState?.primaryGear))
+        ? { ...component, analysis: restoredAnalysis }
+        : component
+    );
+    const nextMachineryState = {
+      ...machineryState,
+      primaryGear: replaceAnalysis(machineryState?.primaryGear),
+      companionGear: replaceAnalysis(machineryState?.companionGear),
+      additionalComponents: (machineryState?.additionalComponents || []).map(replaceAnalysis),
+    };
+
+    const nextDecisions = { ...decisions, ...getGeometryDecisionOverrides(restoredAnalysis) };
+
+    setAnalysis(restoredAnalysis);
+    setMachineryState(nextMachineryState);
+    setLastAnalyzedSnapshot(createMachinerySnapshot(nextMachineryState));
+    setDecisions(nextDecisions);
+    saveManufacturingState(nextDecisions, confirmedCategories);
+    setMfgData(null);
+    setActiveDraftSelection(null);
+    setScenarioParams({});
+    setDismissedRecommendations({});
+  }, [
+    activeComp?.id,
+    activeComp?.originalAnalysis,
+    confirmedCategories,
+    currentAnalysis,
+    decisions,
+    machineryState,
+    setAnalysis,
+    setMachineryState,
+    setLastAnalyzedSnapshot,
+  ]);
+
   return (
     <>
-      <main className="persistent-workspace-layout">
+      <main
+        className="persistent-workspace-layout"
+        style={viewportBackgroundColor ? { '--viewport-bg': viewportBackgroundColor } : undefined}
+      >
         {/* Top Expandable/Collapsible Icon Ribbon */}
         <TopRibbon
           expanded={ribbonExpanded}
@@ -3016,16 +3162,22 @@ function Workbench() {
           isExportActive={activeTab === 'export'}
           isManufacturingActive={isMfgActive}
           onToggleManufacture={() => {
-            if (!ready) return;
+            if (!canManufacture) return;
             updateLayout((s) => {
               const willBeActive = !s.isManufacturingActive;
               const target2FifthWidth = typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.40) : 576;
-              return {
+              const next = {
                 isManufacturingActive: willBeActive,
                 mfgPanelWidth: willBeActive && (!s.mfgPanelWidth || s.mfgPanelWidth === 440 || s.mfgPanelWidth < target2FifthWidth * 0.85)
                   ? target2FifthWidth
                   : s.mfgPanelWidth,
               };
+              if (willBeActive) {
+                if (!s.mfgPanelSlot || s.mfgPanelSlot === 'floating') next.mfgPanelSlot = 'right';
+                if (s.isCostPanelCollapsed) next.isCostPanelCollapsed = false;
+                if (!s.costPanelSlot || s.costPanelSlot === 'floating') next.costPanelSlot = 'bottom';
+              }
+              return next;
             });
           }}
           onOpenReport={() => setIsReportDialogOpen(true)}
@@ -3034,6 +3186,7 @@ function Workbench() {
           theme={theme}
           onToggleTheme={toggleTheme}
           ready={ready}
+          canManufacture={canManufacture}
           label={label}
         />
 
@@ -3096,6 +3249,7 @@ function Workbench() {
               onToggleMaximize={() => updateLayout((s) => ({ isMfgPanelMaximized: !s.isMfgPanelMaximized }))}
               onStartDrag={(e) => handleStartDragPanel('manufacturing', e)}
               currentSlot={slot}
+              componentId={activeComp?.id || null}
               analysis={activeReconstructionAnalysis}
               decisions={decisions}
               onChangeDecision={updateDecision}
@@ -3106,6 +3260,11 @@ function Workbench() {
               confirmedCategories={confirmedCategories}
               onConfirmedCategoriesChange={setConfirmedCategories}
               onDraftSelect={setActiveDraftSelection}
+              recommendations={recommendations}
+              dismissedRecommendations={dismissedRecommendations}
+              onDismissRecommendation={handleDismissRecommendation}
+              onAcceptRecommendation={handleAcceptRecommendation}
+              scenarioParams={effectiveScenarioParams}
             />
           );
 
@@ -3293,17 +3452,29 @@ function Workbench() {
             cost: costPanelSlot || 'bottom',
             workspace: workspaceSlot || 'center',
           };
+          const defaultPanelSlots = {
+            contextual: 'left',
+            manufacturing: 'right',
+            cost: 'bottom',
+            workspace: 'center',
+          };
 
-          Object.entries(panelTargetSlots).forEach(([panelKey, slot]) => {
-            if (panelActive[panelKey] && slot && slot !== 'floating') {
-              slotMap[slot] = panelKey;
+          // Collision-safe, deterministic slot assignment.
+          const slotOrder = ['left', 'right', 'bottom', 'center'];
+          const panelPriority = ['workspace', 'contextual', 'manufacturing', 'cost'];
+          const usedSlots = new Set();
+          panelPriority.forEach((panelKey) => {
+            if (!panelActive[panelKey]) return;
+            const preferred = panelTargetSlots[panelKey];
+            const resolvedPreferred = preferred === 'floating' ? defaultPanelSlots[panelKey] : preferred;
+            const candidates = [resolvedPreferred, defaultPanelSlots[panelKey], ...slotOrder]
+              .filter((slot, idx, arr) => slot && arr.indexOf(slot) === idx);
+            const assigned = candidates.find((slot) => !usedSlots.has(slot));
+            if (assigned) {
+              slotMap[assigned] = panelKey;
+              usedSlots.add(assigned);
             }
           });
-
-          // Ensure workspace is in center if center is unassigned and workspace is active
-          if (!slotMap.center && panelActive.workspace) {
-            slotMap.center = 'workspace';
-          }
 
           const leftSlotPanel = slotMap.left;
           const rightSlotPanel = slotMap.right;
@@ -3535,7 +3706,12 @@ function Workbench() {
                 className="primary"
                 onClick={() => {
                   setReportNoticeOpen(false);
-                  setIsManufacturingActive(true);
+                  updateLayout((s) => ({
+                    isManufacturingActive: true,
+                    mfgPanelSlot: !s.mfgPanelSlot || s.mfgPanelSlot === 'floating' ? 'right' : s.mfgPanelSlot,
+                    isCostPanelCollapsed: false,
+                    costPanelSlot: !s.costPanelSlot || s.costPanelSlot === 'floating' ? 'bottom' : s.costPanelSlot,
+                  }));
                 }}
               >
                 <Icon>precision_manufacturing</Icon> Open Manufacture Workspace
@@ -3579,9 +3755,12 @@ function Workbench() {
                 scenarioParams={scenarioParams}
                 setScenarioParams={setScenarioParams}
                 recommendations={recommendations}
-                deselectedRecommendations={deselectedRecommendations}
-                onToggleRecommendation={handleToggleRecommendation}
+                dismissedRecommendations={dismissedRecommendations}
+                onDismissRecommendation={handleDismissRecommendation}
+                onAcceptRecommendation={handleAcceptRecommendation}
                 onResetRecommendations={handleResetRecommendations}
+                onRevertOriginal={handleRevertToOriginal}
+                canRevertOriginal={Boolean(activeComp?.originalAnalysis)}
                 onConfirm={handleConfirmScenario}
                 isGeometryValid={isGeometryValid}
                 geometryError={geometryError}
@@ -3841,15 +4020,20 @@ function App() {
       }
       if (reconstructionCancelledRef.current) return;
 
+      const cloneAnalysis = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
       const updatedMachinery = {
         ...machineryState,
         primaryGear: {
           ...machineryState.primaryGear,
           analysis: pAnalysis,
+          originalAnalysis: cloneAnalysis(pAnalysis),
           reference: primaryRef,
         },
         companionGear: machineryState.companionGear
-          ? { ...machineryState.companionGear, analysis: cAnalysis }
+          ? {
+              ...machineryState.companionGear,
+              ...(cAnalysis ? { analysis: cAnalysis, originalAnalysis: cloneAnalysis(cAnalysis) } : {}),
+            }
           : null,
       };
       setMachineryState(updatedMachinery);
@@ -3987,7 +4171,7 @@ function App() {
                 name: comp.name || '',
                 notes: comp.notes || '',
               });
-              return { ...comp, analysis: compAnalysis };
+              return { ...comp, analysis: compAnalysis, originalAnalysis: JSON.parse(JSON.stringify(compAnalysis)) };
             } catch {
               return comp;
             }
@@ -3996,10 +4180,11 @@ function App() {
         })
       );
 
+      const cloneAnalysis = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
       const nextState = {
         ...machineryState,
-        primaryGear: primary ? { ...primary, analysis: pAnalysis } : null,
-        companionGear: companion ? { ...companion, analysis: cAnalysis } : null,
+        primaryGear: primary ? { ...primary, analysis: pAnalysis, originalAnalysis: cloneAnalysis(pAnalysis) } : null,
+        companionGear: companion ? { ...companion, analysis: cAnalysis, originalAnalysis: cloneAnalysis(cAnalysis) } : null,
         additionalComponents: updatedAdditions,
       };
 
