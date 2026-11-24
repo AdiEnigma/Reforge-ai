@@ -2,7 +2,7 @@ export const RECONSTRUCTION_STAGES = Object.freeze([
   { id: 'image-analysis', label: 'Image Analysis', weight: 12 },
   { id: 'geometry-extraction', label: 'Geometry Extraction', weight: 18 },
   { id: 'dataset-matching', label: 'Dataset Matching', weight: 12 },
-  { id: 'gemini-reconstruction', label: 'Gemini Reconstruction', weight: 28 },
+  { id: 'gemini-reconstruction', label: 'Reconstructing Model', weight: 28 },
   { id: 'mesh-generation', label: 'Mesh Generation', weight: 20 },
   { id: 'validation', label: 'Validation', weight: 10 },
 ]);

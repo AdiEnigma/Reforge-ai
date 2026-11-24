@@ -72,6 +72,35 @@ function sanitizeCoordinate(coord, fallback) {
   return { x: Math.max(0, x), y: Math.max(0, y) };
 }
 
+function normalizePanelSlots(layout) {
+  const slotKeys = {
+    contextual: 'contextualPanelSlot',
+    workspace: 'workspaceSlot',
+    manufacturing: 'mfgPanelSlot',
+    cost: 'costPanelSlot',
+  };
+  const defaults = {
+    contextual: 'left',
+    workspace: 'center',
+    manufacturing: 'right',
+    cost: 'bottom',
+  };
+  const dockSlots = ['left', 'right', 'bottom', 'center'];
+  const priority = ['workspace', 'contextual', 'manufacturing', 'cost'];
+  const used = new Set();
+
+  priority.forEach((panelKey) => {
+    const key = slotKeys[panelKey];
+    const current = layout[key];
+    if (current === 'floating') return; // floating is allowed; runtime may fallback
+    const preferred = dockSlots.includes(current) ? current : defaults[panelKey];
+    const candidates = [preferred, defaults[panelKey], ...dockSlots].filter((s, i, arr) => arr.indexOf(s) === i);
+    const assigned = candidates.find((s) => !used.has(s)) || defaults[panelKey];
+    layout[key] = assigned;
+    used.add(assigned);
+  });
+}
+
 export function sanitizeLayout(raw) {
   if (!raw || typeof raw !== 'object') {
     return { ...DEFAULT_WORKSPACE_LAYOUT };
@@ -79,7 +108,7 @@ export function sanitizeLayout(raw) {
 
   const validSlots = ['left', 'right', 'bottom', 'center', 'floating'];
 
-  return {
+  const layout = {
     leftPanelWidth: clamp(
       raw.leftPanelWidth,
       LAYOUT_BOUNDS.leftPanelWidth.min,
@@ -139,6 +168,9 @@ export function sanitizeLayout(raw) {
 
     ribbonExpanded: typeof raw.ribbonExpanded === 'boolean' ? raw.ribbonExpanded : DEFAULT_WORKSPACE_LAYOUT.ribbonExpanded,
   };
+
+  normalizePanelSlots(layout);
+  return layout;
 }
 
 /**

@@ -70,6 +70,7 @@ export function TopRibbon({
   onNavigateUpload,
   // General
   ready = false,
+  canManufacture = ready,
   label = '',
 }) {
   const lightTheme = theme === 'light';
@@ -283,7 +284,7 @@ export function TopRibbon({
           <label className="ribbon-item mini ribbon-color-picker" title="Viewport background color">
             <input
               type="color"
-              value={viewportBackgroundColor || '#140d07'}
+              value={viewportBackgroundColor || (theme === 'light' ? '#dfe3e8' : '#140d07')}
               onChange={(event) => onChangeViewportBackgroundColor?.(event.target.value)}
               disabled={!ready || !onChangeViewportBackgroundColor}
               aria-label="Viewport background color"
@@ -432,7 +433,7 @@ export function TopRibbon({
           <button
             className={`ribbon-item mini ribbon-cta-manufacture ${isManufacturingActive ? 'active' : ''}`}
             onClick={onToggleManufacture}
-            disabled={!ready}
+            disabled={!canManufacture}
             title="Activate Manufacturing Decisions & Cost Estimation Workspace"
             aria-label="Manufacture Workspace"
           >

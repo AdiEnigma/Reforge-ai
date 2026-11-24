@@ -280,7 +280,7 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
       source: datasetResult.analysis.provenance?.dataset || 'dataset',
     });
     emit(ANALYSIS_STAGES.GEMINI, 'skipped', {
-      message: 'Dataset match supplied geometry; Gemini reconstruction skipped.',
+      message: 'Dataset match supplied geometry; model reconstruction skipped.',
     });
   } else {
     // No reliable dataset hit: keep the existing vision solver, then Gemini.
@@ -292,14 +292,14 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
         message: 'No reliable dataset match; resolved from measured vision evidence.',
       });
       emit(ANALYSIS_STAGES.GEMINI, 'skipped', {
-        message: 'Measured vision evidence supplied geometry; Gemini reconstruction skipped.',
+        message: 'Measured vision evidence supplied geometry; model reconstruction skipped.',
       });
     } else {
       emit(ANALYSIS_STAGES.DATASET, rawVisionResult ? 'complete' : 'skipped', {
         message: datasetResult.diagnostics?.reason
           || (rawVisionResult
-            ? 'No reliable dataset match; using Gemini reconstruction.'
-            : 'Dataset retrieval unavailable; using Gemini reconstruction.'),
+            ? 'No reliable dataset match; reconstructing model.'
+            : 'Dataset retrieval unavailable; reconstructing model.'),
       });
     }
   }
