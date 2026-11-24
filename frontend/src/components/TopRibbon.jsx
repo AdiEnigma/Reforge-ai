@@ -1,4 +1,10 @@
 import React from 'react';
+import {
+  DEFAULT_MODEL_ILLUMINATION_INTENSITY,
+  MODEL_ILLUMINATION_MAX_INTENSITY,
+  MODEL_ILLUMINATION_MIN_INTENSITY,
+  MODEL_ILLUMINATION_INTENSITY_STEP,
+} from '../lib/model-illumination.js';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -23,6 +29,14 @@ export function TopRibbon({
   onToggleGrid,
   dims,
   onToggleDims,
+  illumination = false,
+  onToggleIllumination,
+  illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY,
+  onChangeIlluminationIntensity,
+  modelBaseColor = null,
+  onChangeModelBaseColor,
+  viewportBackgroundColor = null,
+  onChangeViewportBackgroundColor,
   onResetView,
   // View Modes
   viewMode,
@@ -58,6 +72,16 @@ export function TopRibbon({
   ready = false,
   label = '',
 }) {
+  const lightTheme = theme === 'light';
+  const illuminationOnLabel = lightTheme
+    ? 'Turn Off Model Shade Control'
+    : 'Turn Off 3D Model Illumination';
+  const illuminationOffLabel = lightTheme
+    ? 'Turn On Model Shade Control (deeper metallic orange)'
+    : 'Turn On 3D Model Illumination (overhead light)';
+  const intensityLabel = lightTheme
+    ? 'Model shade depth'
+    : 'Overhead model light intensity';
   return (
     <header className={`top-ribbon ${expanded ? 'expanded' : 'collapsed'}`} role="toolbar" aria-label="Engineering Workspace Ribbon">
       {/* Category 0: Brand & Ribbon Mode */}
@@ -178,8 +202,8 @@ export function TopRibbon({
             className={`ribbon-item mini ${stress ? 'active' : ''}`}
             onClick={onToggleStress}
             disabled={!ready}
-            title="Toggle FEA Stress Heatmap"
-            aria-label="Toggle Stress Heatmap"
+            title="Toggle Image-Based Damage Heatmap (detected defect regions)"
+            aria-label="Toggle Damage Heatmap"
           >
             <Icon>local_fire_department</Icon>
             {expanded && <span className="ribbon-label">Heatmap</span>}
@@ -206,6 +230,78 @@ export function TopRibbon({
             <Icon>straighten</Icon>
             {expanded && <span className="ribbon-label">Dims</span>}
           </button>
+
+          <button
+            className={`ribbon-item mini illumination-toggle-btn icon-only ${illumination ? 'active' : ''}`}
+            onClick={onToggleIllumination}
+            disabled={!ready || !onToggleIllumination}
+            title={illumination ? illuminationOnLabel : illuminationOffLabel}
+            aria-label={illumination ? illuminationOnLabel : illuminationOffLabel}
+            aria-pressed={illumination}
+          >
+            <Icon>lightbulb</Icon>
+          </button>
+
+          {illumination && (
+            <input
+              className="illumination-intensity"
+              type="range"
+              min={MODEL_ILLUMINATION_MIN_INTENSITY}
+              max={MODEL_ILLUMINATION_MAX_INTENSITY}
+              step={MODEL_ILLUMINATION_INTENSITY_STEP}
+              value={illuminationIntensity}
+              onChange={(event) => onChangeIlluminationIntensity?.(Number(event.target.value))}
+              disabled={!ready || !onChangeIlluminationIntensity}
+              title={`${intensityLabel}: ${Math.round(illuminationIntensity * 100)}%`}
+              aria-label={intensityLabel}
+            />
+          )}
+
+          <label className="ribbon-item mini ribbon-color-picker" title="Object base color (auto-generates metallic shades)">
+            <input
+              type="color"
+              value={modelBaseColor || '#b76308'}
+              onChange={(event) => onChangeModelBaseColor?.(event.target.value)}
+              disabled={!ready || !onChangeModelBaseColor}
+              aria-label="Object base color"
+              style={{ width: 28, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: ready ? 'pointer' : 'default' }}
+            />
+            {expanded && <span className="ribbon-label">Object</span>}
+          </label>
+          {modelBaseColor && (
+            <button
+              className="ribbon-item mini"
+              onClick={() => onChangeModelBaseColor?.(null)}
+              disabled={!ready}
+              title="Reset object color"
+              aria-label="Reset object color"
+            >
+              <Icon>format_color_reset</Icon>
+            </button>
+          )}
+
+          <label className="ribbon-item mini ribbon-color-picker" title="Viewport background color">
+            <input
+              type="color"
+              value={viewportBackgroundColor || '#140d07'}
+              onChange={(event) => onChangeViewportBackgroundColor?.(event.target.value)}
+              disabled={!ready || !onChangeViewportBackgroundColor}
+              aria-label="Viewport background color"
+              style={{ width: 28, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: ready ? 'pointer' : 'default' }}
+            />
+            {expanded && <span className="ribbon-label">BG</span>}
+          </label>
+          {viewportBackgroundColor && (
+            <button
+              className="ribbon-item mini"
+              onClick={() => onChangeViewportBackgroundColor?.(null)}
+              disabled={!ready}
+              title="Reset background color"
+              aria-label="Reset background color"
+            >
+              <Icon>format_color_reset</Icon>
+            </button>
+          )}
 
           <button
             className="ribbon-item mini"

@@ -181,7 +181,7 @@ export function ReportEditorDialog({
   // 2D Drawing Model and SVG Generation
   const drawingSvg = useMemo(() => {
     try {
-      const model = buildDrawingModel(analysis, mfgData);
+      const model = buildDrawingModel({ analysis, manufacturingIntelligence: mfgData });
       return renderDrawingToSvg(model);
     } catch {
       return null;
@@ -194,7 +194,10 @@ export function ReportEditorDialog({
     const id = decisions.innerDiameter || analysis?.dimensions?.innerDiameter || 30;
     const l = decisions.height || analysis?.dimensions?.height || analysis?.dimensions?.thickness || 28;
     const z = decisions.teeth || analysis?.teeth || 24;
-    const m = (od / (z + 2)).toFixed(2);
+    const confirmedModule = analysis?.module ?? analysis?.geometryRecipe?.gear?.module;
+    const m = (typeof confirmedModule === 'number' && confirmedModule > 0
+      ? confirmedModule
+      : od / (z + 2)).toFixed(2);
     const pd = (m * z).toFixed(1);
     return { od, id, l, z, m, pd };
   }, [decisions, analysis]);

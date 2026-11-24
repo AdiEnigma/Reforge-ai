@@ -140,12 +140,21 @@ class DepthEstimator:
                 status = "low_quality"
                 warnings.append(f"Depth map appears flat (std={depth_std:.4f}, zeros={zeros_fraction:.2%})")
 
-            # Return statistics only — no raw tensors
+            # Downsample depth field for real-time 3D visual reconstruction (64x64 grid)
+            import cv2
+            d_min = float(np.min(depth_np))
+            d_max = float(np.max(depth_np))
+            d_range = d_max - d_min if d_max > d_min else 1.0
+            depth_norm = (depth_np - d_min) / d_range
+            depth_small = cv2.resize(depth_norm, (64, 64), interpolation=cv2.INTER_AREA)
+            depth_grid = np.round(depth_small, 3).tolist()
+
             return {
                 "status": status,
                 "depth_type": "relative",
                 "metric": False,
                 "preview_ref": None,
+                "depth_grid": depth_grid,
                 "warnings": warnings,
             }
 

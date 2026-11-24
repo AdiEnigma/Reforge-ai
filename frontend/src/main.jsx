@@ -15,12 +15,34 @@ import {
   deserializeWorkbenchState,
 } from './lib/workbench-api.js';
 import { analyzeComponent, sendChatMessage } from './lib/api.js';
+import { analyzeComponent, analyzeCondition, sendChatMessage, isCancellationError } from './lib/api.js';
 import { fetchManufacturingIntelligence } from './lib/manufacturing.js';
 import { fetchMaterialAlternatives } from './lib/material-comparison.js';
 import { normalizeFeatures } from './lib/features.js';
+import { GEAR_TYPES, applyConfirmedGearType, isGearTypeUnconfirmed } from './lib/gear-types.js';
 import { buildEngineeringContext, getEngineeringSuggestions } from './lib/engineering-context.js';
 import { buildDrawingModel, renderDrawingToSvg, exportSvg, exportPng, exportPdf } from './lib/drawing/index.js';
-import { buildModel, buildAssemblyScene, dimensionList, resolveLabel } from './lib/reconstruct.js';
+import { buildModel, buildAssemblyScene, dimensionList, resolveLabel, validateReconstructedModel } from './lib/reconstruct.js';
+import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from './lib/model-illumination.js';
+import { createThreeThemeSync, getWireframeAppearance } from './lib/three-theme.js';
+import {
+  PARAM_DEFINITIONS,
+  isParamActive,
+  getParameterValue,
+  getParameterRecommendations,
+  applyScenarioToAnalysis,
+  getGeometryDecisionOverrides,
+} from './lib/what-if.js';
+import {
+  applyReconstructionEvent,
+  createReconstructionProgress,
+  getReconstructionStageLabel,
+  RECONSTRUCTION_CANCELLED,
+  RECONSTRUCTION_COMPLETE,
+  RECONSTRUCTION_FAILED,
+  RECONSTRUCTION_IDLE,
+  RECONSTRUCTION_RUNNING,
+} from './lib/reconstruction-progress.js';
 import {
   createInitialMachineryState,
   getAllComponents,
@@ -36,6 +58,7 @@ import {
 import { ManageComponentsTab } from './components/ManageComponentsTab.jsx';
 import { MultiViewportGrid } from './components/MultiViewportGrid.jsx';
 import { PipWorkbench } from './components/PipWorkbench.jsx';
+import { DamageHeatmapOverlay } from './components/DamageHeatmapOverlay.jsx';
 import { ExportWorkWindow } from './components/ExportWorkWindow.jsx';
 import { TopRibbon } from './components/TopRibbon.jsx';
 import { FloatingPanelWrapper } from './components/FloatingPanelWrapper.jsx';
@@ -57,6 +80,7 @@ import {
   evaluateTechnicalDependencies,
   computeConfiguratorStatuses,
   loadManufacturingState,
+  saveManufacturingState,
 } from './lib/manufacturing-config.js';
 
 const AppContext = createContext();
@@ -78,8 +102,67 @@ function ProgressStepper({ index }) {
   );
 }
 
-function GearCanvas() {
+function ReconstructionProgress({ progress, onCancel, onRetry }) {
+  if (
+    !progress ||
+    progress.status === RECONSTRUCTION_IDLE ||
+    progress.status === RECONSTRUCTION_COMPLETE
+  ) return null;
+
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  const stageLabel = progress.status === RECONSTRUCTION_COMPLETE
+    ? 'Model Ready'
+    : getReconstructionStageLabel(progress.currentStage);
+  const detail = progress.message || (
+    progress.status === RECONSTRUCTION_FAILED
+      ? 'Reconstruction failed.'
+      : progress.status === RECONSTRUCTION_CANCELLED
+        ? 'Reconstruction cancelled.'
+        : `${stageLabel}…`
+  );
+
+  return (
+    <section className="reconstruction-progress" aria-label="Live reconstruction progress" aria-live="polite">
+      <div className="reconstruction-progress__head">
+        <span className="cad">RECONSTRUCTION PROGRESS</span>
+        <div className="reconstruction-progress__readout">
+          <strong className="reconstruction-progress__stage">{stageLabel}</strong>
+          <span className="reconstruction-progress__percent">{percent}%</span>
+        </div>
+      </div>
+      <div
+        className={`reconstruction-progress__track reconstruction-progress--${progress.status}`}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${percent}% — ${stageLabel}`}
+      >
+        <div className="reconstruction-progress__fill" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="reconstruction-progress__foot">
+        <span className="reconstruction-progress__detail">{detail}</span>
+        <div className="reconstruction-progress__actions">
+          {progress.status === RECONSTRUCTION_RUNNING && onCancel && (
+            <button type="button" className="reconstruction-progress__action" onClick={onCancel}>
+              <Icon>close</Icon> CANCEL
+            </button>
+          )}
+          {(progress.status === RECONSTRUCTION_FAILED || progress.status === RECONSTRUCTION_CANCELLED) && onRetry && (
+            <button type="button" className="reconstruction-progress__action primary" onClick={onRetry}>
+              <Icon>refresh</Icon> RETRY
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function GearCanvas({ theme = 'dark' }) {
   const mount = useRef(null);
+  const options = useRef({ theme });
+  options.current = { theme };
   useEffect(() => {
     const host = mount.current, scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, .1, 1000); camera.position.z = 15;
@@ -89,69 +172,43 @@ function GearCanvas() {
     const hole = new THREE.Path(); hole.absarc(0, 0, 2.2, 0, Math.PI * 2, false); shape.holes.push(hole);
     const geo = new THREE.ExtrudeGeometry(shape, { depth: .25, bevelEnabled: true, bevelSegments: 12, steps: 2, curveSegments: 64, bevelSize: .05, bevelThickness: .05 }); geo.center();
     const material = new THREE.MeshStandardMaterial({ color: '#2A0E06', metalness: .8, roughness: .45, emissive: '#0a0301', emissiveIntensity: .2 });
-    const gear = new THREE.Mesh(geo, material); const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 22), new THREE.LineBasicMaterial({ color: '#DE822B' })); gear.add(edges); scene.add(gear);
-    [1, -1].forEach(z => { const ring = new THREE.Mesh(new THREE.RingGeometry(2.15, 2.28, 64), new THREE.MeshBasicMaterial({ color: '#DE822B', side: THREE.DoubleSide })); ring.position.z = z * .14; gear.add(ring); });
-    scene.add(new THREE.AmbientLight('#7A4A38', .9)); const light = new THREE.PointLight('#DE822B', 2.5, 30); light.position.set(8, 8, 8); scene.add(light); const tenne = new THREE.PointLight('#B76308', 2.2, 30); tenne.position.set(-8, -8, 6); scene.add(tenne);
+    material.userData.appearanceRole = 'decorative-gear';
+    const edgesMaterial = new THREE.LineBasicMaterial({ color: '#DE822B' });
+    edgesMaterial.userData.appearanceRole = 'edges';
+    const gear = new THREE.Mesh(geo, material); const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 22), edgesMaterial); gear.add(edges); scene.add(gear);
+    [1, -1].forEach(z => {
+      const ringMaterial = new THREE.MeshBasicMaterial({ color: '#DE822B', side: THREE.DoubleSide });
+      ringMaterial.userData.appearanceRole = 'rim';
+      const ring = new THREE.Mesh(new THREE.RingGeometry(2.15, 2.28, 64), ringMaterial);
+      ring.position.z = z * .14;
+      gear.add(ring);
+    });
+    const ambient = new THREE.AmbientLight('#7A4A38', .9); scene.add(ambient);
+    const light = new THREE.PointLight('#DE822B', 2.5, 30); light.position.set(8, 8, 8); scene.add(light);
+    const tenne = new THREE.PointLight('#B76308', 2.2, 30); tenne.position.set(-8, -8, 6); scene.add(tenne);
+    // Keep the hero transparent: only the model lighting rig follows the theme.
+    const themeSync = createThreeThemeSync({
+      scene,
+      renderer,
+      lights: { ambient, key: light, fill: tenne },
+      background: false,
+    });
+    themeSync.update(options.current.theme, true);
     const pointer = { x: 0, y: 0 }, target = { x: 0, y: 0 }, current = { x: 0, y: 0 }; const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
     const onMove = e => { const r = host.getBoundingClientRect(); pointer.x = (e.clientX - r.left) / r.width * 2 - 1; pointer.y = -(e.clientY - r.top) / r.height * 2 + 1; target.x = (e.clientX - r.left - r.width / 2) * .0018; target.y = (e.clientY - r.top - r.height / 2) * .0018; }; host.addEventListener('pointermove', onMove);
     const resize = () => { const { width, height } = host.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height, false) }; const observer = new ResizeObserver(resize); observer.observe(host); resize(); let frame;
-    const animate = () => { frame = requestAnimationFrame(animate); mouse.set(pointer.x, pointer.y); raycaster.setFromCamera(mouse, camera); const active = raycaster.intersectObject(gear).length > 0; material.emissive.lerp(new THREE.Color(active ? '#DE822B' : '#0a0301'), active ? .04 : .03); current.x = THREE.MathUtils.lerp(current.x, target.x, .035); current.y = THREE.MathUtils.lerp(current.y, target.y, .035); gear.rotation.x = current.y; gear.rotation.y = current.x; gear.rotation.z -= .006 * (active ? 1.8 : 1); renderer.render(scene, camera) }; animate();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); host.removeEventListener('pointermove', onMove); renderer.dispose(); geo.dispose(); material.dispose(); host.replaceChildren(); };
+    const animate = () => { frame = requestAnimationFrame(animate); mouse.set(pointer.x, pointer.y); raycaster.setFromCamera(mouse, camera); const active = raycaster.intersectObject(gear).length > 0; material.emissive.lerp(new THREE.Color(active ? '#DE822B' : '#0a0301'), active ? .04 : .03); current.x = THREE.MathUtils.lerp(current.x, target.x, .035); current.y = THREE.MathUtils.lerp(current.y, target.y, .035); gear.rotation.x = current.y; gear.rotation.y = current.x; gear.rotation.z -= .006 * (active ? 1.8 : 1); themeSync.update(options.current.theme); renderer.render(scene, camera) }; animate();
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); host.removeEventListener('pointermove', onMove); themeSync.dispose(); renderer.dispose(); geo.dispose(); material.dispose(); host.replaceChildren(); };
   }, []);
   return <div className="gear-canvas" ref={mount} aria-hidden="true" />;
 }
 
-function createStressMaterial() {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      minStress: { value: 0.0 },
-      maxStress: { value: 1.0 },
-    },
-    vertexShader: `
-      varying vec3 vPosition;
-      varying vec3 vNormal;
-      void main() {
-        vPosition = position;
-        vNormal = normalMatrix * normal;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vPosition;
-      varying vec3 vNormal;
-
-      // Turbo / Jet colormap approximation
-      vec3 jetHeatmap(float val) {
-        float v = clamp(val, 0.0, 1.0);
-        return clamp(vec3(
-          1.5 - abs(v * 4.0 - 3.0),
-          1.5 - abs(v * 4.0 - 2.0),
-          1.5 - abs(v * 4.0 - 1.0)
-        ), 0.0, 1.0);
-      }
-
-      void main() {
-        // Stress distribution based on distance from center & local curvature
-        float dist = length(vPosition.xy);
-        float curvature = length(cross(dFdx(vNormal), dFdy(vNormal))) * 5.0;
-        float stressFactor = clamp(sin(dist * 1.5) * 0.5 + 0.5 + curvature * 0.3, 0.0, 1.0);
-
-        // Simple directional lighting
-        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.8));
-        float diff = max(dot(normalize(vNormal), lightDir), 0.25);
-
-        vec3 heatColor = jetHeatmap(stressFactor);
-        gl_FragColor = vec4(heatColor * diff, 1.0);
-      }
-    `,
-  });
-}
-
-function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, resetKey, selectedFeatureId, hoveredFeatureId }) {
+function ReconstructedViewport({ analysis, images = [], wire, grid, stress, autoRotate, illumination = false, illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY, theme = 'dark', resetKey, selectedFeatureId, hoveredFeatureId, modelBaseColor = null, viewportBackgroundColor = null }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId };
+  const themeSyncRef = useRef(null);
+  const options = useRef({ wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId, modelBaseColor, viewportBackgroundColor });
+  options.current = { wire, grid, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId, modelBaseColor, viewportBackgroundColor };
 
   useEffect(() => {
     const host = mount.current;
@@ -160,17 +217,44 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     host.appendChild(renderer.domElement);
-    const { group } = buildModel(analysis);
-    scene.add(group);
-    scene.add(new THREE.AmbientLight('#7a4a38', 0.6));
+    const ambient = new THREE.AmbientLight('#7a4a38', 0.6); scene.add(ambient);
     const key = new THREE.DirectionalLight('#ffb77f', 0.8); key.position.set(6, 8, 10); scene.add(key);
     const fill = new THREE.PointLight('#b76308', 1.0, 25); fill.position.set(-5, -4, 6); scene.add(fill);
+    const themeSync = createThreeThemeSync({
+      scene,
+      renderer,
+      lights: { ambient, key, fill },
+      baseColor: options.current.modelBaseColor,
+      backgroundColor: options.current.viewportBackgroundColor,
+    });
+    themeSyncRef.current = themeSync;
+    themeSync.update(options.current.theme);
+    const { group } = buildModel(analysis);
+    scene.add(group);
+    themeSync.update(options.current.theme, true);
+    const modelBounds = new THREE.Box3().setFromObject(group);
+    const illuminationLight = createModelIllumination(scene, {
+      enabled: options.current.illumination,
+      intensity: options.current.illuminationIntensity,
+      theme: options.current.theme,
+      themeSync,
+      bounds: modelBounds,
+      camera,
+    });
     const gridHelper = new THREE.GridHelper(10, 12, '#544337', '#3d332c'); gridHelper.position.z = -1.2; gridHelper.visible = false; scene.add(gridHelper);
 
     const originals = new Map();
     group.traverse(node => { if (node.isMesh) originals.set(node.uuid, node.material); });
 
-    const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
+    const wireAppearance = getWireframeAppearance(options.current.theme);
+    const wireMaterial = new THREE.MeshBasicMaterial({
+      color: wireAppearance.color,
+      wireframe: true,
+      transparent: true,
+      opacity: wireAppearance.opacity,
+      blending: wireAppearance.blending,
+      depthWrite: wireAppearance.depthWrite,
+    });
     const selectHighlightMat = new THREE.MeshStandardMaterial({
       color: '#c9f88d',
       emissive: '#c9f88d',
@@ -187,8 +271,8 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
     });
 
     const stressMaterial = createStressMaterial();
-    const view = { radius: 8, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
-    const reset = () => { view.radius = 8; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
+    const view = { radius: 11, theta: 0.55, phi: 1.35 }; const target = new THREE.Vector3();
+    const reset = () => { view.radius = 11; view.theta = 0.55; view.phi = 1.35; target.set(0, 0, 0); }; resetViewRef.current = reset;
     let pointerMode = null, lastPoint = null, appliedKey = null;
     const canvas = renderer.domElement; canvas.style.touchAction = 'none'; canvas.style.cursor = 'grab';
     const onDown = event => { canvas.setPointerCapture(event.pointerId); pointerMode = event.button === 2 ? 'pan' : 'rotate'; lastPoint = { x: event.clientX, y: event.clientY }; canvas.style.cursor = 'grabbing'; };
@@ -204,10 +288,26 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
       frame = requestAnimationFrame(animate);
       if (options.current.autoRotate) view.theta += .006;
       gridHelper.visible = options.current.grid;
+      themeSync.update(options.current.theme);
+      illuminationLight.update({
+        enabled: options.current.illumination,
+        intensity: options.current.illuminationIntensity,
+        theme: options.current.theme,
+      });
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
       const isSelected = Boolean(options.current.selectedFeatureId);
-      const materialKey = `${options.current.wire ? 'w' : ''}${options.current.stress ? 's' : ''}|${activeFeatureId ?? ''}`;
+      const nextWireAppearance = getWireframeAppearance(options.current.theme);
+      if (wireMaterial.userData.theme !== options.current.theme) {
+        wireMaterial.color.set(nextWireAppearance.color);
+        wireMaterial.opacity = nextWireAppearance.opacity;
+        wireMaterial.blending = nextWireAppearance.blending;
+        wireMaterial.depthWrite = nextWireAppearance.depthWrite;
+        wireMaterial.transparent = true;
+        wireMaterial.needsUpdate = true;
+        wireMaterial.userData.theme = options.current.theme;
+      }
+      const materialKey = `${options.current.wire ? 'w' : ''}|${options.current.theme}|${activeFeatureId ?? ''}`;
 
       if (materialKey !== appliedKey) {
         appliedKey = materialKey;
@@ -221,8 +321,6 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
             node.material = wireMaterial;
           } else if (activeFeatureId && (node.userData?.featureId === activeFeatureId || node.parent?.userData?.featureId === activeFeatureId)) {
             node.material = isSelected ? selectHighlightMat : hoverHighlightMat;
-          } else if (options.current.stress) {
-            node.material = stressMaterial;
           } else {
             node.material = originals.get(node.uuid) || node.material;
           }
@@ -248,14 +346,28 @@ function ReconstructedViewport({ analysis, wire, grid, stress, autoRotate, reset
       wireMaterial.dispose();
       selectHighlightMat.dispose();
       hoverHighlightMat.dispose();
-      stressMaterial.dispose();
+      illuminationLight.dispose();
+      themeSync.dispose();
+      themeSyncRef.current = null;
       renderer.dispose();
       host.replaceChildren();
     };
   }, [analysis]);
 
+  useEffect(() => {
+    themeSyncRef.current?.setAppearance({
+      baseColor: modelBaseColor,
+      backgroundColor: viewportBackgroundColor,
+    });
+  }, [modelBaseColor, viewportBackgroundColor]);
+
   useEffect(() => { resetViewRef.current?.(); }, [resetKey]);
-  return <div className="model-canvas" ref={mount} aria-label="Interactive reconstructed 3D model" />;
+  return (
+    <div className="model-canvas-wrapper">
+      <div className="model-canvas" ref={mount} aria-label="Interactive reconstructed 3D model" />
+      {stress && <DamageHeatmapOverlay analysis={analysis} images={images} compact />}
+    </div>
+  );
 }
 
 function Nav() {
@@ -323,13 +435,13 @@ function Nav() {
 }
 
 function Landing() {
-  const { setPage } = useApp();
+  const { setPage, theme } = useApp();
   return (
     <>
       <Nav />
       <main className="landing">
         <section className="hero">
-          <GearCanvas />
+          <GearCanvas theme={theme} />
           <div className="cad readout top-left">X: -145.22, Y: 84.10, Z: 0.00</div>
           <div className="cad readout top-right">SYS: ONLINE // REV-ENG: ACTIVE</div>
           <div className="hero-copy">
@@ -751,6 +863,17 @@ function MaterialComparisonPanel({ analysis, manufacturingIntelligence }) {
 
 // ─── Feature Identification Panel ──────────────────────────────────────────
 
+const GEOMETRY_SOURCE_LABELS = {
+  image_recipe: 'IMAGE RECIPE',
+  image_recipe_refined: 'IMAGE RECIPE (REFINED)',
+  template_gear: 'TEMPLATE GEAR',
+  template_flange: 'TEMPLATE FLANGE',
+  template_shaft: 'TEMPLATE SHAFT',
+  template_generic: 'TEMPLATE',
+  template_fallback: 'TEMPLATE FALLBACK',
+  vision_template: 'VISION TEMPLATE',
+};
+
 function FeatureConfidenceBadge({ confidence }) {
   if (typeof confidence !== 'number') return null;
   const level = confidence >= 0.85 ? 'high' : confidence >= 0.65 ? 'medium' : 'low';
@@ -1138,11 +1261,18 @@ function Upload() {
     currentWorkbenchId,
     ensureWorkbench,
     saveCurrentWorkbench,
+    reconstructionReference,
+    setReconstructionReference,
+    reconstructionProgress,
+    startReconstruction,
+    cancelReconstruction,
+    retryReconstruction,
   } = useApp();
 
   const [activeUploadSlot, setActiveUploadSlot] = useState('primary'); // 'primary' | 'companion' | 'surroundings'
-  const [reference, setReference] = useState({});
   const [error, setError] = useState('');
+  const reference = reconstructionReference;
+  const setReference = setReconstructionReference;
   const busy = stage === 'analysing';
 
   const inputPrimary = useRef(null);
@@ -1196,9 +1326,8 @@ function Upload() {
     }
   };
 
-  const reconstruct = async () => {
-    const pImages = primary?.images || [];
-    if (!pImages.length) {
+  const reconstruct = () => {
+    if (!(primary?.images?.length)) {
       setError('Add at least one Primary Gear image to start reconstruction.');
       return;
     }
@@ -1249,6 +1378,7 @@ function Upload() {
       setError(err.message || 'Analysis failed. Please try again.');
       setStage('idle');
     }
+    startReconstruction();
   };
 
   const primaryCount = primary?.images?.length || 0;
@@ -1428,6 +1558,11 @@ function Upload() {
 
         {error && <p className="error" role="alert">{error}</p>}
         {busy && <ProgressStepper index={1} />}
+        <ReconstructionProgress
+          progress={reconstructionProgress}
+          onCancel={cancelReconstruction}
+          onRetry={retryReconstruction}
+        />
 
         {/* Previews Area */}
         <section className="preview-area">
@@ -1502,32 +1637,15 @@ function Upload() {
     </div>
   );
 }
-const PARAM_DEFINITIONS = [
-  { key: 'outerDiameter', label: 'Outer Ø', unit: 'mm', min: 1, step: 0.5, isDim: true },
-  { key: 'innerDiameter', label: 'Inner Ø (bore)', unit: 'mm', min: 0.5, step: 0.5, isDim: true },
-  { key: 'height', label: 'Height / Length', unit: 'mm', min: 1, step: 0.5, isDim: true },
-  { key: 'width', label: 'Width', unit: 'mm', min: 1, step: 0.5, isDim: true },
-  { key: 'length', label: 'Length', unit: 'mm', min: 1, step: 0.5, isDim: true },
-  { key: 'thickness', label: 'Thickness / Width', unit: 'mm', min: 0.5, step: 0.5, isDim: true },
-  { key: 'teeth', label: 'Teeth', unit: 'count', min: 6, max: 120, step: 1, isDim: false, isInteger: true },
-  { key: 'module', label: 'Module', unit: 'mm', min: 0.2, max: 20, step: 0.1, isDim: false },
-  { key: 'helixAngle', label: 'Helix Angle', unit: 'deg', min: 1, max: 45, step: 1, isDim: false },
-];
-
-function isParamActive(def, analysis) {
-  if (!analysis) return false;
-  const val = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
-  if (typeof val !== 'number' || !isFinite(val)) return false;
-  if (def.key === 'helixAngle') return val > 0;
-  if (def.key === 'innerDiameter') return val > 0;
-  if (def.key === 'teeth') return val >= 6;
-  return val > 0;
-}
-
 function WhatIfSimulator({
   analysis,
   scenarioParams,
   setScenarioParams,
+  recommendations = [],
+  deselectedRecommendations = {},
+  onToggleRecommendation,
+  onResetRecommendations,
+  onConfirm,
   isGeometryValid,
   geometryError,
   warnings,
@@ -1551,6 +1669,10 @@ function WhatIfSimulator({
 
 
   const hasModifications = Object.keys(scenarioParams).length > 0;
+  const selectedRecommendationCount = recommendations.filter(
+    rec => !deselectedRecommendations[rec.key]
+  ).length;
+  const confirmCount = hasModifications ? selectedRecommendationCount + Object.keys(scenarioParams).length : 0;
 
   const handleParamChange = (key, rawValue, isInteger) => {
     const num = isInteger ? parseInt(rawValue, 10) : parseFloat(rawValue);
@@ -1560,13 +1682,14 @@ function WhatIfSimulator({
 
   const handleReset = () => {
     setScenarioParams({});
+    onResetRecommendations?.();
   };
 
   return (
     <div className="whatif-container">
       <div className="whatif-header">
         <h3><Icon>tune</Icon> ENGINEERING WHAT-IF</h3>
-        <p>Modify a design parameter and preview its engineering impact.</p>
+        <p>Modify a design parameter to see engineering impact and related-value recommendations. The 3D model changes only after confirmation.</p>
       </div>
 
       {!isGeometryValid && (
@@ -1600,11 +1723,13 @@ function WhatIfSimulator({
       {availableParams.length > 0 ? (
         <div className="params-list">
           {availableParams.map(def => {
-            const baselineVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+            const baselineVal = getParameterValue(analysis, def.key);
             const currentVal = scenarioParams[def.key] ?? baselineVal;
             const diff = currentVal - baselineVal;
             const pct = baselineVal !== 0 ? (diff / baselineVal) * 100 : 0;
             const isModified = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
+            const recommendation = recommendations.find(rec => rec.key === def.key);
+            const recommendationSelected = recommendation && !deselectedRecommendations[recommendation.key];
 
             const sliderMin = def.min !== undefined ? Math.min(def.min, Math.floor(baselineVal * 0.2)) : Math.max(0.1, Math.floor(baselineVal * 0.2));
             const sliderMax = Math.max(def.max || Math.ceil(baselineVal * 2.5), Math.ceil(baselineVal + 20));
@@ -1614,7 +1739,10 @@ function WhatIfSimulator({
             const pctFormatted = `${sign}${pct.toFixed(1)}%`;
 
             return (
-              <div key={def.key} className={`param-card ${isModified ? 'param-modified' : ''}`}>
+              <div
+                key={def.key}
+                className={`param-card ${isModified ? 'param-modified' : ''} ${recommendation ? 'param-recommended' : ''}`}
+              >
                 <div className="param-top">
                   <span className="param-name">{def.label}</span>
                   {isModified ? (
@@ -1637,6 +1765,24 @@ function WhatIfSimulator({
                     <span className="readout-val scen-val">{currentVal} <small>{def.unit}</small></span>
                   </div>
                 </div>
+
+                {recommendation && (
+                  <label className={`param-recommendation ${recommendationSelected ? 'is-selected' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(recommendationSelected)}
+                      onChange={() => onToggleRecommendation?.(recommendation.key)}
+                      aria-label={`Apply recommended ${def.label} value ${recommendation.value} ${def.unit}`}
+                    />
+                    <Icon>warning</Icon>
+                    <span className="recommendation-copy">
+                      <span className="recommendation-label">
+                        RECOMMENDED {recommendation.value} <small>{def.unit}</small>
+                      </span>
+                      <span className="recommendation-reason">{recommendation.reason}</span>
+                    </span>
+                  </label>
+                )}
 
                 <div className="param-slider-row">
                   <input
@@ -1705,6 +1851,16 @@ function WhatIfSimulator({
           aria-label="Reset scenario to baseline"
         >
           <Icon>restart_alt</Icon> RESET SCENARIO
+        </button>
+        <button
+          type="button"
+          className="btn-confirm-scenario"
+          disabled={!hasModifications || !isGeometryValid}
+          onClick={onConfirm}
+          aria-label="Confirm and apply selected scenario changes to the 3D model"
+          title={!isGeometryValid ? 'Resolve invalid geometry before applying changes.' : undefined}
+        >
+          <Icon>check_circle</Icon> CONFIRM CHANGES{confirmCount ? ` (${confirmCount})` : ''}
         </button>
         <button
           type="button"
@@ -1876,7 +2032,7 @@ function EngineeringReportModal({
               </thead>
               <tbody>
                 {availableParams.map(def => {
-                  const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+                  const baseVal = getParameterValue(analysis, def.key);
                   const scenVal = scenarioParams[def.key] ?? baseVal;
                   const diff = scenVal - baseVal;
                   const pct = baseVal !== 0 ? (diff / baseVal) * 100 : 0;
@@ -2102,6 +2258,12 @@ function Workbench() {
     isRegenerating,
     isDirty,
     setLastAnalyzedSnapshot,
+    reconstructionProgress,
+    applyReconstructionProgress,
+    cancelReconstruction,
+    retryReconstruction,
+    isReconstructionCancelled,
+    ensureConditionAssessment,
     theme,
     toggleTheme,
     saveCurrentWorkbench,
@@ -2142,6 +2304,14 @@ function Workbench() {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     };
   }, [analysis, machineryState, saveCurrentWorkbench]);
+  // Single source of truth for the active component specification. Every
+  // downstream consumer (3D, drawings, exports, cost/reports and copilot)
+  // derives from this analysis; scenario previews never replace it.
+  const allComponents = useMemo(() => getAllComponents(machineryState), [machineryState]);
+  const activeComp = useMemo(() => {
+    return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear;
+  }, [allComponents, activeComponentId, machineryState]);
+  const currentAnalysis = activeComp?.analysis || analysis;
 
   const [open, setOpen] = useState(true); // Engineering Copilot Chat OPEN by default!
   const [copilotTab, setCopilotTab] = useState('chat'); // 'chat' | 'components'
@@ -2149,6 +2319,7 @@ function Workbench() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [pipVisible, setPipVisible] = useState(false); // PiP disabled by default as requested
   const [scenarioParams, setScenarioParams] = useState({});
+  const [deselectedRecommendations, setDeselectedRecommendations] = useState({});
   const [showReport, setShowReport] = useState(false);
   const [wire, setWire] = useState(false);
   const [grid, setGrid] = useState(false);
@@ -2161,12 +2332,17 @@ function Workbench() {
   const [quantity, setQuantity] = useState(1);
   const [mfgData, setMfgData] = useState(null);
   const [autoRotate, setAutoRotate] = useState(true);
+  const [illumination, setIllumination] = useState(false);
+  const [illuminationIntensity, setIlluminationIntensity] = useState(DEFAULT_MODEL_ILLUMINATION_INTENSITY);
+  const [modelBaseColor, setModelBaseColor] = useState(null);
+  const [viewportBackgroundColor, setViewportBackgroundColor] = useState(null);
   const [resetKey, setResetKey] = useState(0);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const [thinking, setThinking] = useState(false);
   const historyRef = useRef([]);
   const thread = useRef(null);
+  const meshBuildStartedRef = useRef(null);
 
   // ─── Persistent Modular Workspace State ─────────────────────────────
   const [layoutState, setLayoutState] = useState(() => ({
@@ -2216,7 +2392,7 @@ function Workbench() {
     isWorkspaceClosed = false,
   } = layoutState;
 
-  const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(analysis);
+  const ready = (stage === 'ready' || stage === 'idle' || !stage) && Boolean(currentAnalysis);
   const isMfgActive = Boolean(ready && isManufacturingActive);
 
   // Drag and Drop Panel Repositioning State
@@ -2527,26 +2703,85 @@ function Workbench() {
   }, [messages, thinking]);
 
   useEffect(() => {
-    if (!analysis) return;
-    if (stage === 'extracting') {
-      const t = setTimeout(() => setStage('reconstructing'), 900);
-      return () => clearTimeout(t);
-    }
-    if (stage === 'reconstructing') {
-      const t = setTimeout(() => setStage('ready'), 1100);
-      return () => clearTimeout(t);
-    }
-  }, [stage, analysis, setStage]);
+    if (!currentAnalysis || stage !== 'extracting' || isReconstructionCancelled()) return;
+    if (meshBuildStartedRef.current === currentAnalysis) return;
+    meshBuildStartedRef.current = currentAnalysis;
+    applyReconstructionProgress({
+      stage: 'mesh-generation',
+      status: 'running',
+      completed: 0,
+      total: 1,
+      message: 'Building parametric mesh…',
+    });
+    setStage('reconstructing');
+  }, [stage, currentAnalysis, setStage, applyReconstructionProgress, isReconstructionCancelled]);
 
-  const features = useMemo(() => normalizeFeatures(analysis), [analysis]);
+  useEffect(() => {
+    if (!currentAnalysis || stage !== 'reconstructing' || isReconstructionCancelled()) return;
+
+    try {
+      const analysedComponents = getAllComponents(machineryState).filter((component) => component.analysis);
+      const targets = analysedComponents.length ? analysedComponents : [{ id: 'primary', analysis: currentAnalysis }];
+      const generated = targets.map((component, index) => {
+        const model = buildModel(component.analysis);
+        applyReconstructionProgress({
+          stage: 'mesh-generation',
+          status: 'running',
+          completed: index + 1,
+          total: targets.length,
+          message: `Generated mesh ${index + 1} of ${targets.length}.`,
+        });
+        return model;
+      });
+      if (isReconstructionCancelled()) return;
+
+      applyReconstructionProgress({ stage: 'mesh-generation', status: 'complete' });
+      applyReconstructionProgress({
+        stage: 'validation',
+        status: 'running',
+        message: 'Checking mesh geometry and model bounds…',
+      });
+
+      const validations = generated.map((model) => validateReconstructedModel(model));
+      if (!validations.length || !validations.every((result) => result.valid)) {
+        throw new Error('Reconstructed model failed geometry validation.');
+      }
+      if (isReconstructionCancelled()) return;
+
+      applyReconstructionProgress({
+        stage: 'validation',
+        status: 'complete',
+        message: 'Model generated and validated.',
+      });
+      setStage('ready');
+    } catch (error) {
+      applyReconstructionProgress({
+        type: 'failed',
+        stage: 'validation',
+        message: error.message || 'Model generation failed.',
+      });
+      setStage('idle');
+    }
+  }, [stage, currentAnalysis, machineryState, setStage, applyReconstructionProgress, isReconstructionCancelled]);
+
+  const features = useMemo(() => normalizeFeatures(currentAnalysis), [currentAnalysis]);
 
   // Ensure manufacturing data is loaded for copilot, drawings, and reports
   useEffect(() => {
-    if (!analysis) return;
-    fetchManufacturingIntelligence(analysis, quantity)
+    if (!currentAnalysis) return;
+    // The manufacturing engine only consumes geometry fields; sending the full
+    // analysis serialises condition masks that the backend immediately drops.
+    const geometryAnalysis = {
+      componentType: currentAnalysis.componentType,
+      dimensions: currentAnalysis.dimensions,
+      features: currentAnalysis.features,
+      materialEstimate: currentAnalysis.materialEstimate,
+      geometryRecipe: currentAnalysis.geometryRecipe,
+    };
+    fetchManufacturingIntelligence(geometryAnalysis, quantity)
       .then(res => setMfgData(res))
       .catch(() => { });
-  }, [analysis, quantity]);
+  }, [currentAnalysis, quantity]);
 
   // Load sample gear helper
   const loadSampleGear = useCallback(() => {
@@ -2558,14 +2793,24 @@ function Workbench() {
     setStage('ready');
   }, [setMachineryState, setLastAnalyzedSnapshot, setAnalysis, setStage]);
 
-  // Determine active component and scope
-  const allComponents = useMemo(() => getAllComponents(machineryState), [machineryState]);
-  const activeComp = useMemo(() => {
-    return allComponents.find((c) => c.id === activeComponentId) || machineryState?.primaryGear;
-  }, [allComponents, activeComponentId, machineryState]);
-
-  // Derive active component analysis or fallback to top-level analysis
-  const currentAnalysis = activeComp?.analysis || analysis;
+  // Load condition evidence only when an explicit consumer asks for it.
+  useEffect(() => {
+    const wantsCondition = selectedContextTool === 'health' || stress;
+    if (!ready || !wantsCondition) return;
+    const targetAnalysis = currentAnalysis;
+    if (!targetAnalysis || targetAnalysis.conditionAssessment) return;
+    const targetImages = activeComp?.images?.length ? activeComp.images : images;
+    if (!targetImages?.length) return;
+    ensureConditionAssessment(targetAnalysis, targetImages);
+  }, [
+    ready,
+    selectedContextTool,
+    stress,
+    currentAnalysis,
+    activeComp?.images,
+    images,
+    ensureConditionAssessment,
+  ]);
 
   // Sync analysis whenever activeComponentId changes or when the active component gets an analysis
   useEffect(() => {
@@ -2598,6 +2843,7 @@ function Workbench() {
   // Reset scenario when a new analysis is loaded
   useEffect(() => {
     setScenarioParams({});
+    setDeselectedRecommendations({});
   }, [currentAnalysis]);
 
   const send = async (e, customMsg = null) => {
@@ -2626,16 +2872,35 @@ function Workbench() {
 
   const label = currentAnalysis ? resolveLabel(currentAnalysis) : null;
   const conf = currentAnalysis && typeof currentAnalysis.confidence === 'number' ? Math.round(currentAnalysis.confidence * 100) : null;
+  const geometrySourceLabel = currentAnalysis?.geometrySource
+    ? (GEOMETRY_SOURCE_LABELS[currentAnalysis.geometrySource] || String(currentAnalysis.geometrySource).toUpperCase())
+    : null;
   const stageIndex = currentAnalysis ? (stage === 'extracting' ? 2 : stage === 'reconstructing' ? 3 : 5) : 0;
+
+  // Scenario recommendations are derived from direct edits only. They stay as
+  // suggestions until the user confirms; deselected ones are opt-out.
+  const recommendations = useMemo(
+    () => getParameterRecommendations(currentAnalysis, scenarioParams),
+    [currentAnalysis, scenarioParams]
+  );
+  const selectedRecommendationParams = useMemo(() => Object.fromEntries(
+    recommendations
+      .filter(rec => !deselectedRecommendations[rec.key])
+      .map(rec => [rec.key, rec.value])
+  ), [recommendations, deselectedRecommendations]);
+  const effectiveScenarioParams = useMemo(
+    () => ({ ...selectedRecommendationParams, ...scenarioParams }),
+    [selectedRecommendationParams, scenarioParams]
+  );
 
   // Geometry Validation
   const { isGeometryValid, geometryError } = useMemo(() => {
     if (!currentAnalysis) return { isGeometryValid: true, geometryError: null };
-    const currentOD = scenarioParams.outerDiameter ?? currentAnalysis.dimensions?.outerDiameter;
-    const currentID = scenarioParams.innerDiameter ?? currentAnalysis.dimensions?.innerDiameter;
-    const currentTeeth = scenarioParams.teeth ?? currentAnalysis.teeth;
+    const currentOD = effectiveScenarioParams.outerDiameter ?? getParameterValue(currentAnalysis, 'outerDiameter');
+    const currentID = effectiveScenarioParams.innerDiameter ?? getParameterValue(currentAnalysis, 'innerDiameter');
+    const currentTeeth = effectiveScenarioParams.teeth ?? getParameterValue(currentAnalysis, 'teeth');
 
-    for (const [k, v] of Object.entries(scenarioParams)) {
+    for (const [k, v] of Object.entries(effectiveScenarioParams)) {
       if (k !== 'innerDiameter' && k !== 'helixAngle' && typeof v === 'number' && v <= 0) {
         return { isGeometryValid: false, geometryError: 'Dimensions must be strictly positive.' };
       }
@@ -2660,61 +2925,21 @@ function Workbench() {
     }
 
     return { isGeometryValid: true, geometryError: null };
-  }, [analysis, scenarioParams]);
-
-  // Derive immutable scenario analysis for 3D reconstruction
-  const scenarioAnalysis = useMemo(() => {
-    if (!analysis) return null;
-    if (!Object.keys(scenarioParams).length || !isGeometryValid) return analysis;
-
-    const cloned = {
-      ...analysis,
-      dimensions: { ...(analysis.dimensions || {}) },
-    };
-
-    for (const def of PARAM_DEFINITIONS) {
-      if (scenarioParams[def.key] !== undefined) {
-        if (def.isDim) {
-          cloned.dimensions[def.key] = scenarioParams[def.key];
-        } else {
-          cloned[def.key] = scenarioParams[def.key];
-        }
-      }
-    }
-
-    if (analysis.geometryRecipe) {
-      cloned.geometryRecipe = JSON.parse(JSON.stringify(analysis.geometryRecipe));
-      if (cloned.geometryRecipe.gear) {
-        if (scenarioParams.teeth !== undefined) cloned.geometryRecipe.gear.teeth = scenarioParams.teeth;
-        if (scenarioParams.module !== undefined) cloned.geometryRecipe.gear.module = scenarioParams.module;
-        if (scenarioParams.helixAngle !== undefined) cloned.geometryRecipe.gear.helixAngle = scenarioParams.helixAngle;
-        if (scenarioParams.height !== undefined) cloned.geometryRecipe.gear.faceWidth = scenarioParams.height;
-        if (scenarioParams.thickness !== undefined && scenarioParams.height === undefined) cloned.geometryRecipe.gear.faceWidth = scenarioParams.thickness;
-        if (scenarioParams.innerDiameter !== undefined) cloned.geometryRecipe.gear.boreRadius = scenarioParams.innerDiameter / 2;
-      }
-      if (cloned.geometryRecipe.depth) {
-        if (scenarioParams.height !== undefined) cloned.geometryRecipe.depth = scenarioParams.height;
-        else if (scenarioParams.thickness !== undefined) cloned.geometryRecipe.depth = scenarioParams.thickness;
-        else if (scenarioParams.length !== undefined) cloned.geometryRecipe.depth = scenarioParams.length;
-      }
-    }
-
-    return cloned;
-  }, [analysis, scenarioParams, isGeometryValid]);
+  }, [currentAnalysis, effectiveScenarioParams]);
 
   // Approximate material volume impact
   const materialVolumeImpact = useMemo(() => {
-    if (!analysis) return null;
-    const od0 = analysis.dimensions?.outerDiameter;
-    const id0 = analysis.dimensions?.innerDiameter || 0;
-    const h0 = analysis.dimensions?.height || analysis.dimensions?.thickness;
+    if (!currentAnalysis) return null;
+    const od0 = getParameterValue(currentAnalysis, 'outerDiameter');
+    const id0 = getParameterValue(currentAnalysis, 'innerDiameter') || 0;
+    const h0 = getParameterValue(currentAnalysis, 'height');
     if (typeof od0 !== 'number' || typeof h0 !== 'number' || od0 <= 0 || h0 <= 0) {
       return null;
     }
 
-    const odS = scenarioParams.outerDiameter ?? od0;
-    const idS = scenarioParams.innerDiameter ?? id0;
-    const hS = scenarioParams.height ?? (scenarioParams.thickness ?? h0);
+    const odS = effectiveScenarioParams.outerDiameter ?? od0;
+    const idS = effectiveScenarioParams.innerDiameter ?? id0;
+    const hS = effectiveScenarioParams.height ?? (effectiveScenarioParams.thickness ?? h0);
 
     if (odS <= 0 || hS <= 0 || idS >= odS) return null;
 
@@ -2734,11 +2959,11 @@ function Workbench() {
       deltaCm3: `${sign}${deltaVCm3}`,
       pct: `${sign}${pctV.toFixed(1)}%`,
     };
-  }, [analysis, scenarioParams]);
+  }, [currentAnalysis, effectiveScenarioParams]);
 
   // Deterministic warnings and impact status
   const { warnings, impactStatus } = useMemo(() => {
-    if (!analysis) return { warnings: [], impactStatus: 'STABLE' };
+    if (!currentAnalysis) return { warnings: [], impactStatus: 'STABLE' };
     if (!isGeometryValid) {
       return {
         warnings: [geometryError || 'Invalid geometric configuration.'],
@@ -2751,11 +2976,11 @@ function Workbench() {
     let hasCriticalChange = false;
 
     for (const def of PARAM_DEFINITIONS) {
-      if (!isParamActive(def, analysis)) continue;
-      const baseVal = def.isDim ? analysis.dimensions?.[def.key] : analysis[def.key];
+      if (!isParamActive(def, currentAnalysis)) continue;
+      const baseVal = getParameterValue(currentAnalysis, def.key);
       if (typeof baseVal !== 'number' || !isFinite(baseVal)) continue;
 
-      const scenVal = scenarioParams[def.key] ?? baseVal;
+      const scenVal = effectiveScenarioParams[def.key] ?? baseVal;
       const absDiff = Math.abs(scenVal - baseVal);
       if (absDiff > 0.0001) {
         const pct = baseVal !== 0 ? Math.abs((scenVal - baseVal) / baseVal) * 100 : 0;
@@ -2787,7 +3012,7 @@ function Workbench() {
     }
 
     let status = 'STABLE';
-    if (Object.keys(scenarioParams).length > 0) {
+    if (Object.keys(effectiveScenarioParams).length > 0) {
       if (maxPct > 15) {
         status = 'HIGH IMPACT';
       } else if (maxPct >= 5 || hasCriticalChange) {
@@ -2798,10 +3023,107 @@ function Workbench() {
     }
 
     return { warnings: [...new Set(warnList)], impactStatus: status };
-  }, [currentAnalysis, scenarioParams, isGeometryValid, geometryError]);
+  }, [currentAnalysis, effectiveScenarioParams, isGeometryValid, geometryError]);
 
-  const activeReconstructionAnalysis = isGeometryValid && scenarioAnalysis ? scenarioAnalysis : currentAnalysis;
-  const modifiedCount = Object.keys(scenarioParams).length;
+  // Only confirmed changes are written to the analysis that drives the 3D model.
+  const activeReconstructionAnalysis = currentAnalysis;
+  const gearTypeNeedsConfirmation = Boolean(currentAnalysis)
+    && isGearTypeUnconfirmed(currentAnalysis)
+    && Boolean(
+      currentAnalysis.requiresGearTypeConfirmation ||
+      currentAnalysis.teeth ||
+      currentAnalysis.geometryRecipe?.gear ||
+      /gear|tooth|teeth|worm|rack/i.test(String(currentAnalysis.componentType || ''))
+    );
+  const modifiedCount = Object.keys(effectiveScenarioParams).length;
+
+  const handleToggleRecommendation = useCallback((key) => {
+    setDeselectedRecommendations(prev => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const handleResetRecommendations = useCallback(() => {
+    setDeselectedRecommendations({});
+  }, []);
+
+  // A confirmed gear type replaces the active analysis so 3D, drawings,
+  // CAD, FEA, health, manufacturing and cost all consume the same classification.
+  const handleConfirmGearType = useCallback((rawGearType) => {
+    const confirmedAnalysis = applyConfirmedGearType(currentAnalysis, rawGearType);
+    if (!confirmedAnalysis) return;
+
+    const targetId = activeComp?.id || machineryState?.primaryGear?.id;
+    const replaceAnalysis = (component) => (
+      component && (component.id === targetId || (!targetId && component === machineryState?.primaryGear))
+        ? { ...component, analysis: confirmedAnalysis }
+        : component
+    );
+    const nextMachineryState = {
+      ...machineryState,
+      primaryGear: replaceAnalysis(machineryState?.primaryGear),
+      companionGear: replaceAnalysis(machineryState?.companionGear),
+      additionalComponents: (machineryState?.additionalComponents || []).map(replaceAnalysis),
+    };
+
+    const nextDecisions = { ...decisions, ...getGeometryDecisionOverrides(confirmedAnalysis) };
+    setAnalysis(confirmedAnalysis);
+    setMachineryState(nextMachineryState);
+    setLastAnalyzedSnapshot(createMachinerySnapshot(nextMachineryState));
+    setDecisions(nextDecisions);
+    saveManufacturingState(nextDecisions, confirmedCategories);
+    setMfgData(null);
+    setActiveDraftSelection(null);
+    setDeselectedRecommendations({});
+  }, [
+    activeComp?.id,
+    confirmedCategories,
+    currentAnalysis,
+    decisions,
+    machineryState,
+  ]);
+
+  const handleConfirmScenario = useCallback(() => {
+    if (!currentAnalysis || !isGeometryValid || Object.keys(effectiveScenarioParams).length === 0) return;
+
+    const confirmedAnalysis = applyScenarioToAnalysis(currentAnalysis, effectiveScenarioParams);
+    const targetId = activeComp?.id || machineryState?.primaryGear?.id;
+    const replaceAnalysis = component => (
+      component && (component.id === targetId || (!targetId && component === machineryState?.primaryGear))
+        ? { ...component, analysis: confirmedAnalysis }
+        : component
+    );
+    const nextMachineryState = {
+      ...machineryState,
+      primaryGear: replaceAnalysis(machineryState?.primaryGear),
+      companionGear: replaceAnalysis(machineryState?.companionGear),
+      additionalComponents: (machineryState?.additionalComponents || []).map(replaceAnalysis),
+    };
+
+    // Cost and report panels consume manufacturing decisions. Re-derive their
+    // geometry from the same confirmed analysis so no panel keeps stale values.
+    const nextDecisions = { ...decisions, ...getGeometryDecisionOverrides(confirmedAnalysis) };
+
+    setAnalysis(confirmedAnalysis);
+    setMachineryState(nextMachineryState);
+    setLastAnalyzedSnapshot(createMachinerySnapshot(nextMachineryState));
+    setDecisions(nextDecisions);
+    saveManufacturingState(nextDecisions, confirmedCategories);
+    setMfgData(null);
+    setActiveDraftSelection(null);
+    setScenarioParams({});
+    setDeselectedRecommendations({});
+    setActiveTab('workbench');
+  }, [
+    activeComp?.id,
+    confirmedCategories,
+    currentAnalysis,
+    decisions,
+    effectiveScenarioParams,
+    isGeometryValid,
+    machineryState,
+    setAnalysis,
+    setMachineryState,
+    setLastAnalyzedSnapshot,
+  ]);
 
   return (
     <>
@@ -2826,6 +3148,14 @@ function Workbench() {
           onToggleGrid={() => setGrid(g => !g)}
           dims={dims}
           onToggleDims={() => setDims(d => !d)}
+          illumination={illumination}
+          onToggleIllumination={() => setIllumination(on => !on)}
+          illuminationIntensity={illuminationIntensity}
+          onChangeIlluminationIntensity={setIlluminationIntensity}
+          modelBaseColor={modelBaseColor}
+          onChangeModelBaseColor={setModelBaseColor}
+          viewportBackgroundColor={viewportBackgroundColor}
+          onChangeViewportBackgroundColor={setViewportBackgroundColor}
           onResetView={() => setResetKey(k => k + 1)}
           viewMode={viewMode}
           onChangeViewMode={setViewMode}
@@ -2902,6 +3232,8 @@ function Workbench() {
               hoveredFeatureId={hoveredFeatureId}
               onSelectFeature={setSelectedFeatureId}
               onHoverFeature={setHoveredFeatureId}
+              dims={dims}
+              onToggleDims={() => setDims(d => !d)}
               machineryState={machineryState}
               setMachineryState={setMachineryState}
               activeComponentId={activeComponentId}
@@ -3000,11 +3332,37 @@ function Workbench() {
 
                 <div className="cad viewport-status" aria-live="polite">
                   {ready
-                    ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
+                    ? <>● {label}{conf != null ? ` · CONFIDENCE ${conf}%` : ''}{geometrySourceLabel ? ` · ${geometrySourceLabel}` : ''}<br /><span>AI RECONSTRUCTED FROM {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED{modifiedCount > 0 ? ' · WHAT-IF SCENARIO ACTIVE' : ''}</span></>
                     : <>● {label || 'NO ANALYSIS'} · {analysis ? stage.toUpperCase() : 'AWAITING SYNTHESIS'}<br /><span>AI GENERATED VIEW · {images.length} VIEW{images.length === 1 ? '' : 'S'} STAGED</span></>}
                 </div>
 
-                {!analysis ? (
+                <ReconstructionProgress
+                  progress={reconstructionProgress}
+                  onCancel={cancelReconstruction}
+                  onRetry={retryReconstruction}
+                />
+
+                {gearTypeNeedsConfirmation && (
+                  <div className="gear-type-confirmation" role="alert">
+                    <div className="gear-type-confirmation-copy">
+                      <strong>GEAR TYPE UNCONFIRMED</strong>
+                      <span>Tooth count alone does not identify the tooth form. Select the type before accepting geometry, CAD or health results.</span>
+                    </div>
+                    <select
+                      className="gear-type-confirmation-select"
+                      value=""
+                      aria-label="Confirm gear type"
+                      onChange={(event) => handleConfirmGearType(event.target.value)}
+                    >
+                      <option value="" disabled>Confirm gear type…</option>
+                      {GEAR_TYPES.filter((type) => type !== 'unknown').map((type) => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {!currentAnalysis ? (
                   <div className="viewport-hint">
                     <Icon>view_in_ar</Icon>
                     <p>No component analysis yet.<br />Run synthesis from the upload page or load a sample part.</p>
@@ -3035,10 +3393,16 @@ function Workbench() {
                     wire={wire}
                     grid={grid}
                     stress={stress}
+                    dims={dims}
                     autoRotate={autoRotate}
+                    illumination={illumination}
+                    illuminationIntensity={illuminationIntensity}
+                    theme={theme}
                     resetKey={resetKey}
                     selectedFeatureId={selectedFeatureId}
                     hoveredFeatureId={hoveredFeatureId}
+                    modelBaseColor={modelBaseColor}
+                    viewportBackgroundColor={viewportBackgroundColor}
                     ready={ready}
                     onOpenImageManager={() => {
                       setSelectedContextTool('components');
@@ -3046,17 +3410,6 @@ function Workbench() {
                       handleToggleLeftPanel(true);
                     }}
                   />
-                )}
-
-                {ready && dims && (
-                  <div className="dims-overlay" aria-label="Component dimensions">
-                    {dimensionList(activeReconstructionAnalysis).map(d => (
-                      <div className="dims-row" key={d.label}>
-                        <span className="dims-label">{d.label}</span>
-                        <span className="dims-value">{d.value}</span>
-                      </div>
-                    ))}
-                  </div>
                 )}
 
                 {/* Floating PiP Toggle Button */}
@@ -3278,10 +3631,15 @@ function Workbench() {
                   setDims={setDims}
                   autoRotate={autoRotate}
                   setAutoRotate={setAutoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
                   resetKey={resetKey}
                   setResetKey={setResetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   label={label}
                   conf={conf}
                   onDockToMain={() => setPipVisible(false)}
@@ -3409,9 +3767,14 @@ function Workbench() {
             </div>
             <div className="report-editor-body">
               <WhatIfSimulator
-                analysis={analysis}
+                analysis={currentAnalysis}
                 scenarioParams={scenarioParams}
                 setScenarioParams={setScenarioParams}
+                recommendations={recommendations}
+                deselectedRecommendations={deselectedRecommendations}
+                onToggleRecommendation={handleToggleRecommendation}
+                onResetRecommendations={handleResetRecommendations}
+                onConfirm={handleConfirmScenario}
                 isGeometryValid={isGeometryValid}
                 geometryError={geometryError}
                 warnings={warnings}
@@ -3460,7 +3823,7 @@ function Workbench() {
       {/* 2D Engineering Drawing Modal */}
       {ready && showDrawing && (
         <EngineeringDrawingModal
-          analysis={analysis}
+          analysis={activeReconstructionAnalysis}
           manufacturingIntelligence={mfgData}
           onClose={() => setShowDrawing(false)}
         />
@@ -3469,8 +3832,8 @@ function Workbench() {
       {/* Classical Report Modal if triggered directly */}
       {showReport && (
         <EngineeringReportModal
-          analysis={analysis}
-          scenarioParams={scenarioParams}
+          analysis={currentAnalysis}
+          scenarioParams={effectiveScenarioParams}
           isGeometryValid={isGeometryValid}
           geometryError={geometryError}
           warnings={warnings}
@@ -3500,8 +3863,8 @@ class ErrorBoundary extends React.Component {
       return (
         <div style={{
           padding: '40px',
-          color: '#DE822B',
-          background: '#0c0805',
+          color: 'var(--error-accent, #DE822B)',
+          background: 'var(--error-bg, #0c0805)',
           fontFamily: "'JetBrains Mono', monospace",
           minHeight: '100vh',
           display: 'flex',
@@ -3511,7 +3874,7 @@ class ErrorBoundary extends React.Component {
           gap: '16px',
         }}>
           <h2 style={{ letterSpacing: '0.08em', margin: 0 }}>SYSTEM NOTICE // REFORGE WORKSPACE RECOVERY</h2>
-          <p style={{ color: '#ff8585', maxWidth: '640px', textAlign: 'center', lineHeight: '1.6', fontSize: '13px' }}>
+          <p style={{ color: 'var(--error-text, #ff8585)', maxWidth: '640px', textAlign: 'center', lineHeight: '1.6', fontSize: '13px' }}>
             {this.state.error?.message || 'A render interruption occurred.'}
           </p>
           <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
@@ -3550,6 +3913,12 @@ function App() {
   });
 
   const toggleTheme = useCallback(() => {
+    document.documentElement?.classList.add('theme-animating');
+    if (themeTransitionTimerRef.current) window.clearTimeout(themeTransitionTimerRef.current);
+    themeTransitionTimerRef.current = window.setTimeout(() => {
+      document.documentElement?.classList.remove('theme-animating');
+      themeTransitionTimerRef.current = null;
+    }, 360);
     setTheme((prev) => {
       const next = prev === 'light' ? 'dark' : 'light';
       try {
@@ -3630,10 +3999,24 @@ function App() {
       }
     }
   }, [authState, page, setPage]);
+  useEffect(() => () => {
+    if (themeTransitionTimerRef.current) window.clearTimeout(themeTransitionTimerRef.current);
+  }, []);
+
+  const [page, setPage] = useState('home');
   const [images, setImages] = useState([]);
   const [analysis, setAnalysis] = useState(null);
   const [stage, setStage] = useState('idle');
   const [analysisVersion, setAnalysisVersion] = useState(0);
+  const [reconstructionReference, setReconstructionReference] = useState({});
+  const [reconstructionProgress, setReconstructionProgress] = useState(
+    () => createReconstructionProgress(1, RECONSTRUCTION_IDLE)
+  );
+  const reconstructionControllerRef = useRef(null);
+  const reconstructionAttemptRef = useRef(0);
+  const reconstructionCancelledRef = useRef(false);
+  const conditionRequestRef = useRef(null);
+  const themeTransitionTimerRef = useRef(null);
 
   // Machinery Context State
   const [machineryState, setMachineryState] = useState(() => createInitialMachineryState());
@@ -3824,6 +4207,172 @@ function App() {
     }
     setPage('upload');
   }, [setPage]);
+  const applyReconstructionProgress = useCallback((event) => {
+    setReconstructionProgress((previous) => applyReconstructionEvent(previous, event));
+  }, []);
+
+  const isReconstructionCancelled = useCallback(() => (
+    reconstructionCancelledRef.current || Boolean(reconstructionControllerRef.current?.signal.aborted)
+  ), []);
+
+  const cancelReconstruction = useCallback(() => {
+    reconstructionCancelledRef.current = true;
+    reconstructionControllerRef.current?.abort();
+    applyReconstructionProgress({ type: 'cancelled', message: 'Reconstruction cancelled.' });
+    setStage('idle');
+  }, [applyReconstructionProgress]);
+
+  const startReconstruction = useCallback(async () => {
+    const primary = machineryState?.primaryGear;
+    const companion = machineryState?.companionGear;
+    if (!primary?.images?.length) return;
+
+    reconstructionControllerRef.current?.abort();
+    const attempt = reconstructionAttemptRef.current + 1;
+    reconstructionAttemptRef.current = attempt;
+    reconstructionCancelledRef.current = false;
+
+    const controller = new AbortController();
+    reconstructionControllerRef.current = controller;
+    setReconstructionProgress(createReconstructionProgress(attempt, RECONSTRUCTION_RUNNING));
+    setStage('analysing');
+
+    try {
+      const primaryRef = buildReference(reconstructionReference);
+      const pAnalysis = await analyzeComponent(primary.images, primaryRef, {
+        onProgress: (event) => applyReconstructionProgress({ ...event, attempt }),
+        signal: controller.signal,
+        // The backend already retries model candidates and optional services.
+        // A whole-pipeline retry here duplicates every expensive stage.
+        retries: 0,
+      });
+      if (reconstructionCancelledRef.current) return;
+
+      let cAnalysis = null;
+      if (companion?.images?.length) {
+        applyReconstructionProgress({
+          stage: 'dataset-matching',
+          status: 'running',
+          attempt,
+          message: 'Analysing companion gear…',
+        });
+        cAnalysis = await analyzeComponent(companion.images, {}, {
+          signal: controller.signal,
+          retries: 0,
+        });
+        if (reconstructionCancelledRef.current) return;
+        applyReconstructionProgress({
+          stage: 'dataset-matching',
+          status: 'complete',
+          attempt,
+          message: 'Companion gear matched.',
+        });
+      }
+      if (reconstructionCancelledRef.current) return;
+
+      const updatedMachinery = {
+        ...machineryState,
+        primaryGear: {
+          ...machineryState.primaryGear,
+          analysis: pAnalysis,
+          reference: primaryRef,
+        },
+        companionGear: machineryState.companionGear
+          ? { ...machineryState.companionGear, analysis: cAnalysis }
+          : null,
+      };
+      setMachineryState(updatedMachinery);
+      setLastAnalyzedSnapshot(createMachinerySnapshot(updatedMachinery));
+      setAnalysis(pAnalysis);
+      setActiveComponentId(primary.id);
+      setStage('extracting');
+      setPage('workbench');
+    } catch (error) {
+      if (isCancellationError(error) || controller.signal.aborted || reconstructionCancelledRef.current) {
+        reconstructionCancelledRef.current = true;
+        applyReconstructionProgress({ type: 'cancelled', attempt, message: 'Reconstruction cancelled.' });
+        setStage('idle');
+        return;
+      }
+      applyReconstructionProgress({
+        type: 'failed',
+        attempt,
+        message: error.message || 'Analysis failed. Please try again.',
+      });
+      setStage('idle');
+    }
+  }, [
+    machineryState,
+    reconstructionReference,
+    setMachineryState,
+    setLastAnalyzedSnapshot,
+    setAnalysis,
+    setActiveComponentId,
+    setStage,
+    setPage,
+    applyReconstructionProgress,
+  ]);
+
+  const retryReconstruction = useCallback(() => {
+    startReconstruction();
+  }, [startReconstruction]);
+
+  // Condition evidence is image-space diagnostics. It is fetched only when a
+  // user opens the health panel or heatmap, never during geometry build.
+  const ensureConditionAssessment = useCallback(async (targetAnalysis, componentImages = []) => {
+    if (!targetAnalysis || targetAnalysis.conditionAssessment) return;
+    if (!Array.isArray(componentImages) || componentImages.length === 0) return;
+    if (conditionRequestRef.current === targetAnalysis) return;
+    conditionRequestRef.current = targetAnalysis;
+
+    try {
+      const conditionAssessment = await analyzeCondition(componentImages, targetAnalysis);
+      if (!conditionAssessment) return;
+      const enrichedAnalysis = { ...targetAnalysis, conditionAssessment };
+      let primaryGear = machineryState.primaryGear;
+      let companionGear = machineryState.companionGear;
+      let additionalComponents = machineryState.additionalComponents;
+      let changed = false;
+
+      if (primaryGear?.analysis === targetAnalysis) {
+        primaryGear = { ...primaryGear, analysis: enrichedAnalysis };
+        changed = true;
+      }
+      if (companionGear?.analysis === targetAnalysis) {
+        companionGear = { ...companionGear, analysis: enrichedAnalysis };
+        changed = true;
+      }
+      if (Array.isArray(additionalComponents) && additionalComponents.some((comp) => comp.analysis === targetAnalysis)) {
+        additionalComponents = additionalComponents.map((comp) => (
+          comp.analysis === targetAnalysis ? { ...comp, analysis: enrichedAnalysis } : comp
+        ));
+        changed = true;
+      }
+
+      setAnalysis((previous) => previous === targetAnalysis ? enrichedAnalysis : previous);
+      if (changed) {
+        const nextMachineryState = {
+          ...machineryState,
+          primaryGear,
+          companionGear,
+          additionalComponents,
+        };
+        setMachineryState(nextMachineryState);
+        setLastAnalyzedSnapshot(createMachinerySnapshot(nextMachineryState));
+      }
+    } catch (error) {
+      console.warn('Condition analysis failed:', error?.message || error);
+    } finally {
+      conditionRequestRef.current = null;
+    }
+  }, [
+    machineryState,
+    setAnalysis,
+    setMachineryState,
+    setLastAnalyzedSnapshot,
+  ]);
+
+  useEffect(() => () => reconstructionControllerRef.current?.abort(), []);
 
   const isDirty = useMemo(() => {
     return hasDirtyContext(machineryState, lastAnalyzedSnapshot);
@@ -3840,13 +4389,21 @@ function App() {
       // Re-run analysis for primary if it has images
       let pAnalysis = primary?.analysis;
       if (primary?.images?.length) {
-        pAnalysis = await analyzeComponent(primary.images, primary.reference || {});
+        pAnalysis = await analyzeComponent(primary.images, {
+          ...(primary.reference || {}),
+          name: primary.name || '',
+          notes: primary.notes || '',
+        });
       }
 
       // Re-run analysis for companion if it has images
       let cAnalysis = companion?.analysis;
       if (companion?.images?.length) {
-        cAnalysis = await analyzeComponent(companion.images, companion.reference || {});
+        cAnalysis = await analyzeComponent(companion.images, {
+          ...(companion.reference || {}),
+          name: companion.name || '',
+          notes: companion.notes || '',
+        });
       }
 
       // Re-run analysis for additions that have images
@@ -3854,7 +4411,11 @@ function App() {
         additions.map(async (comp) => {
           if (comp.images?.length) {
             try {
-              const compAnalysis = await analyzeComponent(comp.images, comp.reference || {});
+              const compAnalysis = await analyzeComponent(comp.images, {
+                ...(comp.reference || {}),
+                name: comp.name || '',
+                notes: comp.notes || '',
+              });
               return { ...comp, analysis: compAnalysis };
             } catch {
               return comp;
@@ -3888,6 +4449,7 @@ function App() {
     setImages(next);
     setAnalysis(null);
     setStage('idle');
+    setReconstructionProgress(createReconstructionProgress(1, RECONSTRUCTION_IDLE));
   }, []);
 
   const updateAnalysis = useCallback((result) => {
@@ -3901,6 +4463,14 @@ function App() {
     analysis, setAnalysis: updateAnalysis,
     stage, setStage,
     analysisVersion,
+    reconstructionReference, setReconstructionReference,
+    reconstructionProgress,
+    applyReconstructionProgress,
+    startReconstruction,
+    cancelReconstruction,
+    retryReconstruction,
+    isReconstructionCancelled,
+    ensureConditionAssessment,
     machineryState, setMachineryState,
     lastAnalyzedSnapshot, setLastAnalyzedSnapshot,
     viewMode, setViewMode,
@@ -3920,6 +4490,9 @@ function App() {
     startNewReconstruction,
   }), [
     page, images, analysis, stage, updateImages, updateAnalysis, analysisVersion,
+    reconstructionReference, reconstructionProgress, applyReconstructionProgress,
+    startReconstruction, cancelReconstruction, retryReconstruction, isReconstructionCancelled,
+    ensureConditionAssessment,
     machineryState, lastAnalyzedSnapshot, viewMode, activeComponentId,
     selectedComponentIds, handleRegenerate, isRegenerating, isDirty,
     theme, toggleTheme, currentWorkbenchId, currentWorkbenchName, saveStatus,
@@ -3968,7 +4541,13 @@ function App() {
   );
 }
 
-createRoot(document.getElementById('root')).render(
+// Vite can re-evaluate the entry module during HMR. Reusing the same root
+// prevents a second createRoot() on #root and the stale-node removeChild crash.
+const rootContainer = document.getElementById('root');
+const appRoot = rootContainer._reforgeAppRoot || createRoot(rootContainer);
+rootContainer._reforgeAppRoot = appRoot;
+
+appRoot.render(
   <ErrorBoundary>
     <AuthProvider>
       <App />

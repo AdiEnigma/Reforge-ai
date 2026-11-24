@@ -71,7 +71,12 @@ export function ManageComponentsTab({
     setAnalyzingCompIds((prev) => new Set([...prev, targetId]));
     try {
       const payloadImages = Array.from(files).map((f) => ({ file: f, id: Math.random().toString() }));
-      const result = await analyzeComponent(payloadImages, {});
+      const targetComp = targetId === primary?.id ? primary : (targetId === companion?.id ? companion : additional.find(c => c.id === targetId));
+      const result = await analyzeComponent(payloadImages, {
+        ...(targetComp?.reference || {}),
+        name: targetComp?.name || '',
+        notes: targetComp?.notes || '',
+      });
       if (result) {
         setMachineryState((prevState) => {
           let next = { ...prevState };

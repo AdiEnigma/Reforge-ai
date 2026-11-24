@@ -112,7 +112,7 @@ export function dimension({
   textY,
   value,
   label,
-  source = "geometryRecipe", // "geometryRecipe" | "analysis"
+  source = "geometryRecipe", // "geometryRecipe" | "reconstructedGeometry" | "analysis"
   confidence = 1.0,
   orientation = "horizontal", // "horizontal" | "vertical" | "aligned" | "radial"
   offset = 20,
@@ -133,7 +133,7 @@ export function dimension({
     confidence: Number(confidence) || 1.0,
     orientation,
     offset: Number(offset) || 20,
-    isEstimated: source !== "geometryRecipe",
+    isEstimated: !["geometryRecipe", "reconstructedGeometry"].includes(source),
     ...options,
   };
 }

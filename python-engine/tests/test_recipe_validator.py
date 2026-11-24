@@ -601,3 +601,42 @@ def test_status_consistency():
     assert spec_rej.status == "rejected"
     assert len(spec_rej.errors) > 0
 
+
+# ---------------------------------------------------------------------------
+# M. Operator A & D (Universal Axial Segments & Booleans)
+# ---------------------------------------------------------------------------
+
+def test_axial_segments_continuous_assembly_valid():
+    """Continuous 3-stage axial assembly (journal + gear + journal) validates cleanly."""
+    recipe = {
+        "axialSegments": [
+            {"z_start": -80.0, "z_end": -20.0, "outer_radius": 14.0, "label": "Drive Journal"},
+            {"z_start": -20.0, "z_end": 20.0, "outer_radius": 32.0, "teeth": 16, "module": 3.5, "label": "Pinion Section"},
+            {"z_start": 20.0, "z_end": 80.0, "outer_radius": 12.0, "label": "Support Journal"},
+        ],
+        "booleans": [
+            {"type": "keyway", "width": 5.0, "height": 3.0, "length": 35.0, "cx": 0.0, "cy": 0.0, "cz": -50.0},
+        ],
+    }
+    spec = validate_recipe(recipe)
+    assert spec.status == "ok"
+    assert spec.spec["style"] == "axial_segments"
+    assert len(spec.spec["axialSegments"]) == 3
+    assert len(spec.spec["booleans"]) == 1
+    assert spec.spec["axialSegments"][1]["teeth"] == 16
+
+
+def test_axial_segments_discontinuity_warning():
+    """Gaps between adjacent axial segments produce a clear continuity warning without rejecting valid parts."""
+    recipe = {
+        "style": "axial_segments",
+        "axialSegments": [
+            {"z_start": 0.0, "z_end": 25.0, "outer_radius": 20.0},
+            {"z_start": 30.0, "z_end": 60.0, "outer_radius": 15.0},  # 5mm gap
+        ],
+    }
+    spec = validate_recipe(recipe)
+    assert spec.status == "ok"
+    assert any("Discontinuity" in w for w in spec.warnings)
+
+

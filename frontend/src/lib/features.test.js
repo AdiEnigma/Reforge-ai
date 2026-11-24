@@ -194,6 +194,26 @@ test("Test 4d: Priority sorting: Bore -> Mounting Holes -> Keyway -> Gear Teeth 
   assert.deepStrictEqual(types, ["bore", "mounting_hole", "keyway", "gear_teeth", "shoulder"]);
 });
 
+test("Test 4e: Neural/Surface Mesh feature extraction binds bores, faces, and body", () => {
+  const analysis = {
+    componentType: "connecting rod",
+    geometryRecipe: {
+      style: "mesh",
+      meshData: {
+        features: [
+          { id: "feature-bore-1", type: "bore", label: "Crank Pin Bore Ø40mm", radius: 20, depth: 25 },
+          { id: "feature-mounting-holes-1", type: "mounting_hole", label: "Cap Bolt Hole Ø8mm", radius: 4, depth: 25 },
+          { id: "feature-face-1", type: "mounting_face", label: "Machined Parting Face", width: 50, height: 25 },
+        ],
+      },
+    },
+  };
+  const features = normalizeFeatures(analysis);
+  assert.ok(features.some((f) => f.id === "feature-bore-1"), "Should extract bore from mesh features");
+  assert.ok(features.some((f) => f.id === "feature-mounting-holes-1"), "Should extract mounting hole from mesh features");
+  assert.ok(features.some((f) => f.type === "other"), "Should include 3D surface manifold body");
+});
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

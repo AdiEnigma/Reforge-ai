@@ -24,7 +24,17 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 # ---------------------------------------------------------------------------
 # Constants matching backend/gemini.js and backend/geometry-volume.js
 # ---------------------------------------------------------------------------
-COMPONENT_STYLES = ("revolved", "extruded", "gear", "combination")
+COMPONENT_STYLES = (
+    "axial_segments",
+    "extruded",
+    "revolved",
+    "composition",
+    "gear",
+    "combination",
+    "compound_gear",
+    "pinion_shaft",
+    "flanged_shaft",
+)
 PRIMITIVE_KINDS = ("box", "cylinder", "sphere", "cone", "torus")
 
 RECIPE_LIMITS = {
@@ -523,20 +533,109 @@ def validate_recipe(
             if clean_prims:
                 spec["primitives"] = clean_prims
 
+    # 7b. Axial Segments Validation (OPERATOR A)
+    raw_segments = recipe.get("axialSegments") or recipe.get("segments")
+    if raw_segments is not None:
+        if not isinstance(raw_segments, list):
+            errors.append("axialSegments must be a list.")
+        elif len(raw_segments) == 0:
+            errors.append("axialSegments cannot be empty.")
+        else:
+            clean_segments = []
+            for idx, seg in enumerate(raw_segments):
+                if not isinstance(seg, dict):
+                    errors.append(f"Axial segment at index {idx} must be a dictionary.")
+                    continue
+                z_start = _clean_number(seg.get("z_start") if "z_start" in seg else seg.get("zStart"))
+                z_end = _clean_number(seg.get("z_end") if "z_end" in seg else seg.get("zEnd"))
+                radius = _clean_number(seg.get("outer_radius") if "outer_radius" in seg else (seg.get("radius") or seg.get("outerRadius")))
+                inner_r = _clean_number(seg.get("inner_radius") if "inner_radius" in seg else (seg.get("boreRadius") or seg.get("innerRadius"))) or 0.0
+
+                if z_start is None or z_end is None or radius is None:
+                    errors.append(f"Axial segment at index {idx} missing required z_start, z_end, or outer_radius.")
+                    continue
+                if z_end <= z_start:
+                    errors.append(f"Axial segment at index {idx} has invalid axial length (z_end {z_end} <= z_start {z_start}).")
+                    continue
+                if radius <= 0:
+                    errors.append(f"Axial segment at index {idx} has non-positive outer_radius: {radius}")
+                    continue
+                if inner_r < 0 or inner_r >= radius:
+                    errors.append(f"Axial segment at index {idx} has invalid inner_radius {inner_r} >= outer_radius {radius}")
+                    continue
+
+                clean_seg: Dict[str, Any] = {
+                    "z_start": z_start,
+                    "z_end": z_end,
+                    "outer_radius": radius,
+                    "inner_radius": inner_r,
+                    "label": seg.get("label", f"Segment {idx + 1}"),
+                }
+
+                # Optional gear parameters
+                teeth = _clean_number(seg.get("teeth"))
+                if teeth is not None and teeth >= 3:
+                    clean_seg["teeth"] = int(round(teeth))
+                    mod = _clean_number(seg.get("module")) or ((radius * 2.0) / (clean_seg["teeth"] + 2.0))
+                    clean_seg["module"] = mod
+                    clean_seg["pressure_angle"] = _clean_number(seg.get("pressure_angle") or seg.get("pressureAngle")) or 20.0
+                    clean_seg["helix_angle"] = _clean_number(seg.get("helix_angle") or seg.get("helixAngle")) or 0.0
+
+                # Optional spline parameters
+                splines = _clean_number(seg.get("spline_count") or seg.get("splineCount"))
+                if splines is not None and splines >= 2:
+                    clean_seg["spline_count"] = int(round(splines))
+                    clean_seg["spline_depth"] = _clean_number(seg.get("spline_depth") or seg.get("splineDepth")) or (radius * 0.16)
+
+                clean_segments.append(clean_seg)
+
+            if clean_segments:
+                clean_segments.sort(key=lambda s: s["z_start"])
+                # Check axial continuity
+                for i in range(len(clean_segments) - 1):
+                    gap = abs(clean_segments[i + 1]["z_start"] - clean_segments[i]["z_end"])
+                    if gap > 1e-3:
+                        warnings.append(
+                            f"Discontinuity detected between axial segment {i} (end={clean_segments[i]['z_end']}) "
+                            f"and segment {i+1} (start={clean_segments[i+1]['z_start']}): gap={gap:.3f}mm."
+                        )
+                spec["axialSegments"] = clean_segments
+
+    # 7c. Boolean Features Validation (OPERATOR D)
+    raw_booleans = recipe.get("booleans") or recipe.get("features")
+    if isinstance(raw_booleans, list):
+        clean_booleans = []
+        for idx, feat in enumerate(raw_booleans):
+            if not isinstance(feat, dict):
+                continue
+            f_type = str(feat.get("type") or feat.get("operation") or "other").lower()
+            clean_feat: Dict[str, Any] = {"id": feat.get("id", f"bool-feat-{idx+1}"), "type": f_type}
+            for k in ["radius", "diameter", "depth", "length", "width", "height", "cx", "cy", "cz", "angle", "count"]:
+                val = _clean_number(feat.get(k))
+                if val is not None:
+                    clean_feat[k] = val
+            clean_booleans.append(clean_feat)
+        if clean_booleans:
+            spec["booleans"] = clean_booleans
+
     # 8. Style Inference if missing
     if not spec.get("style"):
-        if "gear" in spec:
+        if "axialSegments" in spec:
+            spec["style"] = "axial_segments"
+        elif "gear" in spec:
             spec["style"] = "gear"
         elif "revolvedProfile" in spec:
             spec["style"] = "revolved"
         elif "outline" in spec:
             spec["style"] = "extruded"
         elif "primitives" in spec:
-            spec["style"] = "combination"
+            spec["style"] = "composition"
 
     # Style-specific critical missing parameters
     style = spec.get("style")
-    if style == "revolved" and "revolvedProfile" not in spec:
+    if style == "axial_segments" and "axialSegments" not in spec:
+        missing.append("axialSegments")
+    elif style == "revolved" and "revolvedProfile" not in spec:
         missing.append("revolvedProfile")
     elif style == "extruded":
         if "outline" not in spec:

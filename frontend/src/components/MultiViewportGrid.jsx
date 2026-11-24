@@ -17,75 +17,46 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { buildModel, buildAssemblyScene, dimensionList, resolveLabel } from '../lib/reconstruct.js';
+import { createModelIllumination, DEFAULT_MODEL_ILLUMINATION_INTENSITY } from '../lib/model-illumination.js';
+import { createThreeThemeSync, getWireframeAppearance } from '../lib/three-theme.js';
 import { getAllComponents, ROLE_TYPES } from '../lib/machinery-context.js';
+import { build3DDimensionsGroup } from '../lib/three-dimensions.js';
+import { DamageHeatmapOverlay } from './DamageHeatmapOverlay.jsx';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
 );
-
-function createStressMaterial() {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      minStress: { value: 0.0 },
-      maxStress: { value: 1.0 },
-    },
-    vertexShader: `
-      varying vec3 vPosition;
-      varying vec3 vNormal;
-      void main() {
-        vPosition = position;
-        vNormal = normalMatrix * normal;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vPosition;
-      varying vec3 vNormal;
-
-      vec3 jetHeatmap(float val) {
-        float v = clamp(val, 0.0, 1.0);
-        return clamp(vec3(
-          1.5 - abs(v * 4.0 - 3.0),
-          1.5 - abs(v * 4.0 - 2.0),
-          1.5 - abs(v * 4.0 - 1.0)
-        ), 0.0, 1.0);
-      }
-
-      void main() {
-        float dist = length(vPosition.xy);
-        float curvature = length(cross(dFdx(vNormal), dFdy(vNormal))) * 5.0;
-        float stressFactor = clamp(sin(dist * 1.5) * 0.5 + 0.5 + curvature * 0.3, 0.0, 1.0);
-        vec3 lightDir = normalize(vec3(0.5, 1.0, 0.8));
-        float diff = max(dot(normalize(vNormal), lightDir), 0.25);
-        vec3 heatColor = jetHeatmap(stressFactor);
-        gl_FragColor = vec4(heatColor * diff, 1.0);
-      }
-    `,
-  });
-}
 
 /**
  * Individual 3D Viewport Card/Panel
  */
 function SingleViewportCanvas({
   analysis,
+  images = [],
   title = 'COMPONENT',
   isAssembly = false,
   machineryState = null,
   wire,
   grid,
   stress,
+  dims,
   autoRotate,
+  illumination = false,
+  illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY,
+  theme = 'dark',
   resetKey,
   selectedFeatureId,
   hoveredFeatureId,
+  modelBaseColor = null,
+  viewportBackgroundColor = null,
   onSelectComponent,
   headerControls = null,
 }) {
   const mount = useRef(null);
   const resetViewRef = useRef(null);
-  const options = useRef({ wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId });
-  options.current = { wire, grid, stress, autoRotate, selectedFeatureId, hoveredFeatureId };
+  const themeSyncRef = useRef(null);
+  const options = useRef({ wire, grid, stress, dims, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId, modelBaseColor, viewportBackgroundColor });
+  options.current = { wire, grid, stress, dims, autoRotate, illumination, illuminationIntensity, theme, selectedFeatureId, hoveredFeatureId, modelBaseColor, viewportBackgroundColor };
 
   if (!analysis && !isAssembly) {
     return (
@@ -96,8 +67,8 @@ function SingleViewportCanvas({
         </div>
         <div className="viewport-empty-slot" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }}>
           <Icon className="spin">sync</Icon>
-          <span style={{ fontSize: '13px', fontWeight: 600, letterSpacing: '0.05em', color: '#ffb77f' }}>AWAITING COMPONENT ANALYSIS…</span>
-          <span style={{ fontSize: '11px', color: '#a08875' }}>Upload or select photos in the left panel to reconstruct 3D CAD geometry.</span>
+          <span style={{ fontSize: '13px', fontWeight: 600, letterSpacing: '0.05em', color: 'var(--viewport-empty-primary, #ffb77f)' }}>AWAITING COMPONENT ANALYSIS…</span>
+          <span style={{ fontSize: '11px', color: 'var(--viewport-empty-muted, #a08875)' }}>Upload or select photos in the left panel to reconstruct 3D CAD geometry.</span>
         </div>
       </div>
     );
@@ -111,6 +82,23 @@ function SingleViewportCanvas({
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(typeof window !== 'undefined' ? window.devicePixelRatio : 1, 2));
     host.appendChild(renderer.domElement);
+    const ambient = new THREE.AmbientLight('#7a4a38', 0.65);
+    scene.add(ambient);
+    const key = new THREE.DirectionalLight('#ffb77f', 0.85);
+    key.position.set(6, 8, 10);
+    scene.add(key);
+    const fill = new THREE.PointLight('#b76308', 1.1, 30);
+    fill.position.set(-6, -4, 8);
+    scene.add(fill);
+    const themeSync = createThreeThemeSync({
+      scene,
+      renderer,
+      lights: { ambient, key, fill },
+      baseColor: options.current.modelBaseColor,
+      backgroundColor: options.current.viewportBackgroundColor,
+    });
+    themeSyncRef.current = themeSync;
+    themeSync.update(options.current.theme);
 
     let mainGroup;
     if (isAssembly && machineryState) {
@@ -121,14 +109,22 @@ function SingleViewportCanvas({
       mainGroup = group;
     }
     scene.add(mainGroup);
+    themeSync.update(options.current.theme, true);
+    const modelBounds = new THREE.Box3().setFromObject(mainGroup);
 
-    scene.add(new THREE.AmbientLight('#7a4a38', 0.65));
-    const key = new THREE.DirectionalLight('#ffb77f', 0.85);
-    key.position.set(6, 8, 10);
-    scene.add(key);
-    const fill = new THREE.PointLight('#b76308', 1.1, 30);
-    fill.position.set(-6, -4, 8);
-    scene.add(fill);
+    // 3D Technical Dimensions Overlay (Lines, Arrows, Extension Lines, Billboard Sprites)
+    const dimsOverlay = isAssembly ? new THREE.Group() : build3DDimensionsGroup(mainGroup, analysis);
+    dimsOverlay.visible = Boolean(dims);
+    scene.add(dimsOverlay);
+
+    const illuminationLight = createModelIllumination(scene, {
+      enabled: options.current.illumination,
+      intensity: options.current.illuminationIntensity,
+      theme: options.current.theme,
+      themeSync,
+      bounds: modelBounds,
+      camera,
+    });
 
     const gridHelper = new THREE.GridHelper(12, 14, '#544337', '#3d332c');
     gridHelper.position.z = -1.2;
@@ -140,7 +136,15 @@ function SingleViewportCanvas({
       if (node.isMesh) originals.set(node.uuid, node.material);
     });
 
-    const wireMaterial = new THREE.MeshBasicMaterial({ color: '#b5e67e', wireframe: true });
+    const wireAppearance = getWireframeAppearance(options.current.theme);
+    const wireMaterial = new THREE.MeshBasicMaterial({
+      color: wireAppearance.color,
+      wireframe: true,
+      transparent: true,
+      opacity: wireAppearance.opacity,
+      blending: wireAppearance.blending,
+      depthWrite: wireAppearance.depthWrite,
+    });
     const selectHighlightMat = new THREE.MeshStandardMaterial({
       color: '#c9f88d',
       emissive: '#c9f88d',
@@ -155,8 +159,6 @@ function SingleViewportCanvas({
       metalness: 0.5,
       roughness: 0.35,
     });
-    const stressMaterial = createStressMaterial();
-
     const compBox = new THREE.Box3().setFromObject(mainGroup);
     const compSize = compBox.getSize(new THREE.Vector3());
     const compMaxDim = Math.max(compSize.x, compSize.y, compSize.z, 1);
@@ -240,10 +242,27 @@ function SingleViewportCanvas({
       frame = requestAnimationFrame(animate);
       if (options.current.autoRotate) view.theta += 0.005;
       gridHelper.visible = options.current.grid;
+      dimsOverlay.visible = Boolean(options.current.dims);
+      themeSync.update(options.current.theme);
+      illuminationLight.update({
+        enabled: options.current.illumination,
+        intensity: options.current.illuminationIntensity,
+        theme: options.current.theme,
+      });
 
       const activeFeatureId = options.current.selectedFeatureId || options.current.hoveredFeatureId || null;
       const isSel = Boolean(options.current.selectedFeatureId);
-      const materialKey = `${options.current.wire ? 'w' : ''}${options.current.stress ? 's' : ''}|${activeFeatureId ?? ''}`;
+      const nextWireAppearance = getWireframeAppearance(options.current.theme);
+      if (wireMaterial.userData.theme !== options.current.theme) {
+        wireMaterial.color.set(nextWireAppearance.color);
+        wireMaterial.opacity = nextWireAppearance.opacity;
+        wireMaterial.blending = nextWireAppearance.blending;
+        wireMaterial.depthWrite = nextWireAppearance.depthWrite;
+        wireMaterial.transparent = true;
+        wireMaterial.needsUpdate = true;
+        wireMaterial.userData.theme = options.current.theme;
+      }
+      const materialKey = `${options.current.wire ? 'w' : ''}|${options.current.theme}|${activeFeatureId ?? ''}`;
 
       if (materialKey !== appliedKey) {
         appliedKey = materialKey;
@@ -258,8 +277,6 @@ function SingleViewportCanvas({
             (node.userData?.featureId === activeFeatureId || node.parent?.userData?.featureId === activeFeatureId)
           ) {
             node.material = isSel ? selectHighlightMat : hoverHighlightMat;
-          } else if (options.current.stress) {
-            node.material = stressMaterial;
           } else {
             node.material = originals.get(node.uuid) || node.material;
           }
@@ -289,14 +306,30 @@ function SingleViewportCanvas({
       mainGroup.traverse((node) => {
         if (node.geometry) node.geometry.dispose();
       });
+      dimsOverlay.traverse((node) => {
+        if (node.geometry) node.geometry.dispose();
+        if (node.material) {
+          if (Array.isArray(node.material)) node.material.forEach((m) => m.dispose());
+          else node.material.dispose();
+        }
+      });
       wireMaterial.dispose();
       selectHighlightMat.dispose();
       hoverHighlightMat.dispose();
-      stressMaterial.dispose();
+      illuminationLight.dispose();
+      themeSync.dispose();
+      themeSyncRef.current = null;
       renderer.dispose();
       host.replaceChildren();
     };
   }, [analysis, isAssembly, machineryState]);
+
+  useEffect(() => {
+    themeSyncRef.current?.setAppearance({
+      baseColor: modelBaseColor,
+      backgroundColor: viewportBackgroundColor,
+    });
+  }, [modelBaseColor, viewportBackgroundColor]);
 
   useEffect(() => {
     resetViewRef.current?.();
@@ -310,6 +343,30 @@ function SingleViewportCanvas({
         {headerControls}
       </div>
       <div className="single-viewport-mount" ref={mount} />
+      {dims && analysis && !isAssembly && (
+        <div className="viewport-dims-hud" aria-label="Component Dimensions">
+          <div className="dims-hud-title">
+            <Icon>straighten</Icon>
+            <span>DIMENSIONS (MM)</span>
+          </div>
+          <div className="dims-hud-items">
+            {dimensionList(analysis).map((d) => (
+              <div className="dims-hud-row" key={d.label}>
+                <span className="dims-hud-k">{d.label}</span>
+                <span className="dims-hud-v">{d.value}</span>
+                {d.status && (
+                  <span className={`dims-status-badge status-${(d.status || 'ESTIMATED').toLowerCase()}`}>
+                    {d.status === 'MEASURED' ? 'M' : d.status === 'UNKNOWN' ? '?' : 'EST'}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {stress && (
+        <DamageHeatmapOverlay analysis={analysis} images={images} />
+      )}
     </div>
   );
 }
@@ -354,10 +411,16 @@ export function MultiViewportGrid({
   wire,
   grid,
   stress,
+  dims,
   autoRotate,
+  illumination = false,
+  illuminationIntensity = DEFAULT_MODEL_ILLUMINATION_INTENSITY,
+  theme = 'dark',
   resetKey,
   selectedFeatureId,
   hoveredFeatureId,
+  modelBaseColor = null,
+  viewportBackgroundColor = null,
   ready,
   onOpenImageManager,
 }) {
@@ -578,11 +641,18 @@ export function MultiViewportGrid({
         {viewMode === 'single' && (
           <SingleViewportCanvas
             analysis={activeAnalysis}
+            images={activeComponent?.images}
             title={activeComponent?.name || resolveLabel(activeAnalysis)}
             wire={wire}
             grid={grid}
             stress={stress}
+            dims={dims}
             autoRotate={autoRotate}
+            illumination={illumination}
+            illuminationIntensity={illuminationIntensity}
+            theme={theme}
+            modelBaseColor={modelBaseColor}
+            viewportBackgroundColor={viewportBackgroundColor}
             resetKey={resetKey}
             selectedFeatureId={selectedFeatureId}
             hoveredFeatureId={hoveredFeatureId}
@@ -599,6 +669,7 @@ export function MultiViewportGrid({
               return (
                 <SingleViewportCanvas
                   analysis={analysis1}
+                  images={comp1?.images}
                   title={`VP 1 · ${comp1?.name || 'Primary Gear'}`}
                   headerControls={renderViewportDropdown(
                     dualAssignments[0],
@@ -608,7 +679,13 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -624,6 +701,7 @@ export function MultiViewportGrid({
               return (
                 <SingleViewportCanvas
                   analysis={analysis2}
+                  images={comp2?.images}
                   title={`VP 2 · ${comp2?.name || 'Companion Gear'}`}
                   headerControls={renderViewportDropdown(
                     dualAssignments[1],
@@ -633,7 +711,13 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -653,6 +737,7 @@ export function MultiViewportGrid({
               return (
                 <SingleViewportCanvas
                   analysis={comp1?.analysis || activeAnalysis}
+                  images={comp1?.images}
                   title={`1. ${comp1?.name || 'Primary Gear'}`}
                   headerControls={renderViewportDropdown(
                     quadAssignments[0],
@@ -662,7 +747,13 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -677,6 +768,7 @@ export function MultiViewportGrid({
               return (
                 <SingleViewportCanvas
                   analysis={comp2?.analysis || null}
+                  images={comp2?.images}
                   title={`2. ${comp2?.name || 'Companion Gear'}`}
                   headerControls={renderViewportDropdown(
                     quadAssignments[1],
@@ -686,7 +778,13 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -701,6 +799,7 @@ export function MultiViewportGrid({
               return (
                 <SingleViewportCanvas
                   analysis={comp3?.analysis || null}
+                  images={comp3?.images}
                   title={`3. ${comp3?.name || 'Gear 3'}`}
                   headerControls={renderViewportDropdown(
                     quadAssignments[2],
@@ -710,7 +809,13 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -746,6 +851,7 @@ export function MultiViewportGrid({
               return (
                 <SingleViewportCanvas
                   analysis={fallbackComp4?.analysis || null}
+                  images={fallbackComp4?.images}
                   title={`4. ${fallbackComp4?.name || 'Gear 4'}`}
                   headerControls={renderViewportDropdown(
                     quadAssignments[3],
@@ -755,7 +861,13 @@ export function MultiViewportGrid({
                   wire={wire}
                   grid={grid}
                   stress={stress}
+                  dims={dims}
                   autoRotate={autoRotate}
+                  illumination={illumination}
+                  illuminationIntensity={illuminationIntensity}
+                  theme={theme}
+                  modelBaseColor={modelBaseColor}
+                  viewportBackgroundColor={viewportBackgroundColor}
                   resetKey={resetKey}
                   selectedFeatureId={selectedFeatureId}
                   hoveredFeatureId={hoveredFeatureId}
@@ -771,11 +883,19 @@ export function MultiViewportGrid({
           <SingleViewportCanvas
             isAssembly={true}
             machineryState={machineryState}
+            analysis={primary?.analysis}
+            images={primary?.images}
             title="COMPLETE MACHINERY ASSEMBLY"
             wire={wire}
             grid={grid}
             stress={stress}
+            dims={dims}
             autoRotate={autoRotate}
+            illumination={illumination}
+            illuminationIntensity={illuminationIntensity}
+            theme={theme}
+            modelBaseColor={modelBaseColor}
+            viewportBackgroundColor={viewportBackgroundColor}
             resetKey={resetKey}
             selectedFeatureId={selectedFeatureId}
             hoveredFeatureId={hoveredFeatureId}
