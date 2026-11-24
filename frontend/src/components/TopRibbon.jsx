@@ -233,78 +233,6 @@ export function TopRibbon({
           </button>
 
           <button
-            className={`ribbon-item mini illumination-toggle-btn icon-only ${illumination ? 'active' : ''}`}
-            onClick={onToggleIllumination}
-            disabled={!ready || !onToggleIllumination}
-            title={illumination ? illuminationOnLabel : illuminationOffLabel}
-            aria-label={illumination ? illuminationOnLabel : illuminationOffLabel}
-            aria-pressed={illumination}
-          >
-            <Icon>lightbulb</Icon>
-          </button>
-
-          {illumination && (
-            <input
-              className="illumination-intensity"
-              type="range"
-              min={MODEL_ILLUMINATION_MIN_INTENSITY}
-              max={MODEL_ILLUMINATION_MAX_INTENSITY}
-              step={MODEL_ILLUMINATION_INTENSITY_STEP}
-              value={illuminationIntensity}
-              onChange={(event) => onChangeIlluminationIntensity?.(Number(event.target.value))}
-              disabled={!ready || !onChangeIlluminationIntensity}
-              title={`${intensityLabel}: ${Math.round(illuminationIntensity * 100)}%`}
-              aria-label={intensityLabel}
-            />
-          )}
-
-          <label className="ribbon-item mini ribbon-color-picker" title="Object base color (auto-generates metallic shades)">
-            <input
-              type="color"
-              value={modelBaseColor || '#b76308'}
-              onChange={(event) => onChangeModelBaseColor?.(event.target.value)}
-              disabled={!ready || !onChangeModelBaseColor}
-              aria-label="Object base color"
-              style={{ width: 28, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: ready ? 'pointer' : 'default' }}
-            />
-            {expanded && <span className="ribbon-label">Object</span>}
-          </label>
-          {modelBaseColor && (
-            <button
-              className="ribbon-item mini"
-              onClick={() => onChangeModelBaseColor?.(null)}
-              disabled={!ready}
-              title="Reset object color"
-              aria-label="Reset object color"
-            >
-              <Icon>format_color_reset</Icon>
-            </button>
-          )}
-
-          <label className="ribbon-item mini ribbon-color-picker" title="Viewport background color">
-            <input
-              type="color"
-              value={viewportBackgroundColor || (theme === 'light' ? '#dfe3e8' : '#140d07')}
-              onChange={(event) => onChangeViewportBackgroundColor?.(event.target.value)}
-              disabled={!ready || !onChangeViewportBackgroundColor}
-              aria-label="Viewport background color"
-              style={{ width: 28, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: ready ? 'pointer' : 'default' }}
-            />
-            {expanded && <span className="ribbon-label">BG</span>}
-          </label>
-          {viewportBackgroundColor && (
-            <button
-              className="ribbon-item mini"
-              onClick={() => onChangeViewportBackgroundColor?.(null)}
-              disabled={!ready}
-              title="Reset background color"
-              aria-label="Reset background color"
-            >
-              <Icon>format_color_reset</Icon>
-            </button>
-          )}
-
-          <button
             className="ribbon-item mini"
             onClick={onResetView}
             disabled={!ready}
@@ -314,6 +242,84 @@ export function TopRibbon({
             <Icon>restart_alt</Icon>
             {expanded && <span className="ribbon-label">Reset</span>}
           </button>
+
+          <div className="ribbon-colors-cluster" title="Model & Viewport Colors">
+            <div className="ribbon-color-group" title="Object base color (auto-generates metallic shades)">
+              <label className="ribbon-item mini ribbon-color-picker">
+                <input
+                  type="color"
+                  value={modelBaseColor || '#b76308'}
+                  onChange={(event) => onChangeModelBaseColor?.(event.target.value)}
+                  disabled={!ready || !onChangeModelBaseColor}
+                  aria-label="Object base color"
+                />
+                {expanded && <span className="ribbon-label">Obj</span>}
+              </label>
+              {modelBaseColor && (
+                <button
+                  className="ribbon-color-reset-btn"
+                  onClick={() => onChangeModelBaseColor?.(null)}
+                  disabled={!ready}
+                  title="Reset object color to default"
+                  aria-label="Reset object color"
+                >
+                  <Icon>format_color_reset</Icon>
+                </button>
+              )}
+            </div>
+
+            <div className="ribbon-color-group" title="Viewport background color">
+              <label className="ribbon-item mini ribbon-color-picker">
+                <input
+                  type="color"
+                  value={viewportBackgroundColor || (theme === 'light' ? '#dfe3e8' : '#140d07')}
+                  onChange={(event) => onChangeViewportBackgroundColor?.(event.target.value)}
+                  disabled={!ready || !onChangeViewportBackgroundColor}
+                  aria-label="Viewport background color"
+                />
+                {expanded && <span className="ribbon-label">BG</span>}
+              </label>
+              {viewportBackgroundColor && (
+                <button
+                  className="ribbon-color-reset-btn"
+                  onClick={() => onChangeViewportBackgroundColor?.(null)}
+                  disabled={!ready}
+                  title="Reset background color to default"
+                  aria-label="Reset background color"
+                >
+                  <Icon>format_color_reset</Icon>
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="ribbon-illumination-group">
+            <button
+              className={`ribbon-item mini illumination-toggle-btn ${illumination ? 'active' : ''}`}
+              onClick={onToggleIllumination}
+              disabled={!ready || !onToggleIllumination}
+              title={illumination ? illuminationOnLabel : illuminationOffLabel}
+              aria-label={illumination ? illuminationOnLabel : illuminationOffLabel}
+              aria-pressed={illumination}
+            >
+              <Icon>lightbulb</Icon>
+              {expanded && <span className="ribbon-label">Light</span>}
+            </button>
+            {illumination && (
+              <input
+                className="illumination-intensity"
+                type="range"
+                min={MODEL_ILLUMINATION_MIN_INTENSITY}
+                max={MODEL_ILLUMINATION_MAX_INTENSITY}
+                step={MODEL_ILLUMINATION_INTENSITY_STEP}
+                value={illuminationIntensity}
+                onChange={(event) => onChangeIlluminationIntensity?.(Number(event.target.value))}
+                disabled={!ready || !onChangeIlluminationIntensity}
+                title={`${intensityLabel}: ${Math.round(illuminationIntensity * 100)}%`}
+                aria-label={intensityLabel}
+              />
+            )}
+          </div>
         </div>
         {expanded && <span className="ribbon-cat-title">3D TOOLS</span>}
       </div>
@@ -501,28 +507,30 @@ export function TopRibbon({
             </button>
           )}
 
-          {onToggleTheme && (
-            <button
-              className={`ribbon-item mini theme-toggle-btn icon-only ${theme === 'light' ? 'light-active' : ''}`}
-              onClick={onToggleTheme}
-              title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Theme`}
-              aria-label={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Theme`}
-            >
-              <Icon>{theme === 'light' ? 'dark_mode' : 'light_mode'}</Icon>
-            </button>
-          )}
+          <div className="ribbon-project-aux-row">
+            {onToggleTheme && (
+              <button
+                className={`ribbon-item mini theme-toggle-btn icon-only ${theme === 'light' ? 'light-active' : ''}`}
+                onClick={onToggleTheme}
+                title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Theme`}
+                aria-label={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Theme`}
+              >
+                <Icon>{theme === 'light' ? 'dark_mode' : 'light_mode'}</Icon>
+              </button>
+            )}
 
-          {ready ? (
-            <div className="ribbon-status-pill mini" title={`Active Model: ${label}`}>
-              <span className="ribbon-status-dot" />
-              <span className="ribbon-status-text">{label || 'ONLINE'}</span>
-            </div>
-          ) : (
-            <div className="ribbon-status-pill mini offline" title="Awaiting component synthesis">
-              <span className="ribbon-status-dot offline" />
-              <span className="ribbon-status-text">OFFLINE</span>
-            </div>
-          )}
+            {ready ? (
+              <div className="ribbon-status-pill mini" title={`Active Model: ${label}`}>
+                <span className="ribbon-status-dot" />
+                <span className="ribbon-status-text">{label || 'ONLINE'}</span>
+              </div>
+            ) : (
+              <div className="ribbon-status-pill mini offline" title="Awaiting component synthesis">
+                <span className="ribbon-status-dot offline" />
+                <span className="ribbon-status-text">OFFLINE</span>
+              </div>
+            )}
+          </div>
         </div>
         {expanded && <span className="ribbon-cat-title">EXPORT &amp; PROJECT</span>}
       </div>

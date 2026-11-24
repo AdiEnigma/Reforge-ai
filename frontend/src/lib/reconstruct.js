@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { buildGearFromRecipe, executeRecipe, sanitizeRecipe } from "./recipe.js";
 import { normalizeGearType } from "./gear-types.js";
-import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, buildBevelGearGroup, buildSteppedShaftGroup, buildCompoundGearGroup, buildFlangedShaftGroup, buildPinionShaftGroup, buildCapBushingGroup } from "./geo.js";
+import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape } from "./geo.js";
+import { executeGeometryProgram, generateGeometryProgram } from "./runtime-geometry-engine.js";
 
 // Built geometry is immutable for a given analysis object. Validation and each
 // viewport previously rebuilt the same meshes from scratch; share the geometry
@@ -653,36 +654,47 @@ export function buildModel(analysis) {
       recipe.style === "revolved" ||
       (!recipe.flange && (!recipe.holes || recipe.holes.length <= 1)));
 
-  // Detect if component is Circular Cap / Bushing / Bottle Cap
-  const isCapOrBushing =
+  // Primary Route: Execute exact engineering recipe (meshData, compound_gear, flanged_shaft, gear, revolved, extruded, combination)
+  const isCapOrBushingType =
     p.type === "cap/bushing" ||
     rawType.includes("cap") ||
     rawType.includes("bushing") ||
-    rawType.includes("bottle cap") ||
-    rawType.includes("lid") ||
-    rawType.includes("closure");
+    rawType.includes("bottle") ||
+    rawType.includes("lid");
 
-  if (isCapOrBushing) {
-    const od = p.outerDiameter || analysis?.dimensions?.outerDiameter || 30.0;
-    const id = p.innerDiameter || analysis?.dimensions?.innerDiameter || null;
-    const h = p.height || p.length || analysis?.dimensions?.height || analysis?.dimensions?.length || 12.0;
-    const t = p.thickness || analysis?.dimensions?.thickness || null;
-    body = buildCapBushingGroup({
-      outerDiameter: od,
-      innerDiameter: id,
-      height: h,
-      thickness: t,
-    });
-    label = "CIRCULAR CAP / BUSHING";
-  }
+  const isBearingType =
+    p.type === "bearing" ||
+    rawType.includes("bearing");
 
-  // Primary Route: Execute exact engineering recipe (meshData, compound_gear, flanged_shaft, gear, revolved, extruded, combination)
   const recipeMismatchesType =
     (p.type === "flange" && recipe?.style === "revolved" && !recipe.flange) ||
     (["bevel gear", "spur gear", "helical gear"].includes(p.type) &&
-      recipe?.style !== "mesh" && !recipe?.axialSegments && !recipe?.gear);
+      recipe?.style !== "mesh" && !recipe?.axialSegments && !recipe?.gear) ||
+    (isCapOrBushingType && (!recipe?.isAuthenticCap || recipe?.style === "extruded" || recipe?.style === "revolved" || recipe?.style === "combination")) ||
+    (isBearingType && (!recipe?.isAuthenticBearing || recipe?.style === "combination" || recipe?.style === "revolved" || recipe?.style === "extruded"));
   if (!body && recipe && !isTrivialBoxFallback && !recipeMismatchesType) {
     body = executeRecipe(recipe);
+  }
+
+  // Universal Runtime Geometry Engine:
+  // Every uploaded component undergoes image-based geometric inference, composition,
+  // and runtime construction of a dedicated declarative geometry program.
+  if (!body) {
+    const program = generateGeometryProgram(analysis);
+    if (program) {
+      body = executeGeometryProgram(program);
+    }
+  }
+
+  if (!body) {
+    if (isBearingType) {
+      body = buildBearing(p);
+    } else {
+      body = buildGeneric(p);
+    }
+  }
+
+  if (!label) {
     const rawComp = String(analysis?.componentType || "").trim();
     if (rawComp && rawComp.toLowerCase() !== "other") {
       label = rawComp.toUpperCase();
@@ -690,138 +702,6 @@ export function buildModel(analysis) {
       label = COMPONENT_LABELS[p.type];
     } else {
       label = "ENGINEERED COMPONENT";
-    }
-  }
-  if (!body) {
-    if (isCompoundGear) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.8;
-      const stage2R = outerR * 0.60;
-      const faceW = p.height || p.thickness || 2.2;
-      const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.25;
-      body = buildCompoundGearGroup({
-        stage1Teeth: p.teeth || 24,
-        stage1Radius: outerR,
-        stage1FaceWidth: faceW * 0.55,
-        stage2Teeth: Math.max(8, Math.round((p.teeth || 24) * 0.65)),
-        stage2Radius: stage2R,
-        stage2FaceWidth: faceW * 0.45,
-        boreRadius: boreR,
-        keywayWidth: boreR * 0.4,
-        keywayHeight: boreR * 0.22,
-      });
-      label = COMPONENT_LABELS["compound gear"];
-    } else if (isPinionShaft) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.5;
-      const faceW = p.thickness || (p.outerDiameter ? p.outerDiameter * 0.65 : 2.0);
-      const length = p.length || p.height || outerR * 4.5;
-      const shaftR = p.innerDiameter && p.innerDiameter > 0 ? p.innerDiameter / 2 : outerR * 0.45;
-      body = buildPinionShaftGroup({
-        gearTeeth: p.teeth || 16,
-        gearRadius: outerR,
-        gearFaceWidth: faceW,
-        helixAngle: p.helixAngle || 20,
-        shaftRadius: shaftR,
-        shaftLength: length,
-        driveJournalRadius: shaftR * 0.9,
-        supportJournalRadius: shaftR * 0.8,
-        keywayWidth: shaftR * 0.35,
-        keywayHeight: shaftR * 0.22,
-      });
-      label = COMPONENT_LABELS["pinion shaft"] || "HELICAL PINION SHAFT";
-    } else if (isFlangedShaft) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.4;
-      const shaftR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.35;
-      const length = p.length || p.height || outerR * 4.0;
-      body = buildFlangedShaftGroup({
-        shaftRadius: shaftR,
-        shaftLength: length,
-        flangeRadius: outerR,
-        flangeThickness: Math.max(0.5, outerR * 0.28),
-        collarRadius: shaftR * 1.5,
-        collarLength: outerR * 0.7,
-        boltCount: p.boltCount || 4,
-        boltHoleRadius: Math.max(0.12, outerR * 0.09),
-        splineCount: 6,
-      });
-      label = COMPONENT_LABELS["flanged shaft"];
-    } else if (isBevel) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.8;
-      const faceW = p.height || p.thickness || outerR * 0.45;
-      const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.30;
-      body = buildBevelGearGroup({
-        teeth: p.teeth || 20,
-        outerRadius: outerR,
-        faceWidth: faceW,
-        coneAngleDeg: p.coneAngle || 45,
-        boreRadius: boreR,
-      });
-      label = COMPONENT_LABELS["bevel gear"];
-    } else if (isSteppedShaft) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 1.8;
-      const length = p.length || p.height || outerR * 4.0;
-      const boreR = p.innerDiameter ? p.innerDiameter / 2 : 0;
-      body = buildSteppedShaftGroup({
-        outerRadius: outerR,
-        length,
-        innerRadius: boreR,
-        profile: recipe?.revolvedProfile || null,
-      });
-      label = COMPONENT_LABELS["stepped shaft"];
-    } else if (flangeLacksHoles) {
-      body = buildFlange(p);
-      label = COMPONENT_LABELS.flange;
-    } else {
-      switch (p.type) {
-        case "compound gear":
-          body = buildCompoundGearGroup();
-          break;
-        case "flanged shaft":
-          body = buildFlangedShaftGroup();
-          break;
-        case "bevel gear":
-          body = buildBevelGearGroup({
-            teeth: p.teeth || 20,
-            outerRadius: (p.outerDiameter || 5.6) / 2,
-            faceWidth: p.height || p.thickness || 1.2,
-            coneAngleDeg: p.coneAngle || 45,
-            boreRadius: p.innerDiameter ? p.innerDiameter / 2 : 0,
-          });
-          break;
-        case "cap/bushing":
-          body = buildCapBushingGroup({
-            outerDiameter: p.outerDiameter || analysis?.dimensions?.outerDiameter || 30.0,
-            innerDiameter: p.innerDiameter || analysis?.dimensions?.innerDiameter || null,
-            height: p.height || p.length || analysis?.dimensions?.height || analysis?.dimensions?.length || 12.0,
-            thickness: p.thickness || analysis?.dimensions?.thickness || null,
-          });
-          break;
-        case "stepped shaft":
-          body = buildSteppedShaftGroup({
-            outerRadius: (p.outerDiameter || 3.6) / 2,
-            length: p.length || p.height || 6.5,
-            innerRadius: p.innerDiameter ? p.innerDiameter / 2 : 0,
-          });
-          break;
-        case "spur gear":
-        case "helical gear":
-          body = buildSpurGear(p);
-          break;
-        case "cylinder/shaft":
-          body = buildCylinder(p);
-          break;
-        case "flange":
-          body = buildFlange(p);
-          break;
-        case "bearing":
-          body = buildBearing(p);
-          break;
-        case "simple bracket":
-          body = buildBracket(p);
-          break;
-        default:
-          body = buildGeneric(p);
-      }
-      label = COMPONENT_LABELS[p.type] || COMPONENT_LABELS.other;
     }
   }
   body.traverse((obj) => {

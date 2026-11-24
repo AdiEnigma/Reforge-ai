@@ -54,7 +54,6 @@ export function InspectedDetailsPanel({
   const label = resolveLabel(analysis);
   const dims = dimensionList(analysis);
   const uncertainties = Array.isArray(analysis.uncertainties) ? analysis.uncertainties : [];
-  const conf = typeof analysis.confidence === 'number' ? Math.round(analysis.confidence * 100) : null;
 
   return (
     <div className="inspected-details-container fit-screen">
@@ -65,11 +64,6 @@ export function InspectedDetailsPanel({
             <Icon>architecture</Icon>
             <strong>{label}</strong>
           </div>
-          {conf != null && (
-            <span className="inspection-conf-pill" title="Reconstruction Confidence">
-              {conf}% CONF
-            </span>
-          )}
         </div>
 
         {/* 2-Column Meta Grid */}

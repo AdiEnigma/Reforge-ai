@@ -10,14 +10,8 @@ import {
   matHighlight,
   matRim,
   ringShape,
-  buildBevelGearGroup,
-  buildSteppedShaftGroup,
-  buildCompoundGearGroup,
-  buildFlangedShaftGroup,
-  buildPinionShaftGroup,
-  buildAxialSegmentAssembly,
-  buildWormFlightGeometry,
 } from "./geo.js";
+import { executeGeometryProgram, generateGeometryProgram } from "./runtime-geometry-engine.js";
 import { normalizeGearType } from "./gear-types.js";
 
 const RECIPE_LIMITS = {
@@ -528,41 +522,44 @@ export function buildGearFromRecipe(gear) {
   const rimInnerR = outerR * 0.72;
 
   if (gearType === "bevel") {
-    return buildBevelGearGroup({
-      teeth,
-      outerRadius: outerR,
-      faceWidth: height,
-      coneAngleDeg: gear.coneAngle || 45,
-      boreRadius: bore,
-      hubRadius: gear.hubDiameter ? gear.hubDiameter / 2 : hubR,
-      hubHeight: gear.hubLength || hubH,
+    const prog = generateGeometryProgram({
+      componentType: "bevel gear",
+      geometryRecipe: {
+        style: "gear",
+        gear: {
+          gearType: "bevel",
+          teeth,
+          outerDiameter: outerR * 2,
+          faceWidth: height,
+          coneAngle: gear.coneAngle || 45,
+          boreRadius: bore,
+          hubDiameter: gear.hubDiameter,
+          hubLength: gear.hubLength,
+        },
+      },
     });
+    return executeGeometryProgram(prog);
   }
 
   if (gearType === "worm") {
-    const group = new THREE.Group();
     const pitch = gear.pitch > 0 ? gear.pitch : Math.PI * (module || outerR * 0.14);
     const starts = Math.max(1, Math.round(gear.starts || 1));
     const rootR = gear.rootRadius > 0 ? Math.min(gear.rootRadius, outerR * 0.95) : outerR * 0.7;
-    const geo = buildWormFlightGeometry({
-      length: height,
-      pitch,
-      starts,
-      tipRadius: outerR,
-      rootRadius: rootR,
-      hand: helixAngle < 0 ? "left" : "right",
+    const prog = generateGeometryProgram({
+      componentType: "worm gear",
+      geometryRecipe: {
+        style: "gear",
+        gear: {
+          gearType: "worm",
+          pitch,
+          starts,
+          rootRadius: rootR,
+          faceWidth: height,
+          outerDiameter: outerR * 2,
+        },
+      },
     });
-    const mesh = new THREE.Mesh(geo, matBody);
-    mesh.userData = {
-      featureId: "feature-worm-flight-1",
-      featureType: "worm_flight",
-      pitch,
-      starts,
-      rootRadius: rootR,
-      hand: helixAngle < 0 ? "left" : "right",
-    };
-    group.add(mesh);
-    return group;
+    return executeGeometryProgram(prog);
   }
 
   if (gearType === "rack") {
@@ -574,45 +571,52 @@ export function buildGearFromRecipe(gear) {
   }
 
   if (gearType === "pinion") {
-    return buildPinionShaftGroup({
-      gearTeeth: teeth,
-      gearRadius: outerR,
-      gearFaceWidth: height,
-      helixAngle: helixAngle || ((Math.abs(gear.helixAngle || 0) > 0) ? gear.helixAngle : 20),
-      shaftRadius: bore || outerR * 0.35,
-      shaftLength: Math.max(height * 3, outerR * 4),
-      splineCount: 0,
+    const prog = generateGeometryProgram({
+      componentType: "pinion shaft",
+      geometryRecipe: {
+        style: "pinion_shaft",
+        gear: {
+          teeth,
+          outerDiameter: outerR * 2,
+          faceWidth: height,
+          boreRadius: bore,
+          helixAngle: helixAngle || (gear.helixAngle ? Number(gear.helixAngle) : 0),
+        },
+        shaft: {
+          diameter: (bore || outerR * 0.35) * 2,
+          length: Math.max(height * 3, outerR * 4),
+        },
+      },
     });
+    return executeGeometryProgram(prog);
   }
 
-  if (gearType === "compound") {
+  if (gearType === "compound" || gearType === "stepped") {
     const stages = Array.isArray(gear.stages) ? gear.stages : [];
     const first = stages[0] || {};
     const second = stages[1] || {};
-    return buildCompoundGearGroup({
-      stage1Teeth: first.teeth || teeth,
-      stage1Radius: first.outerDiameter ? first.outerDiameter / 2 : outerR,
-      stage1FaceWidth: first.faceWidth || height * 0.55,
-      stage2Teeth: second.teeth || Math.max(8, Math.round(teeth * 0.65)),
-      stage2Radius: second.outerDiameter ? second.outerDiameter / 2 : outerR * 0.62,
-      stage2FaceWidth: second.faceWidth || height * 0.45,
-      boreRadius: bore,
+    const prog = generateGeometryProgram({
+      componentType: "compound gear",
+      geometryRecipe: {
+        style: "compound_gear",
+        gear: {
+          stages: [
+            {
+              teeth: first.teeth || teeth,
+              outerDiameter: first.outerDiameter || outerR * 2,
+              faceWidth: first.faceWidth || height * 0.55,
+            },
+            {
+              teeth: second.teeth || Math.max(8, Math.round(teeth * 0.65)),
+              outerDiameter: second.outerDiameter || outerR * 1.24,
+              faceWidth: second.faceWidth || height * 0.45,
+            },
+          ],
+          boreRadius: bore,
+        },
+      },
     });
-  }
-
-  if (gearType === "stepped") {
-    const stages = Array.isArray(gear.stages) ? gear.stages : [];
-    const first = stages[0] || {};
-    const second = stages[1] || {};
-    return buildCompoundGearGroup({
-      stage1Teeth: first.teeth || teeth,
-      stage1Radius: first.outerDiameter ? first.outerDiameter / 2 : outerR,
-      stage1FaceWidth: first.faceWidth || height * 0.55,
-      stage2Teeth: second.teeth || Math.max(8, Math.round(teeth * 0.65)),
-      stage2Radius: second.outerDiameter ? second.outerDiameter / 2 : outerR * 0.62,
-      stage2FaceWidth: second.faceWidth || height * 0.45,
-      boreRadius: bore,
-    });
+    return executeGeometryProgram(prog);
   }
 
   if (gearType === "unknown") {
@@ -934,70 +938,28 @@ export function executeRecipe(recipe) {
   const style = recipe?.style;
   let body = null;
 
-  // OPERATOR A: Generalised Axial Segment Assembly (Universal Continuous Rotational Engine)
+  // Runtime Geometry Engine Execution (Non-categorical declarative AST)
   if (style === "axial_segments" || (Array.isArray(recipe?.axialSegments) && recipe.axialSegments.length > 0)) {
-    const boreRadius =
-      recipe.boreRadius ||
-      recipe.gear?.boreRadius ||
-      recipe.shaft?.boreRadius ||
-      (recipe.holes && recipe.holes[0]?.radius) ||
-      0;
-    const keyway = recipe.keyway || recipe.gear?.keyway || recipe.shaft?.keyway || null;
-    body = buildAxialSegmentAssembly({
-      segments: recipe.axialSegments,
-      boreRadius,
-      keyway,
-      booleans: recipe.booleans || [],
-      modifiers: recipe.modifiers || [],
-    });
+    const prog = generateGeometryProgram({ geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
   } else if (style === "compound_gear" || (recipe?.gear?.stages && recipe.gear.stages.length >= 2)) {
-    const g = recipe.gear || {};
-    const stages = g.stages || [];
-    body = buildCompoundGearGroup({
-      stage1Teeth: stages[0]?.teeth || g.teeth || 24,
-      stage1Radius: (stages[0]?.outerDiameter ? stages[0].outerDiameter / 2 : (stages[0]?.teeth ? stages[0].teeth * 2.5 : 60)) || 60,
-      stage1FaceWidth: stages[0]?.faceWidth || 28,
-      stage2Teeth: stages[1]?.teeth || 16,
-      stage2Radius: (stages[1]?.outerDiameter ? stages[1].outerDiameter / 2 : (stages[1]?.teeth ? stages[1].teeth * 2.5 : 35)) || 35,
-      stage2FaceWidth: stages[1]?.faceWidth || 22,
-      boreRadius: recipe.boreRadius || g.boreRadius || (recipe.holes && recipe.holes[0]?.radius) || 15,
-      keywayWidth: (recipe.keyway && (recipe.keyway.width || recipe.keyway.w)) || g.keyway?.width || 6,
-      keywayHeight: (recipe.keyway && (recipe.keyway.height || recipe.keyway.depth || recipe.keyway.h)) || g.keyway?.height || 4,
-      pinHoles: false,
-    });
+    const prog = generateGeometryProgram({ geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
   } else if (
     style === "pinion_shaft" ||
     (recipe?.shaft && recipe?.gear && (recipe.shaft.length || 0) > (recipe.gear.faceWidth || 0))
   ) {
-    const s = recipe.shaft || {};
-    const g = recipe.gear || {};
-    body = buildPinionShaftGroup({
-      gearTeeth: g.teeth || 16,
-      gearRadius: (g.outerDiameter ? g.outerDiameter / 2 : (g.teeth ? g.teeth * 2.0 : 30)) || 30,
-      gearFaceWidth: g.faceWidth || 38,
-      helixAngle: g.helixAngle || 0,
-      shaftRadius: (s.diameter ? s.diameter / 2 : 14) || 14,
-      shaftLength: s.length || 180,
-      driveJournalRadius: s.driveJournalDiameter ? s.driveJournalDiameter / 2 : 12,
-      supportJournalRadius: s.supportJournalDiameter ? s.supportJournalDiameter / 2 : 11,
-      keywayWidth: g.keyway?.width || s.keyway?.width || 5,
-      keywayHeight: g.keyway?.height || s.keyway?.height || 3,
-      splineCount: s.splineCount || 0,
-    });
+    const prog = generateGeometryProgram({ geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
   } else if (style === "flanged_shaft" || (recipe?.shaft && recipe?.flange)) {
-    const s = recipe.shaft || {};
-    const f = recipe.flange || {};
-    body = buildFlangedShaftGroup({
-      shaftRadius: (s.diameter ? s.diameter / 2 : 12) || 12,
-      shaftLength: s.length || 180,
-      flangeRadius: (f.outerDiameter ? f.outerDiameter / 2 : 38) || 38,
-      flangeThickness: f.thickness || 16,
-      collarRadius: (f.bossDiameter ? f.bossDiameter / 2 : 22) || 22,
-      collarLength: f.bossHeight || 28,
-      boltCount: f.boltCount || 4,
-      boltHoleRadius: (f.boltHoleDiameter ? f.boltHoleDiameter / 2 : 3.5) || 3.5,
-      splineCount: s.splineCount || 6,
-    });
+    const prog = generateGeometryProgram({ geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
+  } else if (style === "cap_bushing" || style === "cap" || recipe?.capBushing) {
+    const prog = generateGeometryProgram({ componentType: "cap/bushing", geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
+  } else if (style === "bearing" || recipe?.bearing) {
+    const prog = generateGeometryProgram({ componentType: "bearing", geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
   } else if (style === "flange" || (recipe?.flange != null)) {
     body = buildFlangeFromRecipe(recipe.flange, recipe.outline, recipe.holes, recipe.depth);
   } else if (style === "revolved" && recipe.revolvedProfile) {

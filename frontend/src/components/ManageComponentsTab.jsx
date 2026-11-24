@@ -19,6 +19,8 @@ import {
   IMAGE_PURPOSES,
   IMAGE_PRIORITIES,
   getAllComponents,
+  isComponentDirty,
+  getDirtyComponentIds,
   addGearFromImages,
   addCompanionFromImages,
   addImagesToComponent,
@@ -42,6 +44,7 @@ export function ManageComponentsTab({
   setMachineryState: propSetMachineryState,
   onUpdateMachineryState,
   isDirty,
+  lastAnalyzedSnapshot,
   onRegenerate,
   isRegenerating,
   activeComponentId,
@@ -54,6 +57,10 @@ export function ManageComponentsTab({
   const [actionMenuOpenId, setActionMenuOpenId] = useState(null);
   const [dragOverSector, setDragOverSector] = useState(null); // 'primary' | 'companion' | 'gear-id' | 'assembly' | 'env'
   const [analyzingCompIds, setAnalyzingCompIds] = useState(new Set());
+
+  const dirtyCompIds = React.useMemo(() => {
+    return new Set(getDirtyComponentIds(machineryState, lastAnalyzedSnapshot));
+  }, [machineryState, lastAnalyzedSnapshot]);
 
   // Global File Input Reference
   const fileInputRef = useRef(null);
@@ -276,15 +283,19 @@ export function ManageComponentsTab({
           <div className="regen-notice-text">
             <Icon className="regen-icon-pulse">info</Icon>
             <div>
-              <strong>New visual information added.</strong>
-              <span>Your current reconstruction has been preserved. Regenerate to incorporate the newly added images.</span>
+              <strong>New visual information staged.</strong>
+              <span>
+                {dirtyCompIds.size > 0
+                  ? `New images staged for ${dirtyCompIds.size} component${dirtyCompIds.size === 1 ? '' : 's'}. Regenerate will analyze only what is new and preserve all other components.`
+                  : 'Your current reconstruction has been preserved. Regenerate to incorporate staged context.'}
+              </span>
             </div>
           </div>
           <button
             className="regen-btn-prominent"
-            onClick={onRegenerate}
+            onClick={() => onRegenerate?.()}
             disabled={isRegenerating}
-            title="Reconstruct 3D Model with updated context"
+            title="Reconstruct 3D Model (regenerates only dirty gears, keeping everything else)"
           >
             <Icon>{isRegenerating ? 'sync' : 'auto_awesome'}</Icon>
             {isRegenerating ? 'REGENERATING…' : 'REGENERATE'}
@@ -321,6 +332,11 @@ export function ManageComponentsTab({
                 </button>
                 {activeComponentId === (primary?.id || 'comp-primary-gear') && (
                   <span className="active-view-badge">● IN 3D VIEW</span>
+                )}
+                {dirtyCompIds.has(primary?.id || 'comp-primary-gear') && (
+                  <span className="dirty-comp-badge" title="New images staged — will regenerate on update">
+                    <Icon>add_a_photo</Icon> NEW IMAGES
+                  </span>
                 )}
                 {analyzingCompIds.has(primary?.id || 'comp-primary-gear') && (
                   <span className="analyzing-view-badge"><Icon className="spin">sync</Icon> ANALYZING…</span>
@@ -404,6 +420,11 @@ export function ManageComponentsTab({
                   </button>
                   {activeComponentId === companion.id && (
                     <span className="active-view-badge">● IN 3D VIEW</span>
+                  )}
+                  {dirtyCompIds.has(companion.id) && (
+                    <span className="dirty-comp-badge" title="New images staged — will regenerate on update">
+                      <Icon>add_a_photo</Icon> NEW IMAGES
+                    </span>
                   )}
                   {analyzingCompIds.has(companion.id) && (
                     <span className="analyzing-view-badge"><Icon className="spin">sync</Icon> ANALYZING…</span>
@@ -533,6 +554,11 @@ export function ManageComponentsTab({
                     </button>
                     {activeComponentId === gear.id && (
                       <span className="active-view-badge">● IN 3D VIEW</span>
+                    )}
+                    {dirtyCompIds.has(gear.id) && (
+                      <span className="dirty-comp-badge" title="New images staged — will regenerate on update">
+                        <Icon>add_a_photo</Icon> NEW IMAGES
+                      </span>
                     )}
                     {analyzingCompIds.has(gear.id) && (
                       <span className="analyzing-view-badge"><Icon className="spin">sync</Icon> ANALYZING…</span>

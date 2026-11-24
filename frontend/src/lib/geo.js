@@ -216,7 +216,13 @@ export function gearShape(teeth, outerR, toothHeight, boreR, lighteningHoles = [
   return shape;
 }
 
+// ============================================================================
+// LEGACY COMPONENT-SPECIFIC BUILDERS (PRESERVED FOR RECOVERY SAFETY ONLY)
+// Note: Superseded by runtime-geometry-engine.js declarative AST execution.
+// ============================================================================
+
 /**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
  * Builds a true 3D conical Bevel Gear with tapered teeth radiating on a pitch cone,
  * rear cylindrical mounting hub collar, and center bore.
  */
@@ -370,6 +376,9 @@ export function buildBevelGearGroup({
  * Builds an authentic 3D Compound / Cluster Gear with two stacked gear stages,
  * central through-bore with keyway, and face drive pin holes.
  */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
 export function buildCompoundGearGroup({
   stage1Teeth = 24,
   stage1Radius = 2.8,
@@ -454,6 +463,9 @@ export function buildCompoundGearGroup({
  * Builds an authentic 3D Flanged Shaft / Linear Spline Bushing assembly,
  * comprising a longitudinal spline shaft, circular mounting flange collar,
  * precision counterbored bolt holes, and ground bearing sleeve.
+ */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
  */
 export function buildFlangedShaftGroup({
   shaftRadius = 0.8,
@@ -540,6 +552,9 @@ export function buildFlangedShaftGroup({
   return group;
 }
 
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
 export function buildPinionShaftGroup({
   gearTeeth = 16,
   gearRadius = 2.4,
@@ -634,6 +649,9 @@ export function buildPinionShaftGroup({
  * Builds an authentic 3D Circular Cap / Bushing / Bottle Cap component with a top disc,
  * cylindrical outer wall (skirt), vertical knurling flutes, and an open hollow cavity.
  */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
 export function buildCapBushingGroup({
   outerDiameter = 30.0,
   innerDiameter = null,
@@ -702,6 +720,9 @@ export function buildCapBushingGroup({
   return group;
 }
 
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
 export function buildSteppedShaftGroup({
   outerRadius = 1.8,
   length = 6.0,
@@ -813,6 +834,9 @@ export function buildSteppedShaftGroup({
  *   theta(z) = (2 * PI * z) / lead
  * Creates a fully watertight, non-manifold quad-strip surface with smooth feather-edge runouts.
  */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
 export function buildWormFlightGeometry({
   length = 60,
   pitch = 8,
@@ -923,6 +947,9 @@ export function buildWormFlightGeometry({
  * @param {Array<Object>} [options.booleans=[]] - Boolean features (cross holes, slots, grooves)
  * @param {Array<Object>} [options.modifiers=[]] - Multi-station modifications (keyways, grooves, threads)
  * @returns {THREE.Group} Cohesive solid 3D assembly group with inspection metadata
+ */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
  */
 export function buildAxialSegmentAssembly({
   segments = [],

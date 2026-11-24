@@ -514,5 +514,63 @@ test("OPERATOR A: buildModel generates continuous Archimedean worm flight with d
   assert.ok(sizeZ > 1.5 && sizeZ < 2.5, `Scaled depth in Z should be ~1.875, got ${sizeZ}`);
 });
 
+test("buildModel constructs authentic Deep-Groove Ball Bearing with inner race, outer race, and spherical balls", () => {
+  const bearingAnalysis = {
+    componentType: "bearing",
+    dimensions: { outerDiameter: 42, innerDiameter: 20, height: 12, thickness: 12 },
+    geometryRecipe: {
+      style: "combination",
+      primitives: [{ kind: "torus", radius: 21, tube: 6 }],
+    },
+  };
+
+  const { group } = buildModel(bearingAnalysis);
+  let outerRaceFound = false;
+  let innerRaceFound = false;
+  let ballCount = 0;
+  let singleTorusFound = false;
+
+  group.traverse((node) => {
+    if (node.isMesh) {
+      if (node.userData?.featureType === "outer_race") outerRaceFound = true;
+      if (node.userData?.featureType === "inner_race") innerRaceFound = true;
+      if (node.userData?.featureType === "ball_bearing" || node.userData?.featureType === "groove") ballCount++;
+      if (node.geometry?.type === "TorusGeometry" && node.parent === group) singleTorusFound = true;
+    }
+  });
+
+  assert.equal(singleTorusFound, false, "Must NEVER render a single donut/torus for a ball bearing");
+  assert.ok(outerRaceFound, "Must contain outer race ring");
+  assert.ok(innerRaceFound, "Must contain inner race ring with bore");
+  assert.ok(ballCount >= 6, `Must contain spherical ball bearings, found ${ballCount}`);
+});
+
+test("buildModel constructs authentic Circular Cap with closed top lid and cylindrical skirt", () => {
+  const capAnalysis = {
+    componentType: "cap/bushing",
+    dimensions: { outerDiameter: 32, innerDiameter: 28, height: 14, thickness: 2 },
+    geometryRecipe: {
+      style: "extruded",
+      outline: [{ x: -16, y: -16 }, { x: 16, y: -16 }, { x: 16, y: 16 }, { x: -16, y: 16 }],
+      holes: [{ cx: 0, cy: 0, radius: 14 }],
+      depth: 14,
+    },
+  };
+
+  const { group } = buildModel(capAnalysis);
+  let topLidFound = false;
+  let skirtFound = false;
+
+  group.traverse((node) => {
+    if (node.isMesh && node.userData) {
+      if (node.userData.featureType === "cap_top") topLidFound = true;
+      if (node.userData.featureType === "cap_wall") skirtFound = true;
+    }
+  });
+
+  assert.ok(topLidFound, "Must contain solid top lid disc closing the top face");
+  assert.ok(skirtFound, "Must contain cylindrical skirt wall creating hollow cavity");
+});
+
 
 

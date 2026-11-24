@@ -4815,6 +4815,20 @@ nav {
   gap: 4px;
 }
 
+.dirty-comp-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #ff9800;
+  background: rgba(255, 152, 0, 0.15);
+  border: 1px solid rgba(255, 152, 0, 0.4);
+  border-radius: 2px;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .comp-mgr-card.primary-card {
   border-left: 3px solid var(--lime)
 }
@@ -5915,13 +5929,15 @@ nav {
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: stretch;
-  padding: 0 8px;
+  padding: 0 6px;
   z-index: 20;
   flex-shrink: 0;
   position: relative;
   transition: height .15s ease;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   user-select: none;
+  scrollbar-width: none;
 }
 
 .top-ribbon::-webkit-scrollbar {
@@ -5941,8 +5957,9 @@ nav {
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 8px 3px 8px;
+  padding: 4px 5px 3px 5px;
   position: relative;
+  flex-shrink: 0;
 }
 
 .ribbon-cat-panel.brand-panel {
@@ -6034,7 +6051,7 @@ nav {
   width: 1px;
   height: 48px;
   background: var(--line);
-  margin: auto 5px;
+  margin: auto 4px;
   flex-shrink: 0;
   opacity: .65;
 }
@@ -6105,14 +6122,22 @@ nav {
   font-variation-settings: 'FILL' 1;
 }
 
-.illumination-intensity {
-  width: 58px;
+.ribbon-illumination-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   height: 24px;
+}
+
+.illumination-intensity {
+  width: 52px;
+  height: 18px;
   margin: 0;
   padding: 0;
   background: transparent;
   accent-color: var(--primary);
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .illumination-intensity:focus-visible {
@@ -6124,33 +6149,76 @@ nav {
   display: none;
 }
 
+.ribbon-color-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+}
+
 .ribbon-color-picker {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 4px;
+  padding: 1px 4px;
   cursor: pointer;
+  height: 24px;
+  box-sizing: border-box;
 }
 
 .ribbon-color-picker input[type="color"] {
   -webkit-appearance: none;
   appearance: none;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--border-color, rgba(255,255,255,0.12));
-  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.2));
+  border-radius: 3px;
   background: transparent;
   cursor: pointer;
   padding: 0;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
 .ribbon-color-picker input[type="color"]::-webkit-color-swatch-wrapper {
-  padding: 2px;
+  padding: 0;
 }
 
 .ribbon-color-picker input[type="color"]::-webkit-color-swatch {
   border: none;
   border-radius: 2px;
+}
+
+.ribbon-color-picker input[type="color"]::-moz-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.ribbon-color-reset-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: all 0.15s ease;
+  height: 18px;
+  width: 18px;
+  flex-shrink: 0;
+}
+
+.ribbon-color-reset-btn:hover {
+  color: var(--primary);
+  background: var(--line);
+  border-color: var(--line);
+}
+
+.ribbon-color-reset-btn .icon {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .top-ribbon.collapsed .ribbon-color-picker .ribbon-label,
@@ -6198,14 +6266,42 @@ nav {
   margin-left: auto;
 }
 
+.ribbon-colors-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+}
+
+.ribbon-project-aux-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+}
+
 .ribbon-status-pill {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   background: var(--low);
   border: 1px solid var(--line);
-  padding: 3px 8px;
+  padding: 2px 7px;
   border-radius: 12px;
+  height: 22px;
+  box-sizing: border-box;
+}
+
+.ribbon-status-pill.mini {
+  padding: 2px 6px;
+  height: 22px;
+  max-width: 90px;
+}
+
+.ribbon-status-pill.mini .ribbon-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ribbon-status-dot {

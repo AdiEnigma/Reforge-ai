@@ -45,6 +45,7 @@ export function LeftContextualPanel({
   engineeringContext,
   mfgData,
   isDirty,
+  lastAnalyzedSnapshot,
   isRegenerating,
   onRegenerate,
   // Inspection Props
@@ -355,6 +356,7 @@ export function LeftContextualPanel({
               onRegenerate={onRegenerate}
               isRegenerating={isRegenerating}
               isDirty={isDirty}
+              lastAnalyzedSnapshot={lastAnalyzedSnapshot}
               activeComponentId={activeComponentId}
               onSelectComponent={setActiveComponentId}
             />

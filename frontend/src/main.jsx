@@ -34,6 +34,8 @@ import {
   createInitialMachineryState,
   getAllComponents,
   hasDirtyContext,
+  isComponentDirty,
+  getDirtyComponentIds,
   createMachinerySnapshot,
   addImagesToComponent,
   removeImageFromComponent,
@@ -2206,6 +2208,7 @@ function Workbench() {
     handleRegenerate,
     isRegenerating,
     isDirty,
+    lastAnalyzedSnapshot,
     setLastAnalyzedSnapshot,
     reconstructionProgress,
     applyReconstructionProgress,
@@ -3221,6 +3224,7 @@ function Workbench() {
               engineeringContext={engineeringContext}
               mfgData={mfgData}
               isDirty={isDirty}
+              lastAnalyzedSnapshot={lastAnalyzedSnapshot}
               isRegenerating={isRegenerating}
               onRegenerate={handleRegenerate}
               analysis={activeReconstructionAnalysis}
@@ -4133,7 +4137,7 @@ function App() {
     return hasDirtyContext(machineryState, lastAnalyzedSnapshot);
   }, [machineryState, lastAnalyzedSnapshot]);
 
-  const handleRegenerate = useCallback(async () => {
+  const handleRegenerate = useCallback(async (targetComponentId = null) => {
     if (isRegenerating) return;
     setIsRegenerating(true);
     try {
@@ -4141,9 +4145,22 @@ function App() {
       const companion = machineryState?.companionGear;
       const additions = machineryState?.additionalComponents || [];
 
-      // Re-run analysis for primary if it has images
+      // Determine which components are actually dirty (new or new images added)
+      const shouldRegenPrimary = Boolean(primary?.images?.length && (
+        targetComponentId
+          ? targetComponentId === primary.id
+          : isComponentDirty(primary, lastAnalyzedSnapshot)
+      ));
+
+      const shouldRegenCompanion = Boolean(companion?.images?.length && (
+        targetComponentId
+          ? targetComponentId === companion.id
+          : isComponentDirty(companion, lastAnalyzedSnapshot)
+      ));
+
+      // Re-run analysis ONLY for primary if it is dirty/targeted; otherwise preserve existing analysis!
       let pAnalysis = primary?.analysis;
-      if (primary?.images?.length) {
+      if (shouldRegenPrimary) {
         pAnalysis = await analyzeComponent(primary.images, {
           ...(primary.reference || {}),
           name: primary.name || '',
@@ -4151,9 +4168,9 @@ function App() {
         });
       }
 
-      // Re-run analysis for companion if it has images
+      // Re-run analysis ONLY for companion if it is dirty/targeted; otherwise preserve existing analysis!
       let cAnalysis = companion?.analysis;
-      if (companion?.images?.length) {
+      if (shouldRegenCompanion) {
         cAnalysis = await analyzeComponent(companion.images, {
           ...(companion.reference || {}),
           name: companion.name || '',
@@ -4161,10 +4178,16 @@ function App() {
         });
       }
 
-      // Re-run analysis for additions that have images
+      // Re-run analysis ONLY for additions that are dirty/targeted; preserve everything else!
       const updatedAdditions = await Promise.all(
         additions.map(async (comp) => {
-          if (comp.images?.length) {
+          const shouldRegenThis = Boolean(comp.images?.length && (
+            targetComponentId
+              ? targetComponentId === comp.id
+              : isComponentDirty(comp, lastAnalyzedSnapshot)
+          ));
+
+          if (shouldRegenThis) {
             try {
               const compAnalysis = await analyzeComponent(comp.images, {
                 ...(comp.reference || {}),
@@ -4176,6 +4199,7 @@ function App() {
               return comp;
             }
           }
+          // Untouched addition: keep everything else!
           return comp;
         })
       );
@@ -4183,23 +4207,45 @@ function App() {
       const cloneAnalysis = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
       const nextState = {
         ...machineryState,
-        primaryGear: primary ? { ...primary, analysis: pAnalysis, originalAnalysis: cloneAnalysis(pAnalysis) } : null,
-        companionGear: companion ? { ...companion, analysis: cAnalysis, originalAnalysis: cloneAnalysis(cAnalysis) } : null,
+        primaryGear: primary
+          ? (shouldRegenPrimary && pAnalysis
+              ? { ...primary, analysis: pAnalysis, originalAnalysis: cloneAnalysis(pAnalysis) }
+              : primary)
+          : null,
+        companionGear: companion
+          ? (shouldRegenCompanion && cAnalysis
+              ? { ...companion, analysis: cAnalysis, originalAnalysis: cloneAnalysis(cAnalysis) }
+              : companion)
+          : null,
         additionalComponents: updatedAdditions,
       };
 
       const newSnapshot = createMachinerySnapshot(nextState);
       setMachineryState(nextState);
       setLastAnalyzedSnapshot(newSnapshot);
-      if (pAnalysis) {
+
+      // Keep active view synced only if the viewed component was regenerated
+      const activeId = activeComponentId || primary?.id;
+      if (activeId === primary?.id && shouldRegenPrimary && pAnalysis) {
         setAnalysis(pAnalysis);
+      } else if (activeId === companion?.id && shouldRegenCompanion && cAnalysis) {
+        setAnalysis(cAnalysis);
+      } else {
+        const matchingAddition = updatedAdditions.find((c) => c.id === activeId);
+        const origAddition = additions.find((c) => c.id === activeId);
+        const additionWasDirty = origAddition && (
+          targetComponentId === activeId || isComponentDirty(origAddition, lastAnalyzedSnapshot)
+        );
+        if (matchingAddition?.analysis && additionWasDirty) {
+          setAnalysis(matchingAddition.analysis);
+        }
       }
     } catch (err) {
       console.error('Regeneration failed:', err);
     } finally {
       setIsRegenerating(false);
     }
-  }, [machineryState, isRegenerating]);
+  }, [machineryState, lastAnalyzedSnapshot, isRegenerating, activeComponentId]);
 
   const updateImages = useCallback((next) => {
     setImages(next);
