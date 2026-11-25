@@ -29,6 +29,7 @@ import {
   isParamActive,
   getParameterValue,
   getParameterRecommendations,
+  isRecommendationVisible,
   applyScenarioToAnalysis,
   getGeometryDecisionOverrides,
 } from './lib/what-if.js';
@@ -1329,30 +1330,65 @@ function Upload() {
 
   const addFilesToSlot = (slot, files) => {
     if (!files || !files.length) return;
-    const accepted = [...files].filter((f) => (f.type ? f.type.startsWith('image/') : true) || /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(f.name || ''));
+    const MAX_FILES_PER_SLOT = 8;
+    const MAX_FILE_BYTES = 30 * 1024 * 1024;
+    const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp', 'image/avif']);
+    const incoming = [...files];
+    const accepted = [];
+    const rejected = [];
+
+    for (const f of incoming) {
+      const type = String(f.type || '').toLowerCase();
+      const nameOk = /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(f.name || '');
+      if (!(allowedTypes.has(type) || (type.startsWith('image/') && nameOk) || (!type && nameOk))) {
+        rejected.push(`${f.name || 'file'}: unsupported type`);
+        continue;
+      }
+      if (f.size > MAX_FILE_BYTES) {
+        rejected.push(`${f.name || 'file'}: too large (${(f.size / (1024 * 1024)).toFixed(1)} MB, max 30 MB)`);
+        continue;
+      }
+      accepted.push(f);
+    }
+
     if (!accepted.length) {
-      setError('Use image files (PNG, JPG, WEBP, or GIF).');
+      setError(rejected[0] || 'Use image files (JPEG, PNG, WebP, GIF, BMP, or AVIF).');
       return;
     }
-    setError('');
+
+    const slotCount = slot === 'primary'
+      ? (machineryState?.primaryGear?.images?.length || 0)
+      : slot === 'companion'
+        ? (machineryState?.companionGear?.images?.length || 0)
+        : (machineryState?.machineryContext?.images?.length || 0);
+    const remaining = Math.max(0, MAX_FILES_PER_SLOT - slotCount);
+    const toAdd = accepted.slice(0, remaining);
+    if (toAdd.length < accepted.length) {
+      rejected.push(`Only ${MAX_FILES_PER_SLOT} images allowed per slot; extra images were ignored.`);
+    }
+
+    if (rejected.length) setError(rejected.slice(0, 2).join(' '));
+    else setError('');
+
+    if (!toAdd.length) return;
 
     if (slot === 'primary') {
       setMachineryState((prevState) => {
         const targetId = prevState?.primaryGear?.id || 'comp-primary-gear';
-        const next = addImagesToComponent(prevState, targetId, accepted);
+        const next = addImagesToComponent(prevState, targetId, toAdd);
         setImages(next.primaryGear?.images || []);
         return next;
       });
     } else if (slot === 'companion') {
       setMachineryState((prevState) => {
         if (!prevState.companionGear) {
-          return addCompanionFromImages(prevState, accepted, 'Companion Gear');
+          return addCompanionFromImages(prevState, toAdd, 'Companion Gear');
         }
-        return addImagesToComponent(prevState, prevState.companionGear.id, accepted);
+        return addImagesToComponent(prevState, prevState.companionGear.id, toAdd);
       });
     } else if (slot === 'surroundings') {
       setMachineryState((prevState) => {
-        return addImagesToComponent(prevState, 'environment-context', accepted);
+        return addImagesToComponent(prevState, 'environment-context', toAdd);
       });
     }
 
@@ -1726,11 +1762,7 @@ function WhatIfSimulator({
             const pct = baselineVal !== 0 ? (diff / baselineVal) * 100 : 0;
             const isModified = scenarioParams[def.key] !== undefined && Math.abs(diff) > 0.0001;
             const recommendation = recommendations.find(rec => rec.key === def.key);
-            const recVisible = Boolean(
-              recommendation
-              && !dismissedRecommendations[recommendation.key]
-              && Math.abs(Number(currentVal) - Number(recommendation.value)) > 0.0001
-            );
+            const recVisible = isRecommendationVisible(recommendation, currentVal, dismissedRecommendations);
 
             const sliderMin = def.min !== undefined ? Math.min(def.min, Math.floor(baselineVal * 0.2)) : Math.max(0.1, Math.floor(baselineVal * 0.2));
             const sliderMax = Math.max(def.max || Math.ceil(baselineVal * 2.5), Math.ceil(baselineVal + 20));
@@ -3337,6 +3369,7 @@ function Workbench() {
               isRegenerating={isRegenerating}
               onRegenerate={handleRegenerate}
               analysis={activeReconstructionAnalysis}
+              images={activeComp?.images || []}
               features={features}
               selectedFeatureId={selectedFeatureId}
               hoveredFeatureId={hoveredFeatureId}

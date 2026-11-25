@@ -1,7 +1,12 @@
 import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from "@google/generative-ai";
 import { GEAR_TYPES, gearTypeFromText, normalizeGearType } from "./src/gear-types.js";
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const DEFAULT_MODEL = "gemini-3.5-flash";
+const MODEL = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+const GEMINI_REQUEST_TIMEOUT_MS = Math.max(
+  15000,
+  Number.parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || "90000", 10) || 90000
+);
 
 const COMPONENT_STYLES = [
   "axial_segments",
@@ -13,6 +18,7 @@ const COMPONENT_STYLES = [
   "flanged_shaft",
   "pinion_shaft",
   "flange",
+  "bearing",
   "combination",
   "mesh",
 ];
@@ -143,6 +149,23 @@ const ANALYSIS_SCHEMA = {
             bossHeight: { type: "NUMBER" },
           },
         },
+        bearing: {
+          type: "OBJECT",
+          properties: {
+            outerDiameter: { type: "NUMBER" },
+            innerDiameter: { type: "NUMBER" },
+            width: { type: "NUMBER" },
+            outerRaceInnerDiameter: { type: "NUMBER" },
+            innerRaceOuterDiameter: { type: "NUMBER" },
+            pitchDiameter: { type: "NUMBER" },
+            ballDiameter: { type: "NUMBER" },
+            ballCount: { type: "NUMBER" },
+            grooveDepth: { type: "NUMBER" },
+            grooveRadius: { type: "NUMBER" },
+            rows: { type: "NUMBER" },
+            shieldType: { type: "STRING", enum: ["open", "shielded", "sealed"] },
+          },
+        },
         primitives: {
           type: "ARRAY",
           items: {
@@ -188,6 +211,7 @@ const RECIPE_LIMITS = {
   maxHoles: 50,
   maxPrimitives: 30,
   maxDimensionRatio: 1000,
+  maxBalls: 120,
 };
 
 function cleanNumber(value) {
@@ -208,19 +232,43 @@ function getCandidateModels() {
   const custom = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : null;
   const list = [
     custom,
-    "gemini-2.5-flash-lite",
-    "gemini-flash-latest",
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",
+    DEFAULT_MODEL,
     "gemini-3.6-flash",
-    "gemini-3.7-flash",
-    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest",
   ].filter(Boolean);
   return Array.from(new Set(list));
 }
 
+function isSchemaRetryableError(error) {
+  if (error instanceof SyntaxError || error?.name === "SyntaxError") return true;
+  const message = String(error?.message || error).toLowerCase();
+  return (
+    message.includes("json") &&
+    (message.includes("parse") ||
+      message.includes("unexpected token") ||
+      message.includes("malformed") ||
+      message.includes("schema") ||
+      message.includes("fenced"))
+  );
+}
+
+function withTimeout(promise, ms, label = "Gemini request") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label} timed out after ${Math.round(ms / 1000)}s.`);
+      err.status = 504;
+      err.code = "gemini_timeout";
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function model(client, modelName = null) {
-  const target = modelName || getCandidateModels()[0] || "gemini-3.1-flash-lite";
+  const target = modelName || getCandidateModels()[0] || DEFAULT_MODEL;
   return client.getGenerativeModel({
     model: target,
     safetySettings: [
@@ -318,7 +366,39 @@ function visionEvidenceBlock(visionEvidence) {
         `${cv.line_count ?? 0} lines`
       );
       if (cv.bounding_box) lines.push(`  Component bounding box (pixels): ${JSON.stringify(cv.bounding_box)}`);
-      if (cv.symmetry_hints?.length) lines.push(`  Symmetry hints: ${cv.symmetry_hints.join(", ")}`);
+      const symmetryHints = Array.isArray(cv.symmetry_hints)
+        ? cv.symmetry_hints
+        : (cv.symmetry_hints ? [cv.symmetry_hints] : []);
+      if (symmetryHints.length) {
+        const hintText = symmetryHints.map((hint) => {
+          if (hint && typeof hint === "object") {
+            const order = hint.rotational_order ?? hint.n_fold_symmetry ?? hint.periodic_teeth;
+            return order != null
+              ? `rotational_order=${order} (confidence=${hint.spectral_confidence ?? 0})`
+              : JSON.stringify(hint);
+          }
+          return String(hint);
+        });
+        lines.push(`  Symmetry hints: ${hintText.join(", ")}`);
+      }
+      if (cv.tooth_count) {
+        const tc = cv.tooth_count;
+        lines.push(
+          `  Automatic tooth-tip count: status=${tc.status ?? "unavailable"}, ` +
+          `count=${tc.count ?? "none"}, confidence=${(tc.confidence ?? 0).toFixed(3)}`
+        );
+        if (Array.isArray(tc.methods) && tc.methods.length) {
+          lines.push(`  Cross-checks: ${tc.methods.map((m) => `${m.method}=${m.count ?? "none"}`).join(", ")}`);
+        }
+        if (Array.isArray(tc.warnings) && tc.warnings.length) {
+          lines.push(`  Tooth-count warnings: ${tc.warnings.join("; ")}`);
+        }
+        lines.push(
+          tc.status === "ok" && tc.count != null
+            ? "  Use this measured tooth count verbatim; do not replace it with a guessed tooth count."
+            : "  Tooth count is NOT confirmed. Do not present a guessed tooth count as measured; list the ambiguity in uncertainties."
+        );
+      }
       if (cv.warnings?.length) lines.push(`  OpenCV warnings: ${cv.warnings.join("; ")}`);
     }
 
@@ -387,7 +467,11 @@ function analysisPrompt(reference, visionEvidence) {
     '- "flange": circular mounting plates, pipe flanges with bolt holes, companion flanges. Provide flange = { outerDiameter, innerDiameter (bore), thickness (flange plate thickness), height (total height including hub/boss), boltCount (count the bolt holes, e.g. 4, 6, 8, 12), boltCircleDiameter (PCD), boltHoleDiameter, bossDiameter, bossHeight }. Always include all bolt holes in the features array (e.g. "4 Mounting Bolt Holes").',
     '- "revolved": continuous axisymmetric solid/hollow parts (shafts, pins, bushings, stepped spindles, simple sleeves). For stepped shafts with multiple diameters along their length, provide revolvedProfile with 4-12 points {z, radius} tracing each journal step and shoulder from one axial end to the other. NOTE: Do NOT use "revolved" for flanges with bolt holes — use "flange" instead.',
     '- "extruded": plates, brackets, housings, levers. Provide outline as a closed polygon of 3-12 points {x, y} plus optional holes [{cx, cy, radius}] for through-holes, and depth (extrude thickness). For an L-bracket, use an L-shaped outline, not a plain rectangle.',
-    '- "combination": also use concentric torus primitives plus countable sphere rolling elements for bearings; mirror the observed ballCount into the top-level field.',
+    '- "bearing": For ball bearings, deep-groove bearings, and similar rolling-element bearings. Set componentType to "bearing" and provide bearing = { outerDiameter, innerDiameter (central bore), width, outerRaceInnerDiameter, innerRaceOuterDiameter, pitchDiameter (ball-circle diameter), ballDiameter, ballCount, grooveDepth, grooveRadius, rows, shieldType ("open" | "shielded" | "sealed") }. Count individual rolling balls in the photograph and mirror the exact count into the top-level ballCount. Use distinct race diameters, an explicit bore, and the observed groove/shield details rather than a solid cylinder or generic torus stack.',
+    "Reconstruct the actual bearing geometry, including the inner race, outer race, central bore, and all rolling balls with accurate positioning and proportions.",
+    "Preserve all visible details, including the inner and outer races, central bore, rolling balls, grooves, metallic surfaces, proportions, spacing, and structural features.",
+    "Do not simplify the bearing into primitive shapes or omit details.",
+    "Generate geometry from the actual image analysis, not hardcoded templates, and verify the final 3D model against the reference.",
     '- "gear": toothed components. Set gear.gearType to the canonical form: "bevel" for conical pitch surfaces, "spur" for straight parallel teeth, "helical" for angled teeth on a cylinder, "worm" for a continuous screw flight, "rack" for a linear toothed bar, "internal" for teeth inside a ring, "compound" for coaxial stages, "pinion" for an integral gear shaft, "stepped" for a two-diameter gear, "flanged" for a gear with a mounting flange, or "unknown" when the tooth form cannot be established. Provide the matching parameters (coneAngle, helixAngle, pitch/starts/rootRadius, rackLength, innerRing) and mirror gearType into componentType and features. Never use spur as an uncertainty fallback.',
     '- "combination": complex multi-body parts. Compose from 2-8 additive primitives (kind: box | cylinder | sphere | cone | torus), each with its dimensions, position and rotation.',
     "All recipe lengths are in mm, angles in degrees, counts as integers. Use sane, bounded magnitudes — never extreme values like 50000 or 0.0001. IMPORTANT: Do NOT fall back to a single plain box primitive. If you cannot determine the exact recipe, make your best geometric approximation using the component type (e.g. extruded polygon with holes for brackets/links, revolved profile for turned parts, flange with bolt holes for circular plates). A single box is never an acceptable fallback.",
@@ -450,9 +534,10 @@ function normalizeAnalysis(raw) {
   out.features = Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [];
   out.teeth = typeof raw.teeth === "number" && isFinite(raw.teeth) ? Math.round(raw.teeth) : null;
   out.module = cleanNumber(raw.module);
-  out.geometryRecipe = sanitizeRecipe(raw.geometryRecipe);
+  out.geometryRecipe = sanitizeRecipe(raw.geometryRecipe, raw);
 
-  const explicitType = raw.gearType ?? out.geometryRecipe?.gear?.gearType;
+  const bearingPart = isBearingAnalysis(raw, out.geometryRecipe);
+  const explicitType = bearingPart ? null : (raw.gearType ?? out.geometryRecipe?.gear?.gearType);
   const normalizedType = typeof explicitType === "string" ? normalizeGearType(explicitType) : null;
   const inferredType = normalizedType == null
     ? gearTypeFromText(`${out.componentType} ${out.features.join(" ")} ${String(raw.geometryRecipe?.style || "")}`)
@@ -460,9 +545,9 @@ function normalizeAnalysis(raw) {
   const toothedEvidence = out.teeth != null
     || out.geometryRecipe?.gear != null
     || /gear|tooth|teeth|cog|worm|rack/i.test(`${out.componentType} ${out.features.join(" ")}`);
-  out.gearType = normalizedType !== null && normalizedType !== "unknown"
+  out.gearType = bearingPart ? null : (normalizedType !== null && normalizedType !== "unknown"
     ? normalizedType
-    : (inferredType !== "unknown" ? inferredType : (toothedEvidence || normalizedType === "unknown" ? "unknown" : null));
+    : (inferredType !== "unknown" ? inferredType : (toothedEvidence || normalizedType === "unknown" ? "unknown" : null)));
   out.classificationSource = typeof raw.classificationSource === "string"
     ? raw.classificationSource.slice(0, 60)
     : (out.gearType ? "gemini_analysis" : null);
@@ -474,7 +559,11 @@ function normalizeAnalysis(raw) {
     ?? (out.gearType === "helical" ? 20 : null);
   out.spokes = typeof raw.spokes === "number" && isFinite(raw.spokes) ? Math.round(raw.spokes) : null;
   out.boltCount = typeof raw.boltCount === "number" && isFinite(raw.boltCount) ? Math.round(raw.boltCount) : (raw.geometryRecipe?.flange?.boltCount ? Math.round(raw.geometryRecipe.flange.boltCount) : null);
-  out.ballCount = typeof raw.ballCount === "number" && isFinite(raw.ballCount) ? Math.round(raw.ballCount) : null;
+  out.ballCount = typeof raw.ballCount === "number" && isFinite(raw.ballCount)
+    ? Math.round(raw.ballCount)
+    : (typeof out.geometryRecipe?.bearing?.ballCount === "number"
+      ? Math.round(out.geometryRecipe.bearing.ballCount)
+      : null);
   out.requiresGearTypeConfirmation = Boolean(raw.requiresGearTypeConfirmation)
     || (out.gearType === "unknown" && (out.teeth != null || out.geometryRecipe?.gear != null));
   // Keep one source of truth inside the analysis object: recipe consumers must
@@ -487,12 +576,111 @@ function normalizeAnalysis(raw) {
   out.manufacturingProcess = typeof raw.manufacturingProcess === "string" ? raw.manufacturingProcess : "";
   out.reasoning = typeof raw.reasoning === "string" ? raw.reasoning : "";
   out.uncertainties = Array.isArray(raw.uncertainties) ? raw.uncertainties.filter((u) => typeof u === "string") : [];
-  out.geometryRecipe = sanitizeRecipe(raw.geometryRecipe);
+  out.geometryRecipe = sanitizeRecipe(raw.geometryRecipe, raw);
   out.geometrySource = out.geometryRecipe ? "image_recipe" : null;
   return out;
 }
 
-export function sanitizeRecipe(rawRecipe) {
+function positiveNumber(value) {
+  const n = cleanNumber(value);
+  return n != null && n > 0 ? n : null;
+}
+
+function isBearingAnalysis(analysis, recipe) {
+  if (recipe?.style === "bearing" || recipe?.bearing) return true;
+  const type = String(analysis?.componentType || "").toLowerCase();
+  const features = Array.isArray(analysis?.features) ? analysis.features.join(" ").toLowerCase() : "";
+  const bearingType = /\bbearing\b/i.test(type);
+  const rollingEvidence = /\bball|rolling element/i.test(`${type} ${features}`)
+    || cleanNumber(analysis?.ballCount) != null;
+  return bearingType && rollingEvidence;
+}
+
+function bearingBallCount(rawBearing, analysis) {
+  const candidates = [rawBearing?.ballCount, analysis?.ballCount];
+  for (const candidate of candidates) {
+    const n = cleanNumber(candidate);
+    if (n != null && n >= 3) return Math.round(n);
+  }
+  if (Array.isArray(analysis?.features)) {
+    for (const feature of analysis.features) {
+      const match = String(feature).match(/(\d+)\s*(?:rolling\s*)?balls?/i);
+      if (match?.[1]) return parseInt(match[1], 10);
+    }
+  }
+  return null;
+}
+
+function cleanBearingRecipe(rawBearing, analysis) {
+  if (!rawBearing || typeof rawBearing !== "object") return null;
+  const dims = analysis?.dimensions && typeof analysis.dimensions === "object" ? analysis.dimensions : {};
+  const outerDiameter = positiveNumber(rawBearing.outerDiameter) ?? positiveNumber(dims.outerDiameter);
+  if (outerDiameter == null) return null;
+  const cap = Math.max(outerDiameter * RECIPE_LIMITS.maxDimensionRatio, 1000);
+  const limit = (value) => Math.max(0, Math.min(value, cap));
+
+  let innerDiameter = positiveNumber(rawBearing.innerDiameter) ?? positiveNumber(dims.innerDiameter);
+  if (innerDiameter == null || innerDiameter >= outerDiameter) innerDiameter = outerDiameter * 0.5;
+
+  const width = positiveNumber(rawBearing.width)
+    ?? positiveNumber(rawBearing.thickness)
+    ?? positiveNumber(dims.thickness)
+    ?? positiveNumber(dims.height)
+    ?? outerDiameter * 0.25;
+
+  let pitchDiameter = positiveNumber(rawBearing.pitchDiameter ?? rawBearing.ballCircleDiameter)
+    ?? (outerDiameter + innerDiameter) / 2;
+  if (pitchDiameter <= innerDiameter || pitchDiameter >= outerDiameter) {
+    pitchDiameter = (outerDiameter + innerDiameter) / 2;
+  }
+
+  let ballDiameter = positiveNumber(rawBearing.ballDiameter) ?? (outerDiameter - innerDiameter) / 4;
+  ballDiameter = Math.min(ballDiameter, Math.min(pitchDiameter - innerDiameter, outerDiameter - pitchDiameter) * 0.75);
+
+  let innerRaceOuterDiameter = positiveNumber(rawBearing.innerRaceOuterDiameter)
+    ?? Math.max(innerDiameter * 1.01, pitchDiameter - ballDiameter * 0.55);
+  innerRaceOuterDiameter = Math.max(innerDiameter * 1.01, Math.min(innerRaceOuterDiameter, pitchDiameter));
+
+  let outerRaceInnerDiameter = positiveNumber(rawBearing.outerRaceInnerDiameter)
+    ?? Math.min(outerDiameter * 0.99, pitchDiameter + ballDiameter * 0.55);
+  outerRaceInnerDiameter = Math.min(outerDiameter * 0.99, Math.max(outerRaceInnerDiameter, pitchDiameter));
+
+  const raceGap = Math.min(pitchDiameter - innerRaceOuterDiameter, outerRaceInnerDiameter - pitchDiameter);
+  ballDiameter = Math.min(ballDiameter, raceGap / 0.55);
+
+  let rows = cleanNumber(rawBearing.rows);
+  rows = rows != null ? Math.max(1, Math.min(2, Math.round(rows))) : 1;
+  if (rows === 2) ballDiameter = Math.min(ballDiameter, width * 0.4);
+
+  let ballCount = bearingBallCount(rawBearing, analysis);
+  if (ballCount == null && ballDiameter > 0) {
+    ballCount = Math.round((Math.PI * pitchDiameter) / (ballDiameter * 1.25));
+  }
+  ballCount = Math.max(6, Math.min(RECIPE_LIMITS.maxBalls, Math.round(ballCount || 6)));
+
+  const grooveDepth = positiveNumber(rawBearing.grooveDepth) ?? ballDiameter * 0.25;
+  const grooveRadius = positiveNumber(rawBearing.grooveRadius) ?? ballDiameter * 0.225;
+  const shieldType = ["shielded", "sealed"].includes(String(rawBearing.shieldType).toLowerCase())
+    ? String(rawBearing.shieldType).toLowerCase()
+    : "open";
+
+  return {
+    outerDiameter: limit(outerDiameter),
+    innerDiameter: limit(innerDiameter),
+    width: limit(width),
+    pitchDiameter: limit(pitchDiameter),
+    ballDiameter: limit(ballDiameter),
+    ballCount,
+    innerRaceOuterDiameter: limit(innerRaceOuterDiameter),
+    outerRaceInnerDiameter: limit(outerRaceInnerDiameter),
+    grooveDepth: limit(Math.min(grooveDepth, ballDiameter)),
+    grooveRadius: limit(Math.min(grooveRadius, ballDiameter / 2)),
+    rows,
+    shieldType,
+  };
+}
+
+export function sanitizeRecipe(rawRecipe, analysis) {
   if (!rawRecipe || typeof rawRecipe !== "object") return null;
   const recipe = {};
   recipe.style = COMPONENT_STYLES.includes(rawRecipe.style) ? rawRecipe.style : null;
@@ -661,6 +849,11 @@ export function sanitizeRecipe(rawRecipe) {
     };
   }
 
+  if (rawRecipe.style === "bearing" || rawRecipe.bearing && typeof rawRecipe.bearing === "object") {
+    const bearing = cleanBearingRecipe(rawRecipe.bearing || {}, analysis);
+    if (bearing) recipe.bearing = bearing;
+  }
+
   const prims = Array.isArray(rawRecipe.primitives) ? rawRecipe.primitives.slice(0, RECIPE_LIMITS.maxPrimitives) : [];
   const cleanPrims = [];
   for (const p of prims) {
@@ -691,6 +884,11 @@ export function sanitizeRecipe(rawRecipe) {
   for (const pt of recipe.outline || []) { dims.push(Math.abs(pt.x)); dims.push(Math.abs(pt.y)); }
   for (const h of recipe.holes || []) { dims.push(Math.abs(h.cx)); dims.push(Math.abs(h.cy)); dims.push(Math.abs(h.radius)); }
   if (recipe.depth != null) dims.push(Math.abs(recipe.depth));
+  if (recipe.bearing) {
+    for (const key of ["outerDiameter", "innerDiameter", "width", "pitchDiameter", "ballDiameter", "innerRaceOuterDiameter", "outerRaceInnerDiameter", "grooveDepth", "grooveRadius"]) {
+      if (recipe.bearing[key] != null) dims.push(Math.abs(recipe.bearing[key]));
+    }
+  }
   if (recipe.gear) {
     for (const key of ["module", "faceWidth", "boreRadius", "outerDiameter", "coneAngle", "pitch", "rootRadius", "rackLength", "hubDiameter", "hubLength"]) {
       if (recipe.gear[key] != null) dims.push(Math.abs(recipe.gear[key]));
@@ -719,6 +917,11 @@ export function sanitizeRecipe(rawRecipe) {
     for (const pt of recipe.outline || []) { pt.x = clip(pt.x); pt.y = clip(pt.y); }
     for (const h of recipe.holes || []) { h.cx = clip(h.cx); h.cy = clip(h.cy); h.radius = clipPositive(h.radius); }
     if (recipe.depth != null) recipe.depth = clipPositive(recipe.depth);
+    if (recipe.bearing) {
+      for (const key of ["outerDiameter", "innerDiameter", "width", "pitchDiameter", "ballDiameter", "innerRaceOuterDiameter", "outerRaceInnerDiameter", "grooveDepth", "grooveRadius"]) {
+        if (recipe.bearing[key] != null) recipe.bearing[key] = clipPositive(recipe.bearing[key]);
+      }
+    }
     if (recipe.gear) {
       for (const key of ["module", "faceWidth", "boreRadius"]) {
         if (recipe.gear[key] != null) recipe.gear[key] = clipPositive(recipe.gear[key]);
@@ -737,7 +940,8 @@ export function sanitizeRecipe(rawRecipe) {
   }
 
   if (!recipe.style) {
-    if (recipe.axialSegments && recipe.axialSegments.length > 0) recipe.style = "axial_segments";
+    if (recipe.bearing) recipe.style = "bearing";
+    else if (recipe.axialSegments && recipe.axialSegments.length > 0) recipe.style = "axial_segments";
     else if (recipe.gear?.stages && recipe.gear.stages.length >= 2) recipe.style = "compound_gear";
     else if (recipe.shaft && recipe.flange) recipe.style = "flanged_shaft";
     else if (recipe.flange) recipe.style = "flange";
@@ -748,7 +952,7 @@ export function sanitizeRecipe(rawRecipe) {
   }
 
   if (!recipe.style) return null;
-  if (!(recipe.axialSegments || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange || recipe.primitives || recipe.shaft || recipe.meshData)) return null;
+  if (!(recipe.bearing || recipe.axialSegments || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange || recipe.primitives || recipe.shaft || recipe.meshData)) return null;
   return recipe;
 }
 
@@ -765,12 +969,16 @@ export async function analyzeComponent({ images, reference, visionEvidence }) {
   for (const modelName of candidateModels) {
     const attempt = async (withSchema) => {
       const targetModel = model(genAI, modelName);
-      const result = await targetModel.generateContent({
-        contents: [{ role: "user", parts }],
-        generationConfig: withSchema
-          ? { responseMimeType: "application/json", temperature: 0.2, responseSchema: ANALYSIS_SCHEMA }
-          : { responseMimeType: "application/json", temperature: 0.2 },
-      });
+      const result = await withTimeout(
+        targetModel.generateContent({
+          contents: [{ role: "user", parts }],
+          generationConfig: withSchema
+            ? { responseMimeType: "application/json", temperature: 0.2, responseSchema: ANALYSIS_SCHEMA }
+            : { responseMimeType: "application/json", temperature: 0.2 },
+        }),
+        GEMINI_REQUEST_TIMEOUT_MS,
+        `Gemini analysis (${modelName})`
+      );
       return JSON.parse(stripFences(result.response.text()));
     };
 
@@ -779,28 +987,54 @@ export async function analyzeComponent({ images, reference, visionEvidence }) {
       try {
         raw = await attempt(false);
       } catch (parseOrSchemaError) {
+        if (!isSchemaRetryableError(parseOrSchemaError)) throw parseOrSchemaError;
         raw = await attempt(true);
       }
       return normalizeAnalysis(raw);
     } catch (modelError) {
       lastError = modelError;
       const errMsg = String(modelError?.message || modelError);
-      // If error is 404 or 429, try the next candidate model
-      if (errMsg.includes("404") || errMsg.includes("429") || errMsg.includes("no longer available")) {
-        console.warn(`Model ${modelName} hit issue (${errMsg.slice(0, 100)}), trying next candidate model...`);
-        continue;
-      }
-      // If authentication error, fail immediately
-      if (errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID") || errMsg.includes("401") || errMsg.includes("403")) {
-        const err = new Error("Invalid Gemini API key. Please check GEMINI_API_KEY in backend/.env.local.");
+      const lower = errMsg.toLowerCase();
+
+      if (lower.includes("api key not valid") || lower.includes("api_key_invalid") || lower.includes("401") || lower.includes("403") || lower.includes("permission denied")) {
+        const err = new Error("Invalid or unauthorized Gemini API key. Check GEMINI_API_KEY in backend/.env.local.");
         err.status = 401;
         throw err;
       }
-      // For any other error, continue to try fallback model
+
+      const retryable =
+        lower.includes("404") ||
+        lower.includes("429") ||
+        lower.includes("503") ||
+        lower.includes("504") ||
+        lower.includes("timed out") ||
+        lower.includes("timeout") ||
+        lower.includes("rate limit") ||
+        lower.includes("quota") ||
+        lower.includes("resource_exhausted") ||
+        lower.includes("no longer available") ||
+        lower.includes("not found") ||
+        lower.includes("overloaded");
+      if (retryable) {
+        console.warn(`[gemini] Model ${modelName} failed (${errMsg.slice(0, 140)}); trying next candidate.`);
+        continue;
+      }
+
+      // Non-retryable content/shape errors: try next model once, but keep the error.
+      console.warn(`[gemini] Model ${modelName} failed (${errMsg.slice(0, 140)}); trying next candidate.`);
     }
   }
 
-  throw lastError || new Error("All candidate Gemini models failed to process component analysis.");
+  const finalMsg = String(lastError?.message || "All candidate Gemini models failed to process component analysis.");
+  const err = new Error(
+    finalMsg.includes("timed out") || finalMsg.toLowerCase().includes("timeout")
+      ? `Gemini analysis timed out. ${finalMsg}`
+      : finalMsg.includes("429") || finalMsg.toLowerCase().includes("quota") || finalMsg.toLowerCase().includes("rate limit")
+        ? `Gemini rate limit/quota exceeded. ${finalMsg}`
+        : `Gemini analysis could not be completed. ${finalMsg}`
+  );
+  err.status = lastError?.status || (finalMsg.includes("429") ? 429 : finalMsg.toLowerCase().includes("timeout") ? 504 : 502);
+  throw err;
 }
 
 function chatSystemInstruction(engineeringContext) {
@@ -855,10 +1089,14 @@ export async function chatWithEngineer({ message, engineeringContext, analysis, 
         history: toHistory(history),
         generationConfig: { temperature: 0.35 },
       });
-      const result = await chat.sendMessage([
-        { text: chatSystemInstruction(context) },
-        { text },
-      ]);
+      const result = await withTimeout(
+        chat.sendMessage([
+          { text: chatSystemInstruction(context) },
+          { text },
+        ]),
+        GEMINI_REQUEST_TIMEOUT_MS,
+        `Gemini chat (${modelName})`
+      );
       const reply = result.response.text();
       if (reply) return { text: reply.trim() };
     } catch (err) {

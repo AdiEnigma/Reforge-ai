@@ -640,3 +640,52 @@ def test_axial_segments_discontinuity_warning():
     assert any("Discontinuity" in w for w in spec.warnings)
 
 
+# ---------------------------------------------------------------------------
+# N. Bearing Recipes
+# ---------------------------------------------------------------------------
+
+def test_bearing_recipe_validates_races_and_rolling_elements():
+    recipe = {
+        "style": "bearing",
+        "bearing": {
+            "outerDiameter": 80.0,
+            "innerDiameter": 30.0,
+            "width": 18.0,
+            "outerRaceInnerDiameter": 63.0,
+            "innerRaceOuterDiameter": 47.0,
+            "pitchDiameter": 55.0,
+            "ballDiameter": 10.0,
+            "ballCount": 9,
+            "grooveDepth": 3.0,
+            "grooveRadius": 2.5,
+            "rows": 1,
+            "shieldType": "open",
+        },
+    }
+
+    spec = validate_recipe(recipe)
+
+    assert spec.status == "ok"
+    assert spec.spec["style"] == "bearing"
+    assert spec.spec["bearing"]["ballCount"] == 9
+    assert spec.spec["bearing"]["innerDiameter"] == 30.0
+    assert spec.spec["bearing"]["outerRaceInnerDiameter"] == 63.0
+
+
+def test_bearing_recipe_rejects_unbounded_ball_count():
+    recipe = {
+        "style": "bearing",
+        "bearing": {
+            "outerDiameter": 80.0,
+            "innerDiameter": 30.0,
+            "width": 18.0,
+            "ballCount": 500,
+        },
+    }
+
+    spec = validate_recipe(recipe)
+
+    assert spec.status == "rejected"
+    assert any("ballCount" in error for error in spec.errors)
+
+

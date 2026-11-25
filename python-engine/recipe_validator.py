@@ -34,6 +34,7 @@ COMPONENT_STYLES = (
     "compound_gear",
     "pinion_shaft",
     "flanged_shaft",
+    "bearing",
 )
 PRIMITIVE_KINDS = ("box", "cylinder", "sphere", "cone", "torus")
 
@@ -43,6 +44,7 @@ RECIPE_LIMITS = {
     "maxHoles": 50,
     "maxPrimitives": 30,
     "maxDimensionRatio": 1000,
+    "maxBalls": 120,
 }
 
 # Unit conversion factors to millimeters (mm)
@@ -496,6 +498,54 @@ def validate_recipe(
 
             spec["gear"] = gear_spec
 
+    # 6b. Bearing Validation (inner/outer races, bore, rolling elements)
+    raw_bearing = recipe.get("bearing")
+    if raw_bearing is not None:
+        if not isinstance(raw_bearing, dict):
+            errors.append("bearing specification must be a dictionary.")
+        else:
+            bearing_spec: Dict[str, Any] = {}
+            for key in (
+                "outerDiameter",
+                "innerDiameter",
+                "width",
+                "outerRaceInnerDiameter",
+                "innerRaceOuterDiameter",
+                "pitchDiameter",
+                "ballDiameter",
+                "grooveDepth",
+                "grooveRadius",
+            ):
+                value = _clean_number(raw_bearing.get(key))
+                if value is None or value <= 0:
+                    missing.append(f"bearing.{key}")
+                else:
+                    bearing_spec[key] = value
+
+            ball_count = _clean_number(raw_bearing.get("ballCount"))
+            if ball_count is None or ball_count < 3 or ball_count > RECIPE_LIMITS["maxBalls"]:
+                errors.append(
+                    f"bearing.ballCount must be between 3 and {RECIPE_LIMITS['maxBalls']}."
+                )
+            else:
+                bearing_spec["ballCount"] = int(round(ball_count))
+
+            rows = _clean_number(raw_bearing.get("rows", 1))
+            if rows is not None:
+                bearing_spec["rows"] = int(round(max(1.0, min(2.0, rows))))
+
+            shield_type = raw_bearing.get("shieldType", "open")
+            bearing_spec["shieldType"] = (
+                shield_type if shield_type in ("open", "shielded", "sealed") else "open"
+            )
+
+            outer_value = bearing_spec.get("outerDiameter")
+            bore_value = bearing_spec.get("innerDiameter")
+            if outer_value is not None and bore_value is not None and bore_value >= outer_value:
+                errors.append("bearing.innerDiameter must be smaller than bearing.outerDiameter.")
+
+            spec["bearing"] = bearing_spec
+
     # 7. Primitives Validation
     raw_prims = recipe.get("primitives")
     if raw_prims is not None:
@@ -620,7 +670,9 @@ def validate_recipe(
 
     # 8. Style Inference if missing
     if not spec.get("style"):
-        if "axialSegments" in spec:
+        if "bearing" in spec:
+            spec["style"] = "bearing"
+        elif "axialSegments" in spec:
             spec["style"] = "axial_segments"
         elif "gear" in spec:
             spec["style"] = "gear"
@@ -644,6 +696,8 @@ def validate_recipe(
             missing.append("depth")
     elif style == "gear" and "gear" not in spec:
         missing.append("gear")
+    elif style == "bearing" and "bearing" not in spec:
+        missing.append("bearing")
 
     # 9. 1000x Dimension-Ratio Clamp Algorithm
     # Matches backend/gemini.js:447-482 exactly
@@ -660,6 +714,21 @@ def validate_recipe(
         dims.append(abs(h["radius"]))
     if spec.get("depth") is not None:
         dims.append(abs(spec["depth"]))
+    if "bearing" in spec:
+        for bk in (
+            "outerDiameter",
+            "innerDiameter",
+            "width",
+            "outerRaceInnerDiameter",
+            "innerRaceOuterDiameter",
+            "pitchDiameter",
+            "ballDiameter",
+            "grooveDepth",
+            "grooveRadius",
+        ):
+            val = spec["bearing"].get(bk)
+            if val is not None:
+                dims.append(abs(val))
     if "gear" in spec:
         for gk in ["module", "faceWidth", "boreRadius"]:
             val = spec["gear"].get(gk)
@@ -702,6 +771,20 @@ def validate_recipe(
                 for gk in ["module", "faceWidth", "boreRadius"]:
                     if gk in spec["gear"]:
                         spec["gear"][gk] = clip(spec["gear"][gk])
+            if "bearing" in spec:
+                for bk in (
+                    "outerDiameter",
+                    "innerDiameter",
+                    "width",
+                    "outerRaceInnerDiameter",
+                    "innerRaceOuterDiameter",
+                    "pitchDiameter",
+                    "ballDiameter",
+                    "grooveDepth",
+                    "grooveRadius",
+                ):
+                    if bk in spec["bearing"]:
+                        spec["bearing"][bk] = clip(spec["bearing"][bk])
             for p in spec.get("primitives", []):
                 for pk in ["width", "height", "depth", "radius", "radiusTop", "radiusBottom", "tube"]:
                     if pk in p:

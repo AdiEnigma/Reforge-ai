@@ -7,6 +7,7 @@ import {
   gearShape,
   matAccent,
   matBody,
+  matDark,
   matHighlight,
   matRim,
   ringShape,
@@ -20,6 +21,7 @@ const RECIPE_LIMITS = {
   maxHoles: 50,
   maxPrimitives: 30,
   maxDimensionRatio: 1000,
+  maxBalls: 120,
 };
 const STYLES = [
   "axial_segments",
@@ -28,6 +30,7 @@ const STYLES = [
   "composition",
   "gear",
   "flange",
+  "bearing",
   "combination",
   "mesh",
   "compound_gear",
@@ -38,6 +41,100 @@ const PRIMITIVE_KINDS = ["box", "cylinder", "sphere", "cone", "torus"];
 
 function num(value) {
   return typeof value === "number" && isFinite(value) ? value : null;
+}
+
+function positive(value) {
+  const n = num(value);
+  return n != null && n > 0 ? n : null;
+}
+
+function bearingBallCount(rawBearing, analysis) {
+  const candidates = [rawBearing?.ballCount, analysis?.ballCount];
+  for (const candidate of candidates) {
+    const n = num(candidate);
+    if (n != null && n >= 3) return Math.round(n);
+  }
+  if (Array.isArray(analysis?.features)) {
+    for (const feature of analysis.features) {
+      const match = String(feature).match(/(\d+)\s*(?:rolling\s*)?balls?/i);
+      if (match?.[1]) return parseInt(match[1], 10);
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalise a bearing recipe from image-derived fields. Missing race/ball
+ * values are derived from the measured outside and bore diameters, never from
+ * a fixed parts catalogue.
+ */
+export function normalizeBearingRecipe(rawBearing, analysis) {
+  if (!rawBearing || typeof rawBearing !== "object") return null;
+  const dims = analysis?.dimensions && typeof analysis.dimensions === "object" ? analysis.dimensions : {};
+  const outerDiameter = positive(rawBearing.outerDiameter) ?? positive(dims.outerDiameter);
+  if (outerDiameter == null) return null;
+  const cap = Math.max(outerDiameter * RECIPE_LIMITS.maxDimensionRatio, 1000);
+  const limit = (value) => Math.max(0, Math.min(value, cap));
+
+  let innerDiameter = positive(rawBearing.innerDiameter) ?? positive(dims.innerDiameter);
+  if (innerDiameter == null || innerDiameter >= outerDiameter) innerDiameter = outerDiameter * 0.5;
+
+  const width = positive(rawBearing.width)
+    ?? positive(rawBearing.thickness)
+    ?? positive(dims.thickness)
+    ?? positive(dims.height)
+    ?? outerDiameter * 0.25;
+
+  let pitchDiameter = positive(rawBearing.pitchDiameter ?? rawBearing.ballCircleDiameter)
+    ?? (outerDiameter + innerDiameter) / 2;
+  if (pitchDiameter <= innerDiameter || pitchDiameter >= outerDiameter) {
+    pitchDiameter = (outerDiameter + innerDiameter) / 2;
+  }
+
+  let ballDiameter = positive(rawBearing.ballDiameter) ?? (outerDiameter - innerDiameter) / 4;
+  ballDiameter = Math.min(ballDiameter, Math.min(pitchDiameter - innerDiameter, outerDiameter - pitchDiameter) * 0.75);
+
+  let innerRaceOuterDiameter = positive(rawBearing.innerRaceOuterDiameter)
+    ?? Math.max(innerDiameter * 1.01, pitchDiameter - ballDiameter * 0.55);
+  innerRaceOuterDiameter = Math.max(innerDiameter * 1.01, Math.min(innerRaceOuterDiameter, pitchDiameter));
+
+  let outerRaceInnerDiameter = positive(rawBearing.outerRaceInnerDiameter)
+    ?? Math.min(outerDiameter * 0.99, pitchDiameter + ballDiameter * 0.55);
+  outerRaceInnerDiameter = Math.min(outerDiameter * 0.99, Math.max(outerRaceInnerDiameter, pitchDiameter));
+
+  const raceGap = Math.min(pitchDiameter - innerRaceOuterDiameter, outerRaceInnerDiameter - pitchDiameter);
+  ballDiameter = Math.min(ballDiameter, raceGap / 0.55);
+
+  let rows = num(rawBearing.rows);
+  rows = rows != null ? Math.max(1, Math.min(2, Math.round(rows))) : 1;
+  if (rows === 2) ballDiameter = Math.min(ballDiameter, width * 0.4);
+
+  let ballCount = bearingBallCount(rawBearing, analysis);
+  if (ballCount == null && ballDiameter > 0) {
+    ballCount = Math.round((Math.PI * pitchDiameter) / (ballDiameter * 1.25));
+  }
+  ballCount = Math.max(6, Math.min(RECIPE_LIMITS.maxBalls, Math.round(ballCount || 6)));
+
+  const grooveDepth = positive(rawBearing.grooveDepth) ?? ballDiameter * 0.25;
+  const grooveRadius = positive(rawBearing.grooveRadius) ?? ballDiameter * 0.225;
+  const shieldType = ["shielded", "sealed"].includes(String(rawBearing.shieldType).toLowerCase())
+    ? String(rawBearing.shieldType).toLowerCase()
+    : "open";
+
+  return {
+    outerDiameter: limit(outerDiameter),
+    innerDiameter: limit(innerDiameter),
+    width: limit(width),
+    pitchDiameter: limit(pitchDiameter),
+    ballDiameter: limit(ballDiameter),
+    ballCount,
+    innerRaceOuterDiameter: limit(innerRaceOuterDiameter),
+    outerRaceInnerDiameter: limit(outerRaceInnerDiameter),
+    grooveDepth: limit(Math.min(grooveDepth, ballDiameter)),
+    grooveRadius: limit(Math.min(grooveRadius, ballDiameter / 2)),
+    rows,
+    shieldType,
+  };
 }
 
 export function sanitizeRecipe(analysis) {
@@ -229,6 +326,11 @@ export function sanitizeRecipe(analysis) {
   };
   if (Object.values(flange).some((v) => v != null)) recipe.flange = flange;
 
+  if (raw.style === "bearing" || raw.bearing && typeof raw.bearing === "object") {
+    const bearing = normalizeBearingRecipe(raw.bearing || {}, analysis);
+    if (bearing) recipe.bearing = bearing;
+  }
+
   const primitives = Array.isArray(raw.primitives) ? raw.primitives.slice(0, RECIPE_LIMITS.maxPrimitives) : [];
   const cleanPrimitives = [];
   for (const p of primitives) {
@@ -251,7 +353,8 @@ export function sanitizeRecipe(analysis) {
   if (cleanPrimitives.length) recipe.primitives = cleanPrimitives;
 
   if (!recipe.style) {
-    if (recipe.flange) recipe.style = "flange";
+    if (recipe.bearing) recipe.style = "bearing";
+    else if (recipe.flange) recipe.style = "flange";
     else if (recipe.gear) recipe.style = "gear";
     else if (recipe.revolvedProfile) recipe.style = "revolved";
     else if (recipe.outline) recipe.style = "extruded";
@@ -263,6 +366,11 @@ export function sanitizeRecipe(analysis) {
   for (const pt of recipe.outline || []) dims.push(Math.abs(pt.x), Math.abs(pt.y));
   for (const h of recipe.holes || []) dims.push(h.radius);
   if (recipe.depth != null) dims.push(recipe.depth);
+  if (recipe.bearing) {
+    for (const key of ["outerDiameter", "innerDiameter", "width", "pitchDiameter", "ballDiameter", "innerRaceOuterDiameter", "outerRaceInnerDiameter", "grooveDepth", "grooveRadius"]) {
+      if (recipe.bearing[key] != null) dims.push(Math.abs(recipe.bearing[key]));
+    }
+  }
   if (recipe.gear) {
     for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius", "coneAngle", "pitch", "rootRadius", "rackLength"]) {
       if (recipe.gear[key] != null) dims.push(Math.abs(recipe.gear[key]));
@@ -301,6 +409,11 @@ export function sanitizeRecipe(analysis) {
       h.radius = clipPositive(h.radius);
     }
     if (recipe.depth != null) recipe.depth = clipPositive(recipe.depth);
+    if (recipe.bearing) {
+      for (const key of ["outerDiameter", "innerDiameter", "width", "pitchDiameter", "ballDiameter", "innerRaceOuterDiameter", "outerRaceInnerDiameter", "grooveDepth", "grooveRadius"]) {
+        if (recipe.bearing[key] != null) recipe.bearing[key] = clipPositive(recipe.bearing[key]);
+      }
+    }
     if (recipe.gear) {
       for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius", "coneAngle", "pitch", "rootRadius", "rackLength"]) {
         if (recipe.gear[key] != null) recipe.gear[key] = clip(recipe.gear[key]);
@@ -319,7 +432,7 @@ export function sanitizeRecipe(analysis) {
   }
 
   if (!recipe.style) return null;
-  if (!(recipe.axialSegments || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange || recipe.primitives || recipe.meshData)) return null;
+  if (!(recipe.bearing || recipe.axialSegments || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange || recipe.primitives || recipe.meshData)) return null;
   return recipe;
 }
 
@@ -959,12 +1072,107 @@ function buildMeshFromRecipe(meshData) {
   return group;
 }
 
+const matShield = new THREE.MeshStandardMaterial({
+  color: "#8a939c",
+  metalness: 0.85,
+  roughness: 0.32,
+  transparent: true,
+  opacity: 0.42,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+
+export function buildBearingFromRecipe(rawBearing, analysis) {
+  const b = normalizeBearingRecipe(rawBearing, analysis);
+  if (!b) return null;
+
+  const group = new THREE.Group();
+  const outerR = b.outerDiameter / 2;
+  const boreR = b.innerDiameter / 2;
+  const pitchR = b.pitchDiameter / 2;
+  const ballR = Math.max(0.01, b.ballDiameter / 2);
+  const innerRaceR = b.innerRaceOuterDiameter / 2;
+  const outerRaceR = b.outerRaceInnerDiameter / 2;
+  const grooveTube = Math.max(0.01, Math.min(b.grooveRadius, b.grooveDepth));
+
+  const outerGeometry = extrude(ringShape(outerR, outerRaceR), b.width);
+  outerGeometry.center();
+  const outerRace = new THREE.Mesh(outerGeometry, matDark);
+  outerRace.userData = { featureId: "feature-bearing-outer-race", featureType: "outer_race", bearingRole: "outer_race" };
+  group.add(outerRace);
+
+  const innerGeometry = extrude(ringShape(innerRaceR, boreR), b.width);
+  innerGeometry.center();
+  const innerRace = new THREE.Mesh(innerGeometry, matBody);
+  innerRace.userData = { featureId: "feature-bearing-inner-race", featureType: "inner_race", bearingRole: "inner_race" };
+  group.add(innerRace);
+
+  const rowZs = b.rows === 2 ? [-b.width * 0.22, b.width * 0.22] : [0];
+  const ballsPerRow = Math.ceil(b.ballCount / rowZs.length);
+  for (let row = 0; row < rowZs.length; row += 1) {
+    for (const [radius, role] of [[innerRaceR, "inner_race"], [outerRaceR, "outer_race"]]) {
+      const groove = new THREE.Mesh(new THREE.TorusGeometry(radius, grooveTube, 10, 72), matDark);
+      groove.position.z = rowZs[row];
+      groove.userData = {
+        featureId: `feature-bearing-groove-${role}-${row + 1}`,
+        featureType: "groove",
+        bearingRole: "groove",
+      };
+      group.add(groove);
+    }
+    for (let i = 0; i < ballsPerRow; i += 1) {
+      const angle = (i / ballsPerRow) * Math.PI * 2 + (row % 2 ? Math.PI / ballsPerRow : 0);
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(ballR, 24, 16), matRim);
+      ball.position.set(Math.cos(angle) * pitchR, Math.sin(angle) * pitchR, rowZs[row]);
+      ball.userData = {
+        featureId: `feature-bearing-ball-${row + 1}-${i + 1}`,
+        featureType: "ball_bearing",
+        bearingRole: "ball",
+        ballIndex: i,
+        row,
+      };
+      group.add(ball);
+    }
+  }
+
+  if (b.shieldType !== "open") {
+    const shieldGeometry = extrude(ringShape(outerR * 0.94, boreR * 1.15), Math.max(0.01, b.width * 0.04));
+    shieldGeometry.center();
+    for (const side of [-1, 1]) {
+      const shield = new THREE.Mesh(shieldGeometry, matShield);
+      shield.position.z = side * b.width * 0.52;
+      shield.userData = {
+        featureId: `feature-bearing-shield-${side > 0 ? "front" : "back"}`,
+        featureType: "shield",
+        bearingRole: "shield",
+      };
+      group.add(shield);
+    }
+  }
+
+  const boreHighlight = new THREE.Mesh(
+    new THREE.CylinderGeometry(boreR * 0.99, boreR * 0.99, b.width * 1.05, 48),
+    matHighlight
+  );
+  boreHighlight.userData = { featureId: "feature-bearing-bore", featureType: "bore", isHighlightOnly: true };
+  boreHighlight.visible = false;
+  group.add(boreHighlight);
+
+  group.userData.bearing = b;
+  return group;
+}
+
 export function executeRecipe(recipe) {
   const style = recipe?.style;
   let body = null;
 
+  // Dedicated bearing recipe: preserves the image-derived races, bore and
+  // rolling-ball count instead of routing a bearing through a gear template.
+  if (style === "bearing" && recipe?.bearing) {
+    body = buildBearingFromRecipe(recipe.bearing);
+
   // Runtime Geometry Engine Execution (Non-categorical declarative AST)
-  if (style === "axial_segments" || (Array.isArray(recipe?.axialSegments) && recipe.axialSegments.length > 0)) {
+  } else if (style === "axial_segments" || (Array.isArray(recipe?.axialSegments) && recipe.axialSegments.length > 0)) {
     const prog = generateGeometryProgram({ geometryRecipe: recipe });
     body = executeGeometryProgram(prog);
   } else if (style === "compound_gear" || (recipe?.gear?.stages && recipe.gear.stages.length >= 2)) {

@@ -245,6 +245,24 @@ export function buildVisionEvidenceSummary(visionResult, evidenceRef = null) {
             line_count: Array.isArray(img.opencv.lines) ? img.opencv.lines.length : 0,
             bounding_box: img.opencv.bounding_box,
             symmetry_hints: img.opencv.symmetry_hints,
+            tooth_count: img.opencv.tooth_count
+              ? {
+                  status: img.opencv.tooth_count.status,
+                  count: img.opencv.tooth_count.count ?? null,
+                  confidence: img.opencv.tooth_count.confidence ?? 0,
+                  methods: Array.isArray(img.opencv.tooth_count.methods)
+                    ? img.opencv.tooth_count.methods.map((method) => ({
+                        method: method.method,
+                        count: method.count ?? null,
+                        confidence: method.confidence ?? 0,
+                      }))
+                    : [],
+                  tooth_marker_count: Array.isArray(img.opencv.tooth_count.teeth)
+                    ? img.opencv.tooth_count.teeth.length
+                    : 0,
+                  warnings: img.opencv.tooth_count.warnings || [],
+                }
+              : null,
             warnings: img.opencv.warnings,
           }
         : null,

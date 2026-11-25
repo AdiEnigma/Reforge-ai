@@ -24,6 +24,7 @@ import {
   reconcileGeminiWithVision,
   fallbackDeterministicAnalysis,
   extractVisionObservations,
+  summarizeToothCountVision,
 } from "./src/vision-geometry-resolver.js";
 import { gearTypeFromText, normalizeGearType } from "./src/gear-types.js";
 import { getDb } from "./src/db.js";
@@ -43,7 +44,15 @@ for (const envFile of [".env.local", ".env"]) {
 
 const PORT = Number(process.env.PORT) || 8787;
 const MAX_IMAGES = 8;
-const MAX_BODY_BYTES = 20 * 1024 * 1024;
+const MAX_BODY_BYTES = 50 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024; // decoded bytes per image
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/bmp",
+]);
 
 const app = express();
 app.disable("x-powered-by");
@@ -75,6 +84,12 @@ app.use("/api/auth", createAuthRouter(db));
 // Workbench persistence routes
 app.use("/api/workbenches", createWorkbenchRouter(db));
 
+function estimateBase64Bytes(base64) {
+  const clean = String(base64 || "").replace(/\s/g, "");
+  const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((clean.length * 3) / 4) - padding);
+}
+
 function validateImages(images) {
   if (!Array.isArray(images) || images.length === 0) {
     const error = new Error("No images provided. Add at least one component image.");
@@ -82,33 +97,49 @@ function validateImages(images) {
     throw error;
   }
   if (images.length > MAX_IMAGES) {
-    const error = new Error(`Too many images. Max ${MAX_IMAGES} views per analysis.`);
+    const error = new Error(`Too many images. Maximum ${MAX_IMAGES} images per analysis.`);
     error.status = 400;
     throw error;
   }
+
   const clean = [];
-  for (const image of images) {
+  for (let i = 0; i < images.length; i++) {
+    const image = images[i];
     if (!image || typeof image.data !== "string" || typeof image.mimeType !== "string") {
-      const error = new Error("Each image must include base64 data and a mimeType.");
+      const error = new Error(`Image ${i + 1} is invalid. Each image must include base64 data and a mimeType.`);
       error.status = 400;
       throw error;
     }
-    if (!image.mimeType.startsWith("image/")) {
-      const error = new Error(`Invalid image type: ${image.mimeType || "unknown"}. Use PNG, JPG, WEBP or GIF.`);
+    const mimeType = image.mimeType.toLowerCase().trim();
+    if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+      const error = new Error(
+        `Unsupported image type for image ${i + 1}: ${image.mimeType || "unknown"}. Use JPEG, PNG, WebP, GIF, or BMP.`
+      );
       error.status = 400;
       throw error;
     }
-    if (!/^[A-Za-z0-9+/=]+$/.test(image.data) || image.data.length < 100) {
-      const error = new Error("One of the images is not valid base64 data.");
+    const data = image.data.replace(/\s/g, "");
+    if (!/^[A-Za-z0-9+/=]+$/.test(data) || data.length < 100) {
+      const error = new Error(`Image ${i + 1} is not valid base64 data.`);
       error.status = 400;
       throw error;
     }
-    clean.push({ data: image.data, mimeType: image.mimeType });
+    const decodedBytes = estimateBase64Bytes(data);
+    if (decodedBytes > MAX_IMAGE_BYTES) {
+      const mb = (decodedBytes / (1024 * 1024)).toFixed(1);
+      const limitMb = (MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(0);
+      const error = new Error(
+        `Image ${i + 1} is too large (${mb} MB). Maximum ${limitMb} MB per image. Resize or compress the image before uploading.`
+      );
+      error.status = 413;
+      throw error;
+    }
+    clean.push({ data, mimeType });
   }
   return clean;
 }
 
-const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle", "coneAngle", "pitch", "starts", "boltCount"];
+const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle", "coneAngle", "pitch", "starts", "boltCount", "ballCount"];
 
 function sanitizeReference(raw) {
   if (!raw || typeof raw !== "object") return {};
@@ -134,6 +165,8 @@ function sanitizeReference(raw) {
       if (value >= 1 && value <= 32) clean[key] = Math.round(value);
     } else if (key === "boltCount") {
       if (value >= 2 && value <= 64) clean[key] = Math.round(value);
+    } else if (key === "ballCount") {
+      if (value >= 3 && value <= 120) clean[key] = Math.round(value);
     } else if (value > 0 && value <= 100000) {
       clean[key] = value;
     }
@@ -314,13 +347,18 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
       solverMode = "gemini_assisted";
       emit(ANALYSIS_STAGES.GEMINI, 'complete');
     } catch (geminiError) {
-      console.warn('[analyze-component] Gemini assist failed or unavailable (falling back to deterministic solver):', geminiError?.message);
-      // Guaranteed zero-crash fallback: synthesized engineering geometry adhering to ISO standards
-      analysis = fallbackDeterministicAnalysis(reference, geminiError?.message || 'Gemini assist offline', images);
-      solverMode = "deterministic_fallback";
-      emit(ANALYSIS_STAGES.GEMINI, 'complete', {
-        warning: 'Gemini unavailable; deterministic fallback used.',
-      });
+      const reason = geminiError?.message || 'Gemini analysis failed.';
+      console.warn('[analyze-component] Gemini analysis failed:', reason);
+      emit(ANALYSIS_STAGES.GEMINI, 'failed', { message: reason });
+      const error = new Error(
+        `Image analysis failed: ${reason} ` +
+        `The uploaded image was not converted into a 3D model because the AI analysis step did not complete. ` +
+        `Check GEMINI_API_KEY, model availability, image size/format, and network connectivity, then retry.`
+      );
+      error.status = geminiError?.status || 502;
+      error.stage = ANALYSIS_STAGES.GEMINI;
+      error.cause = geminiError;
+      throw error;
     }
   }
   checkCancelled();
@@ -337,6 +375,7 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
     }
     if (rawVisionResult) {
       analysis.spatialObservations = extractVisionObservations(rawVisionResult);
+      analysis.toothCountVision = summarizeToothCountVision(rawVisionResult);
     }
     if (!analysis.geometrySource) {
       analysis.geometrySource = solverMode === 'deterministic_cv' ? 'vision_template' : null;
@@ -536,6 +575,17 @@ function validateEngineeringContext(raw) {
 
 const DIMENSION_KEYS = ["outerDiameter", "innerDiameter", "height", "width", "length", "thickness"];
 
+function isBearingAnalysis(raw, recipe) {
+  if (recipe?.style === "bearing" || recipe?.bearing) return true;
+  const type = String(raw?.componentType || "").toLowerCase();
+  const features = Array.isArray(raw?.features) ? raw.features.join(" ").toLowerCase() : "";
+  const bearingType = /\bbearing\b/i.test(type);
+  const ballCount = Number(raw?.ballCount);
+  const rollingEvidence = /\bball|rolling element/i.test(`${type} ${features}`)
+    || (isFinite(ballCount) && ballCount >= 3);
+  return bearingType && rollingEvidence;
+}
+
 /**
  * Validate that analysis has the expected shape.
  * Strips unknown fields; validates dimensions; re-sanitises geometryRecipe.
@@ -557,10 +607,11 @@ function validateAnalysisShape(raw) {
   const cleanNumber = (value) => (
     typeof value === "number" && isFinite(value) ? value : null
   );
-  const geometryRecipe = sanitizeRecipe(raw.geometryRecipe);
+  const geometryRecipe = sanitizeRecipe(raw.geometryRecipe, raw);
   const features = Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [];
   const componentType = typeof raw.componentType === "string" ? raw.componentType : "other";
-  const rawExplicitType = raw.gearType ?? geometryRecipe?.gear?.gearType;
+  const bearingPart = isBearingAnalysis(raw, geometryRecipe);
+  const rawExplicitType = bearingPart ? null : (raw.gearType ?? geometryRecipe?.gear?.gearType);
   const explicitType = typeof rawExplicitType === "string" ? normalizeGearType(rawExplicitType) : null;
   const inferredType = explicitType === null
     ? gearTypeFromText(`${componentType} ${features.join(" ")}`)
@@ -568,10 +619,11 @@ function validateAnalysisShape(raw) {
   const isToothed = raw.teeth != null
     || geometryRecipe?.gear != null
     || /gear|tooth|teeth|cog|worm|rack/i.test(`${componentType} ${features.join(" ")}`);
-  const gearType = explicitType !== null && explicitType !== "unknown"
+  const gearType = bearingPart ? null : (explicitType !== null && explicitType !== "unknown"
     ? explicitType
-    : (inferredType !== "unknown" ? inferredType : (isToothed || explicitType === "unknown" ? "unknown" : null));
-  const requiresGearTypeConfirmation = Boolean(raw.requiresGearTypeConfirmation) || gearType === "unknown";
+    : (inferredType !== "unknown" ? inferredType : (isToothed || explicitType === "unknown" ? "unknown" : null)));
+  const requiresGearTypeConfirmation = !bearingPart
+    && (Boolean(raw.requiresGearTypeConfirmation) || gearType === "unknown");
   if (geometryRecipe?.gear && typeof geometryRecipe.gear === "object" && gearType) {
     geometryRecipe.gear.gearType = gearType;
   }
@@ -589,6 +641,7 @@ function validateAnalysisShape(raw) {
     classificationSource: typeof raw.classificationSource === "string" ? raw.classificationSource.slice(0, 60) : null,
     requiresGearTypeConfirmation,
     teeth: cleanNumber(raw.teeth),
+    ballCount: cleanNumber(raw.ballCount ?? geometryRecipe?.bearing?.ballCount),
     module: cleanNumber(raw.module),
     helixAngle: cleanNumber(raw.helixAngle),
     coneAngle: cleanNumber(raw.coneAngle),
@@ -895,6 +948,20 @@ if (existsSync(distDir)) {
       .send("ReForge AI API is running. Build the frontend (npm run build) or run the Vite dev server with the /api proxy to use the app.");
   });
 }
+
+app.use((err, _req, res, _next) => {
+  if (res.headersSent) return;
+  const status = err?.status || err?.statusCode || (err?.type === "entity.too.large" ? 413 : 500);
+  if (status === 413) {
+    return res.status(413).json({
+      error: "Upload too large. Reduce image size/count or use smaller images (max 50 MB total request).",
+    });
+  }
+  if (err instanceof SyntaxError && status === 400) {
+    return res.status(400).json({ error: "Invalid JSON request body." });
+  }
+  return res.status(status).json({ error: err?.message || "Request failed." });
+});
 
 app.use((_req, res) => res.status(404).json({ error: "Not found." }));
 

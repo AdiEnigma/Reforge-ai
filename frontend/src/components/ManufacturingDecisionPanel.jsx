@@ -20,7 +20,7 @@ import {
   saveManufacturingState,
   resetManufacturingState,
 } from '../lib/manufacturing-config.js';
-import { getParameterRecommendations, getParameterValue } from '../lib/what-if.js';
+import { getParameterRecommendations, getParameterValue, isRecommendationVisible } from '../lib/what-if.js';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -758,11 +758,7 @@ export function ManufacturingDecisionPanel({
                               ? (draftVal ?? field.fallback)
                               : (scenarioVal ?? draftVal ?? analysisVal ?? field.fallback);
                             const rec = geometryRecommendations.find((r) => r.key === field.key);
-                            const recVisible = Boolean(
-                              rec
-                              && !dismissedRecommendations[rec.key]
-                              && Math.abs(Number(currentVal) - Number(rec.value)) > 0.0001
-                            );
+                            const recVisible = isRecommendationVisible(rec, currentVal, dismissedRecommendations);
                             return (
                               <div key={field.key} className={`mfg-field ${recVisible ? 'has-recommendation' : ''}`}>
                                 <label htmlFor={field.id}>{field.label}</label>

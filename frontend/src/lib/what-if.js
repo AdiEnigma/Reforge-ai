@@ -15,6 +15,19 @@ export const PARAM_DEFINITIONS = [
 const EPSILON = 0.0001;
 const DIMENSION_KEYS = new Set(['outerDiameter', 'innerDiameter', 'height', 'width', 'length', 'thickness']);
 
+/**
+ * A recommendation stays visible for every value except its recommended value.
+ * Manual dismissal is the only other way to hide it.
+ */
+export function isRecommendationVisible(recommendation, currentValue, dismissedRecommendations = {}) {
+  if (!recommendation) return false;
+  if (dismissedRecommendations?.[recommendation.key]) return false;
+  const current = Number(currentValue);
+  const target = Number(recommendation.value);
+  if (!Number.isFinite(current) || !Number.isFinite(target)) return false;
+  return Math.abs(current - target) > EPSILON;
+}
+
 function finite(value) {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -151,7 +164,7 @@ function scaledValue(analysis, changes, key, ratio, reason) {
  * Derives opt-in recommendations from the parameters the user actually edited.
  * Recommendations are never written back into the analysis or the 3D model here.
  */
-export function getParameterRecommendations(analysis, changes = {}) {
+function computeParameterRecommendations(analysis, changes = {}) {
   if (!analysis || !changes) return [];
   const keys = changedKeys(changes);
   if (keys.length === 0) return [];
@@ -336,6 +349,32 @@ export function getParameterRecommendations(analysis, changes = {}) {
   }
 
   return recommendations;
+}
+
+/**
+ * Returns recommendations for the current edit set. A parameter that is itself
+ * recommended stays in the result after the user edits it: removing that key
+ * from the driver set shows the recommendation that was derived from the other
+ * edits. The UI decides visibility from the current value, not by discarding
+ * the recommendation here.
+ */
+export function getParameterRecommendations(analysis, changes = {}) {
+  if (!analysis || !changes) return [];
+
+  const recommendations = computeParameterRecommendations(analysis, changes);
+  const changedKeysList = changedKeys(changes);
+  if (changedKeysList.length === 0) return recommendations;
+
+  const byKey = new Map(recommendations.map((rec) => [rec.key, rec]));
+  changedKeysList.forEach((key) => {
+    const withoutTarget = { ...changes };
+    delete withoutTarget[key];
+    computeParameterRecommendations(analysis, withoutTarget).forEach((rec) => {
+      if (rec.key === key) byKey.set(key, rec);
+    });
+  });
+
+  return [...byKey.values()];
 }
 
 function scaleNumber(target, key, ratio) {
