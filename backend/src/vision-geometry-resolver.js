@@ -1878,7 +1878,12 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       const w = reconciled.dimensions.width || 80;
       const l = reconciled.dimensions.length || 140;
       const th = reconciled.dimensions.thickness || reconciled.dimensions.height || 18;
-      const boreR = (reconciled.dimensions.innerDiameter || 20) / 2;
+      const explicitId = Number(reconciled.dimensions.innerDiameter);
+      const hasHoleEvidence = (Number.isFinite(explicitId) && explicitId > 0) ||
+        featuresStr.includes('hole') ||
+        featuresStr.includes('bore') ||
+        featuresStr.includes('eyelet');
+      const boreR = (hasHoleEvidence && explicitId > 0) ? explicitId / 2 : 0;
 
       const halfW = w / 2;
       const halfL = l / 2;
@@ -1896,10 +1901,12 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           holes.push({ cx: halfL * 0.65, cy: 0, radius: boreR * 1.15 });
         } else {
           holes.push({ cx: 0, cy: 0, radius: boreR });
-          const mR = Math.min(boreR * 0.45, 6);
-          if (mR > 2) {
-            holes.push({ cx: -halfL * 0.68, cy: 0, radius: mR });
-            holes.push({ cx: halfL * 0.68, cy: 0, radius: mR });
+          if (featuresStr.includes('mounting') || featuresStr.includes('bolt') || featuresStr.includes('holes')) {
+            const mR = Math.min(boreR * 0.45, 6);
+            if (mR > 2) {
+              holes.push({ cx: -halfL * 0.68, cy: 0, radius: mR });
+              holes.push({ cx: halfL * 0.68, cy: 0, radius: mR });
+            }
           }
         }
       }
@@ -2145,7 +2152,7 @@ function buildRecipeFromDimensions(analysis) {
     const w = dims.width || 80;
     const l = dims.length || dims.width || 120;
     const th = dims.thickness || dims.height || 18;
-    const boreR = (id || 20) / 2;
+    const boreR = (typeof id === 'number' && id > 0) ? id / 2 : 0;
     const halfW = w / 2;
     const halfL = l / 2;
     const outline = [
