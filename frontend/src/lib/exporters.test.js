@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as exporters from './exporters.js';
+import { requestCadExport } from './cad-export.js';
 
 const mockAnalysis = {
   componentType: 'spur_gear',
@@ -55,6 +56,25 @@ function stubFetch() {
 }
 
 describe('Engineering Exporter Suite', () => {
+  it('downloads the saved workbench asset bytes after receiving the export receipt', async () => {
+    const bytes = new Uint8Array([10, 42, 255]);
+    const calls = [];
+    globalThis.fetch = async (url, options) => {
+      calls.push(url);
+      assert.equal(options.credentials, 'include');
+      if (options.method === 'POST') return Response.json({ asset: { id: 'asset-1' } });
+      return new Response(bytes, { headers: { 'Content-Disposition': 'inline; filename="plate.step"' } });
+    };
+    try {
+      const { blob, filename } = await requestCadExport(mockAnalysis, 'step', { workbenchId: 'wb-1' });
+      assert.deepEqual(calls, ['/api/workbenches/wb-1/export-cad', '/api/workbenches/wb-1/assets/asset-1']);
+      assert.equal(filename, 'plate.step');
+      assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), bytes);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('requests real CAD exports from the backend (STEP, IGES, STL, OBJ)', async () => {
     const requests = stubFetch();
     try {

@@ -93,6 +93,8 @@ const ANALYSIS_SCHEMA = {
             boreRadius: { type: "NUMBER" },
             hubDiameter: { type: "NUMBER" },
             hubLength: { type: "NUMBER" },
+            webThickness: { type: "NUMBER" },
+            rimInnerRadius: { type: "NUMBER" },
             spokes: { type: "NUMBER" },
             pitch: { type: "NUMBER" },
             starts: { type: "NUMBER" },
@@ -634,6 +636,10 @@ export function sanitizeRecipe(rawRecipe) {
         boreRadius: Math.max(0, boreRadius),
         hubDiameter: hubDiameter != null && hubDiameter > 0 ? hubDiameter : null,
         hubLength: hubLength != null && hubLength > 0 ? hubLength : null,
+        webThickness: cleanNumber(g.webThickness),
+        rimInnerRadius: cleanNumber(g.rimInnerRadius),
+        ...(cleanNumber(g.keyway?.width) > 0 && cleanNumber(g.keyway?.height) > 0
+          ? { keyway: { width: g.keyway.width, height: g.keyway.height } } : {}),
         spokes: spokes || null,
         pitch: pitch != null && pitch > 0 ? pitch : null,
         starts: starts != null && starts >= 1 ? Math.round(starts) : null,
@@ -692,7 +698,7 @@ export function sanitizeRecipe(rawRecipe) {
   for (const h of recipe.holes || []) { dims.push(Math.abs(h.cx)); dims.push(Math.abs(h.cy)); dims.push(Math.abs(h.radius)); }
   if (recipe.depth != null) dims.push(Math.abs(recipe.depth));
   if (recipe.gear) {
-    for (const key of ["module", "faceWidth", "boreRadius", "outerDiameter", "coneAngle", "pitch", "rootRadius", "rackLength", "hubDiameter", "hubLength"]) {
+    for (const key of ["module", "faceWidth", "boreRadius", "outerDiameter", "coneAngle", "pitch", "rootRadius", "rackLength", "hubDiameter", "hubLength", "webThickness", "rimInnerRadius"]) {
       if (recipe.gear[key] != null) dims.push(Math.abs(recipe.gear[key]));
     }
     for (const stage of recipe.gear.stages || []) {

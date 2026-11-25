@@ -204,6 +204,9 @@ export function sanitizeRecipe(analysis) {
     boreRadius: num(g.boreRadius),
     hubDiameter: num(g.hubDiameter),
     hubLength: num(g.hubLength),
+    webThickness: num(g.webThickness),
+    rimInnerRadius: num(g.rimInnerRadius),
+    keyway: g.keyway && { width: num(g.keyway.width), height: num(g.keyway.height) },
     spokes: num(g.spokes),
     pitch: num(g.pitch),
     starts: num(g.starts),
@@ -264,7 +267,7 @@ export function sanitizeRecipe(analysis) {
   for (const h of recipe.holes || []) dims.push(h.radius);
   if (recipe.depth != null) dims.push(recipe.depth);
   if (recipe.gear) {
-    for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius", "coneAngle", "pitch", "rootRadius", "rackLength"]) {
+    for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius", "coneAngle", "pitch", "rootRadius", "rackLength", "webThickness", "rimInnerRadius"]) {
       if (recipe.gear[key] != null) dims.push(Math.abs(recipe.gear[key]));
     }
     for (const stage of recipe.gear.stages || []) {
@@ -302,7 +305,7 @@ export function sanitizeRecipe(analysis) {
     }
     if (recipe.depth != null) recipe.depth = clipPositive(recipe.depth);
     if (recipe.gear) {
-      for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius", "coneAngle", "pitch", "rootRadius", "rackLength"]) {
+      for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius", "coneAngle", "pitch", "rootRadius", "rackLength", "webThickness", "rimInnerRadius"]) {
         if (recipe.gear[key] != null) recipe.gear[key] = clip(recipe.gear[key]);
       }
       for (const stage of recipe.gear.stages || []) {
@@ -487,7 +490,7 @@ function buildInternalGearGroup(gear, teeth, module, outerR, toothHeight, height
   return group;
 }
 
-export function buildGearFromRecipe(gear) {
+export function buildGearFromRecipe(gear, holes = []) {
   const teeth = Math.max(6, Math.min(200, Math.round(gear.teeth || 16)));
   const module = gear.module != null && gear.module > 0 ? gear.module : null;
   const faceWidth = gear.faceWidth != null && gear.faceWidth > 0 ? gear.faceWidth : null;
@@ -520,6 +523,27 @@ export function buildGearFromRecipe(gear) {
   const hubR = gear.hubDiameter != null && gear.hubDiameter > 0 ? gear.hubDiameter / 2 : (bore > 0 ? bore * 1.65 : 0);
   const hubH = gear.hubLength != null && gear.hubLength > 0 ? gear.hubLength : height * 0.28;
   const rimInnerR = outerR * 0.72;
+
+  if (gearType === "spur" && gear.webThickness > 0 && gear.webThickness <= height &&
+      hubR > bore && gear.rimInnerRadius > hubR && gear.rootRadius > gear.rimInnerRadius && outerR > gear.rootRadius) {
+    const group = new THREE.Group();
+    const rim = gearShape(teeth, outerR, outerR - gear.rootRadius, gear.rimInnerRadius);
+    const web = ringShape(gear.rimInnerRadius, hubR);
+    for (const { cx, cy, radius } of holes || []) {
+      const hole = new THREE.Path();
+      hole.absarc(cx, cy, radius, 0, Math.PI * 2, true);
+      web.holes.push(hole);
+    }
+    const hub = ringShape(hubR, bore, [], gear.keyway);
+    for (const [shape, depth, featureType] of [[rim, height, "gear_teeth"], [web, gear.webThickness, "web"], [hub, hubH, "hub"]]) {
+      const geo = extrude(shape, depth, false);
+      geo.translate(0, 0, -depth / 2);
+      const mesh = new THREE.Mesh(geo, matBody);
+      mesh.userData = { featureId: `feature-${featureType}-1`, featureType, teeth };
+      group.add(mesh);
+    }
+    return group;
+  }
 
   if (gearType === "bevel") {
     const prog = generateGeometryProgram({

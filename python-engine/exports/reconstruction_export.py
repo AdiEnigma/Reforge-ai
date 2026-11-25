@@ -151,10 +151,16 @@ def _clean_recipe(raw: Any) -> Optional[Dict[str, Any]]:
             "coneAngle",
             "hubDiameter",
             "hubLength",
+            "rootRadius",
+            "webThickness",
+            "rimInnerRadius",
         ):
             value = _num(gear.get(key))
             if value is not None:
                 clean_gear[key] = value
+        keyway = gear.get("keyway")
+        if isinstance(keyway, dict) and _positive(keyway.get("width")) and _positive(keyway.get("height")):
+            clean_gear["keyway"] = {"width": _positive(keyway["width"]), "height": _positive(keyway["height"])}
         if "teeth" in clean_gear:
             clean_gear["teeth"] = int(round(max(6.0, min(200.0, clean_gear["teeth"]))))
         if isinstance(gear.get("gearType"), str):
@@ -394,7 +400,7 @@ def _twisted_tooth_extrusion(
     return cq.Workplane("XY").newObject([solid])
 
 
-def _gear_solid(gear: Dict[str, Any], analysis: Dict[str, Any]) -> cq.Workplane:
+def _gear_solid(gear: Dict[str, Any], analysis: Dict[str, Any], holes=None) -> cq.Workplane:
     dims = _dims(analysis)
     teeth = int(round(_num(gear.get("teeth")) or _num(analysis.get("teeth")) or 16))
     teeth = max(6, min(200, teeth))
@@ -443,6 +449,27 @@ def _gear_solid(gear: Dict[str, Any], analysis: Dict[str, Any]) -> cq.Workplane:
             bore=bore,
             outer_r=outer_r,
         )
+
+    web = _positive(gear.get("webThickness")) or 0
+    rim = _positive(gear.get("rimInnerRadius")) or 0
+    root = _positive(gear.get("rootRadius")) or 0
+    hub = (_positive(gear.get("hubDiameter")) or 0) / 2
+    if gear_type == "spur" and 0 < web <= face_width and bore < hub < rim < root < outer_r:
+        points = _gear_profile(teeth, outer_r, outer_r - root, pressure)
+        body = cq.Workplane("XY").polyline(points).close().moveTo(0, 0).circle(rim).extrude(face_width)
+        body = body.translate((0, 0, -face_width / 2))
+        plate = cq.Workplane("XY").circle(rim).circle(hub)
+        for hole in holes or []:
+            plate = plate.moveTo(hole["cx"], hole["cy"]).circle(hole["radius"])
+        body = body.union(plate.extrude(web).translate((0, 0, -web / 2)))
+        hub_len = _positive(gear.get("hubLength")) or face_width
+        boss = cq.Workplane("XY").circle(hub).circle(bore).extrude(hub_len) if bore else cq.Workplane("XY").circle(hub).extrude(hub_len)
+        key = gear.get("keyway")
+        if key and bore:
+            top = min(hub, bore + key["height"])
+            slot = cq.Workplane("XY").center(0, top / 2).rect(min(key["width"], bore * 1.3), top).extrude(hub_len)
+            boss = boss.cut(slot)
+        return body.union(boss.translate((0, 0, -hub_len / 2)))
 
     points = _gear_profile(teeth, outer_r, tooth_h, pressure)
     if abs(helix) > 0.01:
@@ -832,7 +859,7 @@ def build_shape(analysis: Dict[str, Any]) -> Tuple[cq.Workplane, str]:
         style = recipe["style"]
         try:
             if style == "gear" or recipe.get("gear"):
-                return _gear_solid(recipe.get("gear") or {}, analysis), "gear"
+                return _gear_solid(recipe.get("gear") or {}, analysis, recipe.get("holes")), "gear"
             if style == "flange" or recipe.get("flange"):
                 return _flange_solid(recipe, analysis), "flange"
             if style == "revolved":

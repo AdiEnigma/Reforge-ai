@@ -98,13 +98,32 @@ export function extrude(shape, depth, bevel = true) {
   });
 }
 
-export function ringShape(outerR, innerR, boltHoles = []) {
+function borePath(boreR, keyway) {
+  const hole = new THREE.Path();
+  const kwWidth = Number(keyway?.width || keyway?.w || 0);
+  const kwHeight = Number(keyway?.height || keyway?.depth || keyway?.h || 0);
+  if (kwWidth > 0 && kwHeight > 0) {
+    const halfW = Math.min(kwWidth / 2, boreR * 0.65);
+    const notchTop = boreR + kwHeight;
+    const yInter = Math.sqrt(Math.max(0, boreR * boreR - halfW * halfW));
+    const startAngle = Math.atan2(yInter, halfW);
+    const endAngle = Math.atan2(yInter, -halfW);
+
+    hole.absarc(0, 0, boreR, endAngle, startAngle, false);
+    hole.lineTo(halfW, notchTop);
+    hole.lineTo(-halfW, notchTop);
+    hole.lineTo(-halfW, yInter);
+  } else {
+    hole.absarc(0, 0, boreR, 0, Math.PI * 2, true);
+  }
+  return hole;
+}
+
+export function ringShape(outerR, innerR, boltHoles = [], keyway = null) {
   const shape = new THREE.Shape();
   shape.absarc(0, 0, outerR, 0, Math.PI * 2, false);
   if (innerR > 0) {
-    const hole = new THREE.Path();
-    hole.absarc(0, 0, innerR, 0, Math.PI * 2, true);
-    shape.holes.push(hole);
+    shape.holes.push(borePath(innerR, keyway));
   }
   for (const hole of boltHoles) {
     shape.holes.push(hole);
@@ -181,23 +200,7 @@ export function gearShape(teeth, outerR, toothHeight, boreR, lighteningHoles = [
   shape.closePath();
 
   if (boreR && boreR > 0 && boreR < Ra) {
-    const hole = new THREE.Path();
-    const kwWidth = Number(keyway?.width || keyway?.w || 0);
-    const kwHeight = Number(keyway?.height || keyway?.depth || keyway?.h || 0);
-    if (kwWidth > 0 && kwHeight > 0) {
-      const halfW = Math.min(kwWidth / 2, boreR * 0.65);
-      const notchTop = boreR + kwHeight;
-      const yInter = Math.sqrt(Math.max(0, boreR * boreR - halfW * halfW));
-      const startAngle = Math.atan2(yInter, halfW);
-      const endAngle = Math.atan2(yInter, -halfW);
-
-      hole.absarc(0, 0, boreR, endAngle, startAngle, false);
-      hole.lineTo(halfW, notchTop);
-      hole.lineTo(-halfW, notchTop);
-      hole.lineTo(-halfW, yInter);
-    } else {
-      hole.absarc(0, 0, boreR, 0, Math.PI * 2, true);
-    }
+    const hole = borePath(boreR, keyway);
     shape.holes.push(hole);
   }
 

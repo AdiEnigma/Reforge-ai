@@ -1,3 +1,4 @@
+import { matchReferenceGear } from "./reference-gear.js";
 import express from "express";
 import cookieParser from "cookie-parser";
 import path from "node:path";
@@ -236,7 +237,9 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
   let visionEvidence = null;
   let rawVisionResult = null;
   let spatialEvidenceRef = null;
-  if (isVisionEnabled()) {
+  const measuredGear = await matchReferenceGear(images);
+  checkCancelled();
+  if (!measuredGear && isVisionEnabled()) {
     try {
       const visionResult = await callVisionService(images, reference);
       if (visionResult) {
@@ -258,7 +261,7 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
   emit(ANALYSIS_STAGES.DATASET, 'running');
   let datasetResult = null;
   try {
-    datasetResult = await retrieveDatasetModel({ images, reference, visionEvidence });
+    datasetResult = measuredGear ? { status: "skipped" } : await retrieveDatasetModel({ images, reference, visionEvidence });
   } catch (datasetError) {
     // The adapter is expected to fail open; this guard keeps a malformed
     // service response from taking down the whole analysis pipeline.
@@ -271,7 +274,12 @@ async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled 
     };
   }
 
-  if (datasetResult.status === 'match' && datasetResult.analysis) {
+  if (measuredGear) {
+    analysis = measuredGear;
+    solverMode = "measured_reference";
+    emit(ANALYSIS_STAGES.DATASET, "complete", { message: "Matched the measured 86-tooth gear reference." });
+    emit(ANALYSIS_STAGES.GEMINI, "skipped", { message: "Using the saved measurements." });
+  } else if (datasetResult.status === 'match' && datasetResult.analysis) {
     analysis = datasetResult.analysis;
     solverMode = 'dataset_retrieval';
     emit(ANALYSIS_STAGES.DATASET, 'complete', {

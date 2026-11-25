@@ -7,6 +7,8 @@
  * builds real B-Rep solids with CadQuery (python-engine/exports/reconstruction_export.py).
  */
 
+import { exportAndSaveCadApi } from "./workbench-api.js";
+
 export const CAD_EXPORT_MIME_TYPES = {
   step: "application/step",
   iges: "application/iges",
@@ -47,11 +49,15 @@ export async function requestCadExport(analysis, format, options = {}) {
   }
   const baseName = options.baseName || cadExportSlug(analysis);
   const wbId = options.workbenchId || (typeof window !== "undefined" ? window.__REFORGE_CURRENT_WB_ID__ : null);
-  const exportUrl = wbId ? `/api/workbenches/${wbId}/export-cad` : "/api/cad/export";
-
   let response;
+  let assetUrl;
+  if (wbId) {
+    const saved = await exportAndSaveCadApi(wbId, { analysis, format, baseName });
+    if (!saved?.asset?.id) throw new Error("CAD export did not return a saved asset.");
+    assetUrl = `/api/workbenches/${encodeURIComponent(wbId)}/assets/${encodeURIComponent(saved.asset.id)}`;
+  }
   try {
-    response = await fetch(exportUrl, {
+    response = assetUrl ? await fetch(assetUrl, { credentials: "include" }) : await fetch("/api/cad/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -74,6 +80,10 @@ export async function requestCadExport(analysis, format, options = {}) {
     throw new Error(message);
   }
 
+  const contentType = response.headers?.get?.("content-type") || "";
+  if (/json|text\/html/i.test(contentType)) {
+    throw new Error("The CAD download returned a server message instead of a model.");
+  }
   const blob = await response.blob();
   const filename =
     filenameFromDisposition(response.headers?.get?.("content-disposition")) ||
