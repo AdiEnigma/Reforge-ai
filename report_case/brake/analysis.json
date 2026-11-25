@@ -1,0 +1,59 @@
+{
+  "analysis": {
+    "componentType": "other",
+    "confidence": 0,
+    "geometryType": "",
+    "dimensions": {
+      "outerDiameter": null,
+      "innerDiameter": null,
+      "height": null,
+      "width": null,
+      "length": null,
+      "thickness": null
+    },
+    "features": [],
+    "teeth": null,
+    "module": null,
+    "spokes": null,
+    "boltCount": null,
+    "helixAngle": null,
+    "materialEstimate": "",
+    "manufacturingProcess": "",
+    "reasoning": "",
+    "uncertainties": [],
+    "geometryRecipe": null,
+    "gearType": null,
+    "coneAngle": null,
+    "status": "unresolved",
+    "scale": "relative",
+    "missingInputs": [
+      "Supply a known dimension for this component to establish scale.",
+      "Add a side or oblique view showing the component profile and depth."
+    ],
+    "region": null,
+    "components": [],
+    "previewRecipe": null,
+    "observations": []
+  },
+  "solverMode": "gemini_assisted",
+  "visionDiagnostics": {
+    "status": "partial",
+    "images": [
+      {
+        "image_index": 0,
+        "segmentation_status": "unavailable",
+        "candidate_count": 0,
+        "depth_status": "unavailable",
+        "opencv_contour_count": 0,
+        "warnings": [
+          "cannot unpack non-iterable numpy.int32 object",
+          "Relative depth only; not a measurement in millimetres.",
+          "cannot unpack non-iterable numpy.int32 object"
+        ]
+      }
+    ],
+    "warnings": [
+      "Image 0 failed: cannot unpack non-iterable numpy.int32 object"
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "analysis": {
+    "componentType": "other",
+    "confidence": 0,
+    "geometryType": "",
+    "dimensions": {
+      "outerDiameter": null,
+      "innerDiameter": null,
+      "height": null,
+      "width": null,
+      "length": null,
+      "thickness": null
+    },
+    "features": [],
+    "teeth": null,
+    "module": null,
+    "spokes": null,
+    "boltCount": null,
+    "helixAngle": null,
+    "materialEstimate": "",
+    "manufacturingProcess": "",
+    "reasoning": "",
+    "uncertainties": [],
+    "geometryRecipe": null,
+    "gearType": null,
+    "coneAngle": null,
+    "status": "unresolved",
+    "scale": "relative",
+    "missingInputs": [
+      "Supply a known dimension for this component to establish scale.",
+      "Add a side or oblique view showing the component profile and depth."
+    ],
+    "region": null,
+    "components": [],
+    "previewRecipe": null,
+    "observations": []
+  },
+  "solverMode": "gemini_assisted"
+}

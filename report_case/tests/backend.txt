@@ -1,0 +1,99 @@
+﻿
+> reforge-ai-backend@0.1.0 test
+> node --test *.test.js
+
+
+─── engineering-analysis.test.js ──────────────────
+
+[ 1. Dimension Change Simulation ]
+  ✓ Simulate increasing bore: reduces volume and mass
+
+[ 2. Quantity Change Simulation ]
+  ✓ Simulate batch quantity increase: reduces per-unit cost
+
+[ 3. Dimension Sensitivity Analysis ]
+  ✓ Outer diameter has higher sensitivity than length for cylinder
+
+─── Results: 3 passed, 0 failed ─────────────────
+✔ engineering-analysis.test.js (52.8922ms)
+
+─── material-comparison.test.js ──────────────────────────
+
+[ Pure helpers ]
+  ✓ T7a calculateMaterialMass — cylinder 196.35 cm³, mild steel 7.85 g/cm³ → 1.542 kg
+  ✓ T7b calculateMaterialCost — 1.541 kg × ₹65/kg → ₹100 approx
+  ✓ T6a calculateRelativeChange — 0.50 vs 1.00 → -50%
+  ✓ T6b calculateRelativeChange — 1.35 vs 1.00 → +35%
+  ✓ T6c calculateRelativeChange — zero denominator returns 0
+
+[ T1 — Mild steel baseline (volumeCm3 = 100) ]
+  ✓ T1a — result is not an error
+  ✓ T1b — current material key is mild_steel
+  ✓ T1c — current mass = 100 × 7.85 / 1000 = 0.785 kg
+  ✓ T1d — current material cost = 0.785 × 65 = ₹51 approx
+  ✓ T1e — alternatives exist (up to 3)
+  ✓ T1f — aluminium is lighter than mild steel
+  ✓ T1g — stainless steel is more expensive (material cost) than mild steel
+  ✓ T1h — cast iron mass < mild steel mass (lower density)
+  ✓ T1i — no duplicate: current material not in alternatives
+
+[ T2 — Aluminium baseline ]
+  ✓ T2a — current is aluminium
+  ✓ T2b — mild steel is an alternative
+  ✓ T2c — stainless steel is an alternative
+  ✓ T2d — aluminium not in its own alternatives
+
+[ T3 — Unknown material ]
+  ✓ T3a — no error returned
+  ✓ T3b — source is fallback-default
+  ✓ T3c — assumption is present (non-null)
+  ✓ T3d — alternatives still computed
+
+[ T4 — Invalid volume ]
+  ✓ T4a — zero volumeCm3 → error shape
+  ✓ T4b — negative volumeCm3 → error shape
+  ✓ T4c — null volumeCm3 → error shape (no throw)
+
+[ T5 — Missing manufacturingIntelligence ]
+  ✓ T5 — null mfgIntelligence → error shape
+
+[ T8 — No duplicate materials ]
+  ✓ T8 — mild steel: not duplicated in alternatives
+  ✓ T8 — hardened steel: not duplicated in alternatives
+  ✓ T8 — stainless: not duplicated in alternatives
+  ✓ T8 — cast iron: not duplicated in alternatives
+  ✓ T8 — aluminium: not duplicated in alternatives
+  ✓ T8 — brass: not duplicated in alternatives
+  ✓ T8 — bronze: not duplicated in alternatives
+  ✓ T8 — plastic: not duplicated in alternatives
+
+[ T9 — Plastic — no alternatives in current DB ]
+  ✓ T9a — no error for plastic
+  ✓ T9b — alternatives array exists (may be empty)
+  ✓ T9c — no metal in plastic alternatives
+
+[ T6d — Hand-checked aluminium vs mild steel percentage ]
+  ✓ T6d — aluminium ~66% lighter than mild steel
+
+─── Results: 38 passed, 0 failed ─────────────────
+✔ material-comparison.test.js (48.0125ms)
+✔ isReconstructionEnabled defaults to false (0.4404ms)
+✔ callReconstructionService returns null when reconstruction is disabled (0.1376ms)
+✔ isVisionEnabled defaults to false (0.5548ms)
+✔ callVisionService returns null when vision is disabled (0.1759ms)
+✔ buildVisionEvidenceSummary returns null on empty or null input (0.1109ms)
+✔ buildVisionEvidenceSummary preserves structure and strips heavy arrays (0.1744ms)
+✔ outage preserves reference and local observations without classifying circles (1.869ms)
+✔ calibrated bracket retains mounting holes, signed coordinates and extrusion (1.0391ms)
+✔ assembly owns per-part features and scopes calibration (0.3592ms)
+✔ complete identified flange survives; holes and a flange recipe alone cannot reclassify a bracket (1.0022ms)
+✔ confirmed cylinder uses a matching calibrated view and explicit bore and length (0.4453ms)
+✔ an estimated image recipe produces a preview without qualifying for measured CAD (0.1786ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 95.1002

@@ -1,0 +1,66 @@
+{
+  "note": "All pixel measurements. Physical mm requires a known reference dimension.",
+  "image_size_px": {
+    "width": 280,
+    "height": 286
+  },
+  "circle_candidates": [
+    {
+      "cx_px": 95.0,
+      "cy_px": 152.0,
+      "radius_px": 130.0,
+      "diameter_px": 260.0,
+      "confidence": 0.731
+    },
+    {
+      "cx_px": 152.0,
+      "cy_px": 158.0,
+      "radius_px": 119.0,
+      "diameter_px": 238.0,
+      "confidence": 1.0
+    },
+    {
+      "cx_px": 181.0,
+      "cy_px": 157.0,
+      "radius_px": 107.0,
+      "diameter_px": 214.0,
+      "confidence": 0.925
+    },
+    {
+      "cx_px": 128.0,
+      "cy_px": 176.0,
+      "radius_px": 91.0,
+      "diameter_px": 182.0,
+      "confidence": 1.0
+    },
+    {
+      "cx_px": 131.0,
+      "cy_px": 125.0,
+      "radius_px": 87.0,
+      "diameter_px": 174.0,
+      "confidence": 1.0
+    },
+    {
+      "cx_px": 163.0,
+      "cy_px": 130.0,
+      "radius_px": 60.0,
+      "diameter_px": 120.0,
+      "confidence": 1.0
+    },
+    {
+      "cx_px": 103.0,
+      "cy_px": 113.0,
+      "radius_px": 57.0,
+      "diameter_px": 114.0,
+      "confidence": 1.0
+    }
+  ],
+  "estimated_features": {
+    "flange_outer_diameter_px": 260.0,
+    "centre_bore_diameter_px": 114.0,
+    "bolt_hole_count_detected": 0,
+    "bolt_hole_diameter_px_avg": "n/a",
+    "bolt_circle_diameter_px": "requires physical reference",
+    "scale_note": "To convert px\u2192mm: measure OD with callipers, then mm_per_px = OD_mm / flange_outer_diameter_px"
+  }
+}

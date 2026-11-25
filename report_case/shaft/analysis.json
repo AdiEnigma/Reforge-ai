@@ -1,0 +1,113 @@
+{
+  "analysis": {
+    "componentType": "helical gear shaft",
+    "confidence": 0.95,
+    "geometryType": "",
+    "dimensions": {
+      "outerDiameter": null,
+      "innerDiameter": null,
+      "height": null,
+      "width": null,
+      "length": null,
+      "thickness": null
+    },
+    "features": [
+      "helical teeth",
+      "stepped shaft",
+      "threaded end",
+      "tapped hole on shaft end"
+    ],
+    "teeth": null,
+    "module": null,
+    "spokes": null,
+    "boltCount": null,
+    "helixAngle": null,
+    "materialEstimate": "hardened steel",
+    "manufacturingProcess": "CNC machining",
+    "reasoning": "The component is a single-piece integrated helical gear and shaft, commonly used in transmission systems. It features a helical gear section, a smooth bearing journal, and a threaded end for fastening.",
+    "uncertainties": [
+      "Exact tooth count is difficult to determine without a clear top-down view.",
+      "Helix angle cannot be measured accurately from the perspective.",
+      "Absolute dimensions are missing as no reference object is provided."
+    ],
+    "geometryRecipe": {
+      "style": "combination",
+      "primitives": [
+        {
+          "kind": "cylinder",
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "height": 1,
+          "radius": 0.2
+        },
+        {
+          "kind": "cylinder",
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "height": 0.4,
+          "radius": 0.4
+        }
+      ]
+    },
+    "gearType": null,
+    "coneAngle": null,
+    "status": "partial",
+    "scale": "relative",
+    "missingInputs": [
+      "absolute dimensions",
+      "exact tooth count",
+      "helix angle",
+      "material specification",
+      "Supply a known dimension for this component to establish scale."
+    ],
+    "region": {
+      "imageIndex": 0,
+      "bounds": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    "components": [],
+    "previewRecipe": null,
+    "observations": []
+  },
+  "solverMode": "gemini_assisted",
+  "visionDiagnostics": {
+    "status": "partial",
+    "images": [
+      {
+        "image_index": 0,
+        "segmentation_status": "unavailable",
+        "candidate_count": 0,
+        "depth_status": "unavailable",
+        "opencv_contour_count": 0,
+        "warnings": [
+          "cannot unpack non-iterable numpy.int32 object",
+          "Relative depth only; not a measurement in millimetres.",
+          "cannot unpack non-iterable numpy.int32 object"
+        ]
+      }
+    ],
+    "warnings": [
+      "Image 0 failed: cannot unpack non-iterable numpy.int32 object"
+    ]
+  }
+}

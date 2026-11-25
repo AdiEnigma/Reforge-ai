@@ -1,0 +1,4 @@
+{
+  "status": 422,
+  "message": "Measured component geometry is required. Review the missing views and measurements."
+}

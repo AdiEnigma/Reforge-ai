@@ -1,0 +1,11 @@
+{
+  "device": "cuda",
+  "shared_model_init_s": 4.900241899999855,
+  "sam2_generate_s": 2.0748166999992463,
+  "observed_hough_shape": [
+    201,
+    4
+  ],
+  "relative_depth_s": 0.055629700000281446,
+  "vision_pipeline_s": 2.4693233999996664
+}

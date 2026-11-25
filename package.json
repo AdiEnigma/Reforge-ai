@@ -1,0 +1,8 @@
+{
+  "name": "reforge-ai",
+  "private": true,
+  "scripts": {
+    "server": "npm --prefix backend run server",
+    "dev": "npm --prefix frontend run dev"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "analysis": {
+    "componentType": "helical gear shaft",
+    "confidence": 0.95,
+    "geometryType": "",
+    "dimensions": {
+      "outerDiameter": null,
+      "innerDiameter": null,
+      "height": null,
+      "width": null,
+      "length": null,
+      "thickness": null
+    },
+    "features": [
+      "helical teeth",
+      "stepped shaft",
+      "threaded end",
+      "center hole on shaft end"
+    ],
+    "teeth": null,
+    "module": null,
+    "spokes": null,
+    "boltCount": null,
+    "helixAngle": null,
+    "materialEstimate": "hardened steel",
+    "manufacturingProcess": "CNC machining",
+    "reasoning": "The component is a single-piece integrated helical gear and shaft assembly, commonly used in automotive or industrial transmissions. It features a helical gear section, a smooth bearing journal, and a threaded end for fastening.",
+    "uncertainties": [
+      "Tooth count is difficult to determine precisely without manual counting",
+      "Helix angle is not measurable from a 2D perspective",
+      "Absolute dimensions are unknown due to lack of scale reference"
+    ],
+    "geometryRecipe": null,
+    "gearType": "helical",
+    "coneAngle": null,
+    "status": "partial",
+    "scale": "relative",
+    "missingInputs": [
+      "exact tooth count",
+      "helix angle",
+      "module",
+      "overall length",
+      "diameters",
+      "Supply a known dimension for this component to establish scale.",
+      "Add a side or oblique view showing the component profile and depth."
+    ],
+    "region": {
+      "imageIndex": 0,
+      "bounds": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    "components": [],
+    "previewRecipe": null,
+    "observations": []
+  },
+  "solverMode": "gemini_assisted"
+}

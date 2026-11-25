@@ -1,0 +1,45 @@
+{
+  "componentType": "plate",
+  "dimensions": {
+    "thickness": 10
+  },
+  "geometryRecipe": {
+    "style": "extruded",
+    "depth": 10,
+    "outline": [
+      {
+        "x": -50,
+        "y": -30
+      },
+      {
+        "x": 50,
+        "y": -30
+      },
+      {
+        "x": 50,
+        "y": 30
+      },
+      {
+        "x": -50,
+        "y": 30
+      }
+    ],
+    "holes": [
+      {
+        "cx": 0,
+        "cy": 0,
+        "radius": 12
+      },
+      {
+        "cx": 35,
+        "cy": 0,
+        "radius": 6
+      },
+      {
+        "cx": -35,
+        "cy": 0,
+        "radius": 6
+      }
+    ]
+  }
+}

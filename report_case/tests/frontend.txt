@@ -1,0 +1,143 @@
+﻿
+> reforge-ai-prototype@0.1.0 test
+> node --test src/lib/*.test.js src/lib/drawing/drawing.test.js
+
+
+─── drawing.test.js ───────────────────────────────
+
+[ 1. Shaft Drawing Projections ]
+  ✓ Shaft: Front, Top, and Side views are generated with dimensions
+
+[ 2. Flange Drawing Projections ]
+  ✓ Flange: generates bolt holes, bore, and outer circle in Top view
+
+[ 3. Gear Drawing Projections ]
+  ✓ Gear: generates pitch circle, outer circle, and tooth annotations
+
+[ 4. Missing Data Fallbacks ]
+  ✓ Missing recipe: falls back to estimated bounding projection without throwing
+  ✓ Missing material & process: displays sensible defaults
+
+─── Results: 5 passed, 0 failed ─────────────────
+✔ src\lib\drawing\drawing.test.js (128.0659ms)
+
+─── engineering-context.test.js ───────────────────
+
+[ 1. Full Context Builder ]
+  ✓ Full context: builds normalized structure with all required fields
+
+[ 2. Fallback & Missing Context ]
+  ✓ Null analysis returns null without throwing
+  ✓ Missing manufacturing intelligence still builds valid context
+
+[ 3. Suggested Questions Generation ]
+  ✓ Shaft with bore generates bore hypothetical and CNC question
+  ✓ Fallback suggestions for null context
+
+─── Results: 5 passed, 0 failed ─────────────────
+✔ src\lib\engineering-context.test.js (82.8936ms)
+▶ Engineering Exporter Suite
+  ✔ requests real CAD exports from the backend (STEP, IGES, STL, OBJ) (1.8746ms)
+  ✔ surfaces CAD export failures instead of downloading a fabricated file (1.1849ms)
+  ✔ generates native CAD parametric definitions (1.7229ms)
+  ✔ generates standard 3D mesh files (GLTF) (0.5538ms)
+  ✔ generates 2D technical drawings (DXF, SVG) (21.5512ms)
+  ✔ generates CNC G-Code and toolpaths (0.4754ms)
+  ✔ generates 3D scan point clouds (PLY, PTS, PCD) (0.7895ms)
+  ✔ generates FEA simulation input decks (Abaqus INP, Nastran BDF, VTK) (0.5715ms)
+  ✔ generates structured material databases (JSON, CSV, XML, YAML) (0.5853ms)
+  ✔ generates Laser Cutting and BIM formats (DXF laser, IFC) (0.4006ms)
+✔ Engineering Exporter Suite (31.4491ms)
+
+─── features.test.js ──────────────────────────────
+
+[ 1. Synonym Matching ]
+  ✓ Test 1: "central bore" -> bore
+  ✓ Test 2: "6 mounting holes" -> mounting_hole
+  ✓ Test 3: "centre hole" -> bore
+  ✓ Test 4: "keyway" -> keyway
+  ✓ Test 5: "stepped diameter" -> shoulder
+  ✓ Test 6: "spur teeth" -> gear_teeth
+  ✓ Test 7: "chamfered edge" -> chamfer
+  ✓ Test 8: "fillet transition" -> fillet
+  ✓ Test 9: Unknown phrase "weird indentation" -> other
+
+[ 2. Count Extraction ]
+  ✓ Count "6 mounting holes" -> 6
+  ✓ Count "8 bolt holes" -> 8
+  ✓ Count "central bore" -> null
+
+[ 3. Shoulder Detection ]
+  ✓ Detects steps in stepped shaft profile
+
+[ 4. Feature Normalization & Deduplication ]
+  ✓ Test 4a: Deduplication: analysis 'central hole' + recipe central bore -> single 'Central Bore'
+  ✓ Test 4b: Gear component normalization
+  ✓ Test 4c: Flange mounting holes grouping
+  ✓ Test 4d: Priority sorting: Bore -> Mounting Holes -> Keyway -> Gear Teeth -> Shoulder
+
+─── Results: 17 passed, 0 failed ─────────────────
+✔ src\lib\features.test.js (75.4356ms)
+✔ createInitialMachineryState initializes with 1 Primary Gear, no Companion Gear, and empty contexts (2.7642ms)
+✔ Image-only gear creation: addCompanionFromImages & addGearFromImages with auto-naming (3.1047ms)
+✔ Image metadata management: purpose, priority, notes, replace, and reorder (0.7541ms)
+✔ Snapshot dirty detection responds to image metadata and notes changes (0.3517ms)
+✔ checkRoleConflict and assignComponentRole handle Companion replacement with conflict detection (0.5228ms)
+✔ computeAssemblyRelations calculates center distance, gear ratio, and multi-gear relations (0.5123ms)
+✔ addImagesToComponent adds images across all sectors and aliases (0.434ms)
+▶ End-to-End Machinery Context Lifecycle
+  ✔ 1. Initialize Machinery State with 1 Primary Gear and empty Surroundings (0.7698ms)
+  ✔ 2. Add Additional Components (Gears, Shafts, Bearings, Housing) (2.735ms)
+  ✔ 3. Designate Companion Gear and check Role Conflicts (0.5155ms)
+  ✔ 4. Image Management and Dirty State Tracking (0.7675ms)
+  ✔ 5. Kinematic Relations and 3D Assembly Scene Construction (61.634ms)
+  ✔ 6. Dynamic Engineering Context and Active Scope Suggestions (1.0076ms)
+✔ End-to-End Machinery Context Lifecycle (70.0688ms)
+▶ Manufacturing Configurator Suite
+  ✔ 1. Category order strictly matches the 9 sequential categories (0.8528ms)
+  ✔ 2. Status engine computes NOT STARTED, IN PROGRESS, CONFIRMED, and auto-advances (0.3705ms)
+  ✔ 3. Engineering dependencies detect technical incompatibilities and trigger NEEDS REVIEW (0.5804ms)
+  ✔ 4. Process and Tolerance dependencies (DIN 6 vs Hobbing) (0.2052ms)
+  ✔ 5. Geometry validation: Bore ID must be strictly less than OD (0.1641ms)
+  ✔ 6. All 9 categories confirmed enables completion state (1.2346ms)
+  ✔ 7. Persistence engine serialization and reset (0.9574ms)
+  ✔ 8. All 9 fields initially remain unconfirmed and unvisited until explicit user confirmation (0.6921ms)
+  ✔ 9. Engineering decision reasoning generates comparative insights with structured points and verdict (0.8992ms)
+  ✔ 10. Itemized Manufacturing Breakdown lists costs one-by-one as confirmed with ZERO discrepancy (19.0887ms)
+  ✔ 11. Inter-panel communication: draft preview and live cost-impact explanation with engineering effects (0.3256ms)
+✔ Manufacturing Configurator Suite (26.7659ms)
+✔ resolveComponentType accurately detects bevel gears without defaulting to spur gear (1.2379ms)
+✔ resolveComponentType accurately detects stepped shafts without defaulting to cylinder (0.3345ms)
+✔ buildModel constructs authentic 3D Bevel Gear group with conical teeth (7.7438ms)
+✔ buildModel constructs authentic 3D Stepped Shaft group with multiple diameter journals (8.0519ms)
+✔ unresolved analysis yields no mesh; a bracket with mounting holes keeps its outline (4.3297ms)
+✔ estimated mode generates a bevel gear without measurements while evidence review waits (2.572ms)
+✔ identified brake disc without a recipe produces an annular estimated mesh (6.5845ms)
+Failed to parse workspace layout from storage, using defaults: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at loadWorkspaceLayout (file:///D:/reforge_ai_2/frontend/src/lib/workspace-layout.js:249:25)
+    at TestContext.<anonymous> (file:///D:/reforge_ai_2/frontend/src/lib/workspace-layout.test.js:43:20)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1106:25)
+    at Suite.processPendingSubtests (node:internal/test_runner/test:788:18)
+    at Test.postRun (node:internal/test_runner/test:1235:19)
+    at Test.run (node:internal/test_runner/test:1163:12)
+    at async Suite.processPendingSubtests (node:internal/test_runner/test:788:7)
+▶ Workspace Layout Manager
+  ✔ clamp safely constrains numbers and handles fallbacks (2.2073ms)
+  ✔ loadWorkspaceLayout returns default layout when store is empty (0.8338ms)
+  ✔ loadWorkspaceLayout handles corrupted JSON gracefully (1.0643ms)
+  ✔ sanitizeLayout clamps out-of-bound dimensions safely (0.353ms)
+  ✔ repositionPanelSlot swaps panel slots cleanly without overlap (0.2482ms)
+  ✔ enforceResponsiveBounds prevents crushing workspace when window is narrow (0.3103ms)
+  ✔ saveWorkspaceLayout serializes correctly to storage (0.2449ms)
+  ✔ resetWorkspaceLayout purges storage and restores defaults (0.2163ms)
+✔ Workspace Layout Manager (6.6088ms)
+ℹ tests 53
+ℹ suites 3
+ℹ pass 53
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 334.4735

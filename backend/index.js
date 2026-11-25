@@ -8,11 +8,8 @@ import { computeMaterialAlternatives } from "./material-comparison.js";
 import { simulateEngineeringChange, analyzeDimensionSensitivity } from "./engineering-analysis.js";
 import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from './vision-adapter.js';
 import { isReconstructionEnabled, callReconstructionService } from './reconstruction-adapter.js';
-<<<<<<< HEAD
 import { storeSpatialEvidence, getSpatialEvidence } from './src/spatial-evidence-store.js';
-=======
 import { exportCadModel, isCadExportScriptPresent } from './cad-export-adapter.js';
->>>>>>> origin/only-export
 import {
   resolveGeometryFromVision,
   reconcileGeminiWithVision,
@@ -155,7 +152,6 @@ app.post("/api/analyze-component", async (req, res) => {
       }
     }
 
-<<<<<<< HEAD
     // Anchor spatial evidence to analysis object
     if (analysis && typeof analysis === 'object') {
       if (spatialEvidenceRef) {
@@ -164,10 +160,9 @@ app.post("/api/analyze-component", async (req, res) => {
       if (rawVisionResult) {
         analysis.spatialObservations = extractVisionObservations(rawVisionResult);
       }
-=======
-    if (analysis && !analysis.geometrySource) {
-      analysis.geometrySource = solverMode === 'deterministic_cv' ? 'vision_template' : null;
->>>>>>> origin/only-export
+      if (!analysis.geometrySource) {
+        analysis.geometrySource = solverMode === 'deterministic_cv' ? 'vision_template' : null;
+      }
     }
 
     // Build response — visionDiagnostics is additive and optional

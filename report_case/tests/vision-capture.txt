@@ -1,0 +1,7 @@
+﻿Initial unmodified pipeline attempt on brake/input.png
+vision/pipeline.py, _process_single_image -> extract_features
+vision/opencv_features.py, line 208
+    for x1, y1, x2, y2 in lines_raw[:, 0]:
+TypeError: cannot unpack non-iterable numpy.int32 object
+
+Diagnostic capture rerun only: converted non-null cv2.HoughLinesP output to shape (-1, 1, 4) before returning it to extract_features. The coordinates were unchanged. The observed shapes are in each vision-times.json. No application file was modified for the report.

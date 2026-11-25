@@ -1,0 +1,14 @@
+{
+  "sam2_load_s": 19.9062,
+  "sam2_generate_s": 3.2881,
+  "depth_load_s": 0.0003,
+  "depth_model_load_s": 0.4638,
+  "depth_inference_s": 0.3288,
+  "depth_map_extract_s": 0.0451,
+  "opencv_features_s": 0.0241,
+  "vision_pipeline_s": 29.1174,
+  "device": "cuda",
+  "sam2_candidate_count": 8,
+  "sam2_best_score": 0.969727,
+  "sam2_mask_area_ratio": 0.106
+}

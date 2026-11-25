@@ -1,0 +1,21 @@
+{
+  "step": {
+    "export_seconds": 0.05643770000006043,
+    "bytes": 28411,
+    "valid": true,
+    "solid_count": 1,
+    "volume_mm3": 53214.15986824586,
+    "absolute_volume_difference_percent": 3.554972932714729e-13
+  },
+  "stl": {
+    "export_seconds": 0.06295120000049792,
+    "bytes": 39084,
+    "triangles": 780,
+    "boundary_edges": 0,
+    "nonmanifold_edges": 0,
+    "zero_area_faces": 0,
+    "volume_mm3": 53225.40370789996,
+    "absolute_volume_difference_percent": 0.02112941307680786
+  },
+  "nominal_volume_mm3": 53214.159868246046
+}

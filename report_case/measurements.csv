@@ -1,0 +1,5 @@
+﻿case,feature,unit,physical_measurement,instrument_or_drawing_id,matched_model_measurement,absolute_error,percent_error,status
+brake,rotor outer diameter,mm,,,,,,awaiting physical reference
+brake,rotor thickness at friction track,mm,,,,,,awaiting physical reference
+shaft,gear outside diameter across tooth tips,mm,,,,,,awaiting physical reference
+shaft,toothed face width,mm,,,,,,awaiting physical reference
