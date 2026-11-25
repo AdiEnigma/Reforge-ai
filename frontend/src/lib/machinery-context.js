@@ -839,6 +839,66 @@ export function hasDirtyContext(state, lastSnapshot) {
 }
 
 /**
+ * Determines whether a specific gear or component requires regeneration:
+ * - Returns false if the component has no images.
+ * - Returns true if the component has images but has never been analyzed (no analysis).
+ * - Returns true if the component is new (not in lastSnapshot or lacked analysis).
+ * - Returns true if new images were added, replaced, or image count changed compared to lastSnapshot.
+ * - Returns false if the component already has an analysis and its images are identical to lastSnapshot.
+ */
+export function isComponentDirty(component, lastSnapshot) {
+  if (!component || !component.images || component.images.length === 0) {
+    return false;
+  }
+  if (!component.analysis) {
+    return true;
+  }
+  if (!lastSnapshot) {
+    return true;
+  }
+
+  try {
+    const parsed = typeof lastSnapshot === 'string' ? JSON.parse(lastSnapshot) : lastSnapshot;
+    const prevSignatures = parsed?.compSignatures || [];
+    const prevComp = prevSignatures.find((c) => c.id === component.id);
+
+    if (!prevComp || !prevComp.hasAnalysis) {
+      return true;
+    }
+
+    const currImages = component.images || [];
+    const prevImages = prevComp.images || [];
+
+    if (currImages.length !== prevImages.length) {
+      return true;
+    }
+
+    for (let i = 0; i < currImages.length; i++) {
+      const cur = currImages[i];
+      const prev = prevImages[i];
+      if (!prev) return true;
+      if (cur.id && prev.id && cur.id !== prev.id) return true;
+      if (cur.name && prev.name && cur.name !== prev.name) return true;
+    }
+
+    return false;
+  } catch {
+    return !component.analysis;
+  }
+}
+
+/**
+ * Returns an array of component IDs that require regeneration based on lastSnapshot.
+ */
+export function getDirtyComponentIds(state, lastSnapshot) {
+  if (!state) return [];
+  const all = getAllComponents(state);
+  return all
+    .filter((comp) => isComponentDirty(comp, lastSnapshot))
+    .map((comp) => comp.id);
+}
+
+/**
  * Computes assembly kinematic and geometric relationships between components.
  */
 export function computeAssemblyRelations(primaryComp, companionComp, additionalComps = []) {

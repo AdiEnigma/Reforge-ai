@@ -20,6 +20,7 @@ import {
   saveManufacturingState,
   resetManufacturingState,
 } from '../lib/manufacturing-config.js';
+import { getParameterRecommendations, getParameterValue } from '../lib/what-if.js';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -86,6 +87,16 @@ export function ManufacturingDecisionPanel({
   // Two-way Inter-Panel Sync
   onDraftSelect,
   onConfirmedCategoriesChange,
+  confirmedCategories: propConfirmedCategories,
+  // Shared recommendations (What-If <-> Workshop)
+  recommendations: propRecommendations = [],
+  dismissedRecommendations = {},
+  onDismissRecommendation,
+  onAcceptRecommendation,
+  // Active component identity for stale-data protection
+  componentId = null,
+  // Unconfirmed What-If scenario params for cross-surface sync
+  scenarioParams = {},
 }) {
   // ─── Local State for Sequential Configuration ───────────────────────────────
   const [persistedState, setPersistedState] = useState(() => loadManufacturingState());
@@ -98,20 +109,71 @@ export function ManufacturingDecisionPanel({
   const [confirmedDecisions, setConfirmedDecisions] = useState(() => {
     const loaded = loadManufacturingState();
     const initial = getInitialDraftDecisions(analysis);
-    return {
+    const merged = {
       ...initial,
       ...(propDecisions || {}),
       ...(loaded.decisions || {}),
     };
+    // Always prefer latest active component geometry over stale persisted values.
+    if (analysis) {
+      merged.outerDiameter = initial.outerDiameter;
+      merged.innerDiameter = initial.innerDiameter;
+      merged.height = initial.height;
+      merged.teeth = initial.teeth;
+    }
+    return merged;
   });
 
   // Draft decisions currently being edited in the open category before explicit confirmation
   const [draftDecisions, setDraftDecisions] = useState(() => ({
-    ...confirmedDecisions,
+    ...getInitialDraftDecisions(analysis),
+    ...(propDecisions || {}),
+    ...(loadManufacturingState().decisions || {}),
+    ...(analysis ? {
+      outerDiameter: getInitialDraftDecisions(analysis).outerDiameter,
+      innerDiameter: getInitialDraftDecisions(analysis).innerDiameter,
+      height: getInitialDraftDecisions(analysis).height,
+      teeth: getInitialDraftDecisions(analysis).teeth,
+    } : {}),
   }));
 
   // Batch Quantity state
   const [draftQuantity, setDraftQuantity] = useState(propQuantity || 1);
+
+  // Geometry recommendations from draft edits (same logic as What-If).
+  // Merge unconfirmed What-If scenario params so both surfaces stay synchronized.
+  const geometryChanges = useMemo(() => {
+    if (!analysis) return {};
+    const keys = ['outerDiameter', 'innerDiameter', 'height', 'teeth'];
+    const changes = {};
+    // Start with scenario params (What-If preview) relative to analysis.
+    keys.forEach((key) => {
+      const sVal = scenarioParams?.[key];
+      const baseVal = getParameterValue(analysis, key);
+      if (typeof sVal === 'number' && Number.isFinite(sVal) && typeof baseVal === 'number' && Math.abs(sVal - baseVal) > 0.0001) {
+        changes[key] = sVal;
+      }
+    });
+    // Workshop draft overrides take precedence for the same component.
+    keys.forEach((key) => {
+      const draftVal = draftDecisions?.[key];
+      const baseVal = getParameterValue(analysis, key);
+      if (typeof draftVal === 'number' && Number.isFinite(draftVal) && typeof baseVal === 'number' && Math.abs(draftVal - baseVal) > 0.0001) {
+        changes[key] = draftVal;
+      }
+    });
+    return changes;
+  }, [analysis, draftDecisions, scenarioParams]);
+
+  const geometryRecommendations = useMemo(() => {
+    const local = getParameterRecommendations(analysis, geometryChanges);
+    // Merge What-If recommendations so both surfaces stay synchronized.
+    const merged = [...local];
+    (propRecommendations || []).forEach((rec) => {
+      if (!merged.some((r) => r.key === rec.key)) merged.push(rec);
+    });
+    return merged;
+  }, [analysis, geometryChanges, propRecommendations]);
 
   // Expand first incomplete category by default (e.g. Category 01 Geometry for new configuration)
   const [expandedCat, setExpandedCat] = useState(() => {
@@ -122,6 +184,30 @@ export function ManufacturingDecisionPanel({
   });
 
   const isDraggingResizerRef = useRef(false);
+  const prevComponentIdRef = useRef(componentId);
+
+  // On component switch, sync geometry to the latest active component data.
+  // Avoids stale saved/local geometry when the user moves between components.
+  useEffect(() => {
+    if (prevComponentIdRef.current === componentId) return;
+    prevComponentIdRef.current = componentId;
+    if (!analysis) return;
+    const initial = getInitialDraftDecisions(analysis);
+    setDraftDecisions((prev) => ({
+      ...prev,
+      outerDiameter: initial.outerDiameter,
+      innerDiameter: initial.innerDiameter,
+      height: initial.height,
+      teeth: initial.teeth,
+    }));
+    setConfirmedDecisions((prev) => ({
+      ...prev,
+      outerDiameter: initial.outerDiameter,
+      innerDiameter: initial.innerDiameter,
+      height: initial.height,
+      teeth: initial.teeth,
+    }));
+  }, [componentId, analysis]);
 
   // Sync with analysis if analysis changes and geometry hasn't been confirmed yet
   useEffect(() => {
@@ -137,12 +223,41 @@ export function ManufacturingDecisionPanel({
     }
   }, [analysis, confirmedCategories]);
 
-  // Sync propDecisions changes from external source if any
+  // Sync propDecisions changes from external source (e.g. confirmed What-If).
+  // Keep Geometry & Dimensions draft in sync so the stage displays latest confirmed values.
   useEffect(() => {
-    if (propDecisions && Object.keys(propDecisions).length > 0) {
-      setConfirmedDecisions((prev) => ({ ...prev, ...propDecisions }));
-    }
+    if (!propDecisions || Object.keys(propDecisions).length === 0) return;
+    setConfirmedDecisions((prev) => ({ ...prev, ...propDecisions }));
+    setDraftDecisions((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      ['outerDiameter', 'innerDiameter', 'height', 'teeth'].forEach((key) => {
+        if (propDecisions[key] !== undefined && propDecisions[key] !== prev[key]) {
+          next[key] = propDecisions[key];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
   }, [propDecisions]);
+
+  useEffect(() => {
+    if (typeof propQuantity === 'number' && propQuantity > 0) {
+      setDraftQuantity(propQuantity);
+    }
+  }, [propQuantity]);
+
+  // Sync confirmed categories from external source when provided.
+  useEffect(() => {
+    if (propConfirmedCategories && typeof propConfirmedCategories === 'object') {
+      setConfirmedCategories((prev) => {
+        const prevKeys = Object.keys(prev);
+        const nextKeys = Object.keys(propConfirmedCategories);
+        const same = prevKeys.length === nextKeys.length && nextKeys.every((k) => prev[k] === propConfirmedCategories[k]);
+        return same ? prev : { ...prev, ...propConfirmedCategories };
+      });
+    }
+  }, [propConfirmedCategories]);
 
   // ─── Technical Dependency Evaluation ─────────────────────────────────────────
   const internalDependencies = useMemo(() => {
@@ -627,56 +742,73 @@ export function ManufacturingDecisionPanel({
                     {catId === CATEGORY_IDS.GEOMETRY && (
                       <div className="mfg-opt-content">
                         <div className="mfg-field-grid">
-                          <div className="mfg-field">
-                            <label htmlFor="field-od">Outer Diameter (OD, mm)</label>
-                            <input
-                              id="field-od"
-                              type="number"
-                              min="10"
-                              max="3000"
-                              step="0.5"
-                              value={draftDecisions.outerDiameter ?? 100}
-                              onChange={(e) => handleUpdateGeometryDraft('outerDiameter', parseFloat(e.target.value) || 0)}
-                            />
-                          </div>
-
-                          <div className="mfg-field">
-                            <label htmlFor="field-id">Inner Bore Diameter (ID, mm)</label>
-                            <input
-                              id="field-id"
-                              type="number"
-                              min="0"
-                              max="2800"
-                              step="0.5"
-                              value={draftDecisions.innerDiameter ?? 25}
-                              onChange={(e) => handleUpdateGeometryDraft('innerDiameter', parseFloat(e.target.value) || 0)}
-                            />
-                          </div>
-
-                          <div className="mfg-field">
-                            <label htmlFor="field-height">Face Width / Length (mm)</label>
-                            <input
-                              id="field-height"
-                              type="number"
-                              min="2"
-                              max="1500"
-                              step="0.5"
-                              value={draftDecisions.height ?? 28}
-                              onChange={(e) => handleUpdateGeometryDraft('height', parseFloat(e.target.value) || 0)}
-                            />
-                          </div>
-
-                          <div className="mfg-field">
-                            <label htmlFor="field-teeth">Tooth Count (z)</label>
-                            <input
-                              id="field-teeth"
-                              type="number"
-                              min="6"
-                              max="500"
-                              value={draftDecisions.teeth ?? 24}
-                              onChange={(e) => handleUpdateGeometryDraft('teeth', parseInt(e.target.value, 10) || 0)}
-                            />
-                          </div>
+                          {[
+                            { key: 'outerDiameter', label: 'Outer Diameter (OD, mm)', id: 'field-od', min: 10, max: 3000, step: 0.5, parse: (v) => parseFloat(v) || 0, fallback: 100 },
+                            { key: 'innerDiameter', label: 'Inner Bore Diameter (ID, mm)', id: 'field-id', min: 0, max: 2800, step: 0.5, parse: (v) => parseFloat(v) || 0, fallback: 25 },
+                            { key: 'height', label: 'Face Width / Length (mm)', id: 'field-height', min: 2, max: 1500, step: 0.5, parse: (v) => parseFloat(v) || 0, fallback: 28 },
+                            { key: 'teeth', label: 'Tooth Count (z)', id: 'field-teeth', min: 6, max: 500, step: 1, parse: (v) => parseInt(v, 10) || 0, fallback: 24 },
+                          ].map((field) => {
+                            const analysisVal = getParameterValue(analysis, field.key);
+                            const draftVal = draftDecisions[field.key];
+                            const draftChanged = typeof draftVal === 'number' && typeof analysisVal === 'number'
+                              ? Math.abs(draftVal - analysisVal) > 0.0001
+                              : draftVal !== undefined && draftVal !== analysisVal;
+                            const scenarioVal = scenarioParams?.[field.key];
+                            const currentVal = draftChanged
+                              ? (draftVal ?? field.fallback)
+                              : (scenarioVal ?? draftVal ?? analysisVal ?? field.fallback);
+                            const rec = geometryRecommendations.find((r) => r.key === field.key);
+                            const recVisible = Boolean(
+                              rec
+                              && !dismissedRecommendations[rec.key]
+                              && Math.abs(Number(currentVal) - Number(rec.value)) > 0.0001
+                            );
+                            return (
+                              <div key={field.key} className={`mfg-field ${recVisible ? 'has-recommendation' : ''}`}>
+                                <label htmlFor={field.id}>{field.label}</label>
+                                <input
+                                  id={field.id}
+                                  type="number"
+                                  min={field.min}
+                                  max={field.max}
+                                  step={field.step}
+                                  value={currentVal}
+                                  onChange={(e) => handleUpdateGeometryDraft(field.key, field.parse(e.target.value))}
+                                />
+                                {recVisible && (
+                                  <div className="mfg-rec-msg" role="status">
+                                    <div className="mfg-rec-head">
+                                      <Icon>lightbulb</Icon>
+                                      <span className="mfg-rec-values">
+                                        Current <strong>{currentVal}</strong> → Recommended <strong>{rec.value}</strong>
+                                      </span>
+                                    </div>
+                                    {rec.reason && <div className="mfg-rec-reason">{rec.reason}</div>}
+                                    <div className="mfg-rec-actions">
+                                      <button
+                                        type="button"
+                                        className="mfg-rec-accept"
+                                        onClick={() => {
+                                          handleUpdateGeometryDraft(field.key, rec.value);
+                                          onAcceptRecommendation?.(field.key, rec.value, 'workshop');
+                                        }}
+                                      >
+                                        Accept
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="mfg-rec-dismiss"
+                                        onClick={() => onDismissRecommendation?.(field.key)}
+                                        aria-label={`Dismiss recommendation for ${field.label}`}
+                                      >
+                                        Dismiss
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
 
                         {/* Parametric Geometry Engineering Insights */}

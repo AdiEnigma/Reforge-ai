@@ -216,7 +216,13 @@ export function gearShape(teeth, outerR, toothHeight, boreR, lighteningHoles = [
   return shape;
 }
 
+// ============================================================================
+// LEGACY COMPONENT-SPECIFIC BUILDERS (PRESERVED FOR RECOVERY SAFETY ONLY)
+// Note: Superseded by runtime-geometry-engine.js declarative AST execution.
+// ============================================================================
+
 /**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
  * Builds a true 3D conical Bevel Gear with tapered teeth radiating on a pitch cone,
  * rear cylindrical mounting hub collar, and center bore.
  */
@@ -370,6 +376,9 @@ export function buildBevelGearGroup({
  * Builds an authentic 3D Compound / Cluster Gear with two stacked gear stages,
  * central through-bore with keyway, and face drive pin holes.
  */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
 export function buildCompoundGearGroup({
   stage1Teeth = 24,
   stage1Radius = 2.8,
@@ -454,6 +463,9 @@ export function buildCompoundGearGroup({
  * Builds an authentic 3D Flanged Shaft / Linear Spline Bushing assembly,
  * comprising a longitudinal spline shaft, circular mounting flange collar,
  * precision counterbored bolt holes, and ground bearing sleeve.
+ */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
  */
 export function buildFlangedShaftGroup({
   shaftRadius = 0.8,
@@ -540,6 +552,9 @@ export function buildFlangedShaftGroup({
   return group;
 }
 
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
 export function buildPinionShaftGroup({
   gearTeeth = 16,
   gearRadius = 2.4,
@@ -629,6 +644,84 @@ export function buildPinionShaftGroup({
 /**
  * Builds an authentic 3D Stepped Shaft with multi-diameter journals,
  * transition shoulders, and optional spline head.
+ */
+/**
+ * Builds an authentic 3D Circular Cap / Bushing / Bottle Cap component with a top disc,
+ * cylindrical outer wall (skirt), vertical knurling flutes, and an open hollow cavity.
+ */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
+export function buildCapBushingGroup({
+  outerDiameter = 30.0,
+  innerDiameter = null,
+  height = 12.0,
+  thickness = null,
+}) {
+  const group = new THREE.Group();
+  const od = typeof outerDiameter === "number" && outerDiameter > 0 ? outerDiameter : 30.0;
+  const outerR = od / 2;
+  const h = typeof height === "number" && height > 0 ? height : Math.max(8.0, outerR * 0.75);
+
+  const wallThick = typeof thickness === "number" && thickness > 0
+    ? thickness
+    : (typeof innerDiameter === "number" && innerDiameter > 0 && innerDiameter < od
+        ? (od - innerDiameter) / 2
+        : Math.max(1.0, Math.min(2.5, outerR * 0.08)));
+  const innerR = typeof innerDiameter === "number" && innerDiameter > 0
+    ? innerDiameter / 2
+    : Math.max(0, outerR - wallThick);
+
+  const topCeilingThick = Math.max(1.2, wallThick * 1.1);
+  const hollowDepth = Math.max(1.0, h - topCeilingThick);
+
+  // 1. Solid Top Cap Disc with subtle chamfer
+  const topDiscGeo = new THREE.CylinderGeometry(outerR * 0.98, outerR, topCeilingThick, 64);
+  const topMesh = new THREE.Mesh(topDiscGeo, matBody);
+  topMesh.position.y = (h / 2) - (topCeilingThick / 2);
+  topMesh.userData = { featureId: "feature-cap-top-1", featureType: "cap_top" };
+  group.add(topMesh);
+
+  // 2. Outer Cylindrical Wall (Skirt / Rim)
+  const skirtGeo = extrude(ringShape(outerR, innerR), hollowDepth, false);
+  skirtGeo.center();
+  const skirtMesh = new THREE.Mesh(skirtGeo, matBody);
+  skirtMesh.rotation.x = Math.PI / 2;
+  skirtMesh.position.y = - (topCeilingThick / 2);
+  skirtMesh.userData = { featureId: "feature-cap-wall-1", featureType: "cap_wall" };
+  group.add(skirtMesh);
+
+  // 3. Knurled Flutes (standard plastic bottle cap ribbing)
+  const numRibs = 48;
+  const fluteGeo = new THREE.BoxGeometry(outerR * 0.035, hollowDepth * 0.95, outerR * 0.04);
+  const flutesGroup = new THREE.Group();
+  for (let i = 0; i < numRibs; i++) {
+    const angle = (i / numRibs) * Math.PI * 2;
+    const flute = new THREE.Mesh(fluteGeo, matAccent);
+    flute.position.set(Math.cos(angle) * (outerR * 0.995), -(topCeilingThick / 2), Math.sin(angle) * (outerR * 0.995));
+    flute.rotation.y = -angle;
+    flutesGroup.add(flute);
+  }
+  flutesGroup.userData = { featureId: "feature-cap-knurl-1", featureType: "knurling" };
+  group.add(flutesGroup);
+
+  // 4. Inner Hollow Bore Highlight (for interactive inspection)
+  if (innerR > 0) {
+    const boreHighlight = new THREE.Mesh(
+      new THREE.CylinderGeometry(innerR * 0.99, innerR * 0.99, hollowDepth * 1.05, 32, 1, true),
+      matHighlight
+    );
+    boreHighlight.position.y = - (topCeilingThick / 2);
+    boreHighlight.userData = { featureId: "feature-bore-1", featureType: "bore", isHighlightOnly: true };
+    boreHighlight.visible = false;
+    group.add(boreHighlight);
+  }
+
+  return group;
+}
+
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
  */
 export function buildSteppedShaftGroup({
   outerRadius = 1.8,
@@ -741,6 +834,9 @@ export function buildSteppedShaftGroup({
  *   theta(z) = (2 * PI * z) / lead
  * Creates a fully watertight, non-manifold quad-strip surface with smooth feather-edge runouts.
  */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
+ */
 export function buildWormFlightGeometry({
   length = 60,
   pitch = 8,
@@ -851,6 +947,9 @@ export function buildWormFlightGeometry({
  * @param {Array<Object>} [options.booleans=[]] - Boolean features (cross holes, slots, grooves)
  * @param {Array<Object>} [options.modifiers=[]] - Multi-station modifications (keyways, grooves, threads)
  * @returns {THREE.Group} Cohesive solid 3D assembly group with inspection metadata
+ */
+/**
+ * @deprecated Superseded by runtime-geometry-engine.js. Preserved for recovery safety.
  */
 export function buildAxialSegmentAssembly({
   segments = [],

@@ -13,6 +13,8 @@ import {
   removeImageFromComponent,
   createMachinerySnapshot,
   hasDirtyContext,
+  isComponentDirty,
+  getDirtyComponentIds,
   computeAssemblyRelations,
   addGearFromImages,
   addCompanionFromImages,
@@ -108,6 +110,41 @@ test('Snapshot dirty detection responds to image metadata and notes changes', ()
     purpose: 'pitch_circle',
   });
   assert.equal(hasDirtyContext(state, snapshot), true);
+});
+
+test('Selective regeneration: isComponentDirty and getDirtyComponentIds isolate newly added images to specific gears', () => {
+  let state = createInitialMachineryState();
+  // 1. Primary gear has 1 image and an analysis
+  state = addImagesToComponent(state, state.primaryGear.id, [{ id: 'img-p1', name: 'p1.png', type: 'image/png' }]);
+  state.primaryGear.analysis = { componentType: 'spur_gear', teeth: 24, dimensions: { outerDiameter: 60 } };
+  
+  // Baseline snapshot after primary analysis
+  const snap1 = createMachinerySnapshot(state);
+  assert.equal(isComponentDirty(state.primaryGear, snap1), false);
+  assert.deepEqual(getDirtyComponentIds(state, snap1), []);
+
+  // 2. Add companion gear with an image but no analysis yet
+  state = addCompanionFromImages(state, [{ name: 'c1.png', type: 'image/png' }], 'Companion Gear');
+  assert.ok(state.companionGear);
+  
+  // Primary gear should NOT be dirty! Only companion gear is dirty!
+  assert.equal(isComponentDirty(state.primaryGear, snap1), false);
+  assert.equal(isComponentDirty(state.companionGear, snap1), true);
+  assert.deepEqual(getDirtyComponentIds(state, snap1), [state.companionGear.id]);
+
+  // 3. Simulate companion gear analysis completed and snapshot taken
+  state.companionGear.analysis = { componentType: 'spur_gear', teeth: 36, dimensions: { outerDiameter: 90 } };
+  const snap2 = createMachinerySnapshot(state);
+  assert.equal(isComponentDirty(state.primaryGear, snap2), false);
+  assert.equal(isComponentDirty(state.companionGear, snap2), false);
+  assert.deepEqual(getDirtyComponentIds(state, snap2), []);
+
+  // 4. Add a new image ONLY to Primary Gear
+  state = addImagesToComponent(state, state.primaryGear.id, [{ id: 'img-p2', name: 'p2.png', type: 'image/png' }]);
+  // Now Primary Gear IS dirty because it has new images, but Companion Gear remains UNTOUCHED!
+  assert.equal(isComponentDirty(state.primaryGear, snap2), true);
+  assert.equal(isComponentDirty(state.companionGear, snap2), false);
+  assert.deepEqual(getDirtyComponentIds(state, snap2), [state.primaryGear.id]);
 });
 
 test('checkRoleConflict and assignComponentRole handle Companion replacement with conflict detection', () => {

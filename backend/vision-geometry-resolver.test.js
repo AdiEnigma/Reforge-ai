@@ -7,6 +7,8 @@ import {
   resolveGeometryFromVision,
   reconcileGeminiWithVision,
   fallbackDeterministicAnalysis,
+  buildBearingRecipe,
+  buildBracketRecipe,
 } from "./src/vision-geometry-resolver.js";
 
 test("snapToStandardModule snaps close continuous modules to standard ISO/DIN values", () => {
@@ -64,7 +66,7 @@ test("extractVisionObservations aggregates features across all input views", () 
   assert.equal(obs.warnings.length, 1);
 });
 
-test("resolveGeometryFromVision deterministically resolves gear geometry without Gemini", () => {
+test("resolveGeometryFromVision does not default tooth-only evidence to spur", () => {
   const mockVision = {
     images: [
       {
@@ -81,13 +83,44 @@ test("resolveGeometryFromVision deterministically resolves gear geometry without
   };
 
   const result = resolveGeometryFromVision(mockVision, { thickness: 25 });
-  assert.equal(result.canResolveWithoutGemini, true);
-  assert.ok(result.confidence >= 0.80);
-  assert.equal(result.analysis.componentType, "spur gear");
+  assert.equal(result.canResolveWithoutGemini, false);
+  assert.ok(result.confidence < 0.80);
+  assert.equal(result.analysis.componentType, "gear (type unconfirmed)");
+  assert.equal(result.analysis.gearType, "unknown");
+  assert.equal(result.analysis.requiresGearTypeConfirmation, true);
   assert.equal(result.analysis.teeth, 20);
   assert.ok(result.analysis.geometryRecipe);
   assert.equal(result.analysis.geometryRecipe.style, "gear");
   assert.equal(result.analysis.geometryRecipe.gear.teeth, 20);
+  assert.equal(result.analysis.geometryRecipe.gear.gearType, "unknown");
+  assert.ok(result.analysis.uncertainties.some((u) => /Gear type could not be identified/.test(u)));
+  assert.equal(result.analysis.provenance, "computer_vision_direct");
+});
+
+test("resolveGeometryFromVision resolves gear geometry when the type is explicit", () => {
+  const mockVision = {
+    images: [
+      {
+        opencv: {
+          circles: [{ radius_px: 100 }, { radius_px: 25 }],
+          symmetry_hints: ["rotational_symmetry_order: 20"],
+        },
+        calibration: { status: "calibrated", mm_per_pixel: 0.5 },
+      },
+    ],
+  };
+
+  const result = resolveGeometryFromVision(mockVision, {
+    thickness: 25,
+    gearType: "spur",
+  });
+  assert.equal(result.canResolveWithoutGemini, true);
+  assert.ok(result.confidence >= 0.80);
+  assert.equal(result.analysis.componentType, "spur gear");
+  assert.equal(result.analysis.gearType, "spur");
+  assert.equal(result.analysis.requiresGearTypeConfirmation, false);
+  assert.equal(result.analysis.teeth, 20);
+  assert.equal(result.analysis.geometryRecipe.gear.gearType, "spur");
   assert.equal(result.analysis.provenance, "computer_vision_direct");
 });
 
@@ -152,7 +185,9 @@ test("reconcileGeminiWithVision locks ground-truth dimensions and overwrites Gem
 test("fallbackDeterministicAnalysis produces watertight valid CAD model when Gemini fails", () => {
   const fallback = fallbackDeterministicAnalysis({ teeth: 30, outerDiameter: 160 }, "Gemini API 503");
   assert.ok(fallback);
-  assert.equal(fallback.componentType, "spur gear");
+  assert.equal(fallback.componentType, "gear (type unconfirmed)");
+  assert.equal(fallback.gearType, "unknown");
+  assert.equal(fallback.requiresGearTypeConfirmation, true);
   assert.equal(fallback.teeth, 30);
   assert.ok(fallback.dimensions.outerDiameter > 0);
   assert.ok(fallback.dimensions.innerDiameter > 0);

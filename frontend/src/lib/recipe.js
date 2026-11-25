@@ -8,14 +8,11 @@ import {
   matAccent,
   matBody,
   matHighlight,
+  matRim,
   ringShape,
-  buildBevelGearGroup,
-  buildSteppedShaftGroup,
-  buildCompoundGearGroup,
-  buildFlangedShaftGroup,
-  buildPinionShaftGroup,
-  buildAxialSegmentAssembly,
 } from "./geo.js";
+import { executeGeometryProgram, generateGeometryProgram } from "./runtime-geometry-engine.js";
+import { normalizeGearType } from "./gear-types.js";
 
 const RECIPE_LIMITS = {
   maxProfilePoints: 200,
@@ -174,10 +171,32 @@ export function sanitizeRecipe(analysis) {
   if (depth != null && depth > 0) recipe.depth = depth;
 
   const g = raw.gear && typeof raw.gear === "object" ? raw.gear : {};
+  // The confirmed analysis is the single source of truth. If a partial recipe
+  // omits the mirrored type, keep the analysis-level type so the viewer cannot
+  // fall back to a silent spur reconstruction.
+  const rawGearType = g.gearType ?? g.type ?? analysis?.gearType;
+  let normalizedGearType = normalizeGearType(rawGearType);
+  if (normalizedGearType === "unknown" && rawGearType == null) {
+    const fromComponent = normalizeGearType(analysis?.componentType);
+    if (fromComponent !== "unknown") normalizedGearType = fromComponent;
+  }
+  const rawStages = Array.isArray(g.stages) ? g.stages.slice(0, 8) : [];
+  const stages = rawStages
+    .map((stage) => ({
+      teeth: num(stage?.teeth),
+      module: num(stage?.module),
+      outerDiameter: num(stage?.outerDiameter),
+      faceWidth: num(stage?.faceWidth),
+    }))
+    .filter((stage) => stage.teeth != null || stage.outerDiameter != null);
+  const innerRing = typeof g.innerRing === "boolean" ? g.innerRing : normalizedGearType === "internal";
   const gear = {
     teeth: num(g.teeth),
     module: num(g.module),
-    gearType: typeof g.gearType === "string" ? g.gearType : null,
+    outerDiameter: num(g.outerDiameter ?? (num(g.outerRadius) != null ? num(g.outerRadius) * 2 : null)),
+    gearType: normalizedGearType === "unknown"
+      ? (rawGearType || null)
+      : normalizedGearType,
     coneAngle: num(g.coneAngle),
     pressureAngle: num(g.pressureAngle),
     helixAngle: num(g.helixAngle),
@@ -186,8 +205,15 @@ export function sanitizeRecipe(analysis) {
     hubDiameter: num(g.hubDiameter),
     hubLength: num(g.hubLength),
     spokes: num(g.spokes),
+    pitch: num(g.pitch),
+    starts: num(g.starts),
+    lead: num(g.lead),
+    rootRadius: num(g.rootRadius),
+    rackLength: num(g.rackLength),
+    innerRing,
+    stages: stages.length ? stages : null,
   };
-  if (Object.values(gear).some((v) => v != null)) recipe.gear = gear;
+  if (Object.values(gear).some((v) => v != null && v !== false)) recipe.gear = gear;
 
   const f = raw.flange && typeof raw.flange === "object" ? raw.flange : {};
   const flange = {
@@ -238,8 +264,13 @@ export function sanitizeRecipe(analysis) {
   for (const h of recipe.holes || []) dims.push(h.radius);
   if (recipe.depth != null) dims.push(recipe.depth);
   if (recipe.gear) {
-    for (const key of ["module", "faceWidth", "boreRadius"]) {
+    for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius", "coneAngle", "pitch", "rootRadius", "rackLength"]) {
       if (recipe.gear[key] != null) dims.push(Math.abs(recipe.gear[key]));
+    }
+    for (const stage of recipe.gear.stages || []) {
+      for (const key of ["module", "outerDiameter", "faceWidth"]) {
+        if (stage[key] != null) dims.push(Math.abs(stage[key]));
+      }
     }
   }
   for (const p of recipe.primitives || []) {
@@ -271,8 +302,13 @@ export function sanitizeRecipe(analysis) {
     }
     if (recipe.depth != null) recipe.depth = clipPositive(recipe.depth);
     if (recipe.gear) {
-      for (const key of ["module", "faceWidth", "boreRadius"]) {
-        if (recipe.gear[key] != null) recipe.gear[key] = clipPositive(recipe.gear[key]);
+      for (const key of ["module", "outerDiameter", "faceWidth", "boreRadius", "coneAngle", "pitch", "rootRadius", "rackLength"]) {
+        if (recipe.gear[key] != null) recipe.gear[key] = clip(recipe.gear[key]);
+      }
+      for (const stage of recipe.gear.stages || []) {
+        for (const key of ["module", "outerDiameter", "faceWidth"]) {
+          if (stage[key] != null) stage[key] = clip(stage[key]);
+        }
       }
     }
     for (const p of recipe.primitives || []) {
@@ -381,17 +417,97 @@ function buildExtruded(outline, holes, depth) {
   return group;
 }
 
-function buildGearFromRecipe(gear, holes) {
+function buildRackGearGroup(gear, teeth, module, height) {
+  const group = new THREE.Group();
+  const effectiveModule = module || 2.0;
+  const pitch = Math.PI * effectiveModule;
+  const length = gear.rackLength > 0 ? gear.rackLength : teeth * pitch;
+  const toothHeight = 2.25 * effectiveModule;
+  const shape = new THREE.Shape();
+  const left = -length / 2;
+  const rootY = -toothHeight * 0.55;
+  const tipY = toothHeight * 0.45;
+
+  shape.moveTo(left, rootY);
+  for (let i = 0; i < teeth; i++) {
+    const x0 = left + i * pitch;
+    shape.lineTo(x0, rootY);
+    shape.lineTo(x0 + pitch * 0.18, tipY);
+    shape.lineTo(x0 + pitch * 0.50, tipY);
+    shape.lineTo(x0 + pitch * 0.68, rootY);
+  }
+  shape.lineTo(left + length, rootY);
+  shape.lineTo(left + length, rootY - toothHeight * 0.9);
+  shape.lineTo(left, rootY - toothHeight * 0.9);
+  shape.closePath();
+
+  const geo = extrude(shape, height);
+  geo.center();
+  const mesh = new THREE.Mesh(geo, matBody);
+  mesh.userData = {
+    featureId: "feature-rack-teeth-1",
+    featureType: "rack_teeth",
+    teeth,
+    module: effectiveModule,
+    rackLength: length,
+  };
+  group.add(mesh);
+  return group;
+}
+
+function buildInternalGearGroup(gear, teeth, module, outerR, toothHeight, height) {
+  const group = new THREE.Group();
+  const effectiveModule = module || toothHeight / 2.25;
+  const tipR = outerR;
+  const ringOuterR = tipR + effectiveModule * 2.5;
+  const shape = new THREE.Shape();
+  shape.absarc(0, 0, ringOuterR, 0, Math.PI * 2, false);
+
+  const innerPoints = gearShape(teeth, tipR, toothHeight, 0).extractPoints(24).shape;
+  const hole = new THREE.Path();
+  const points = [...innerPoints].reverse();
+  points.forEach((point, index) => {
+    if (index === 0) hole.moveTo(point.x, point.y);
+    else hole.lineTo(point.x, point.y);
+  });
+  hole.closePath();
+  shape.holes.push(hole);
+
+  const geo = extrude(shape, height);
+  geo.center();
+  const mesh = new THREE.Mesh(geo, matBody);
+  mesh.userData = {
+    featureId: "feature-internal-teeth-1",
+    featureType: "internal_gear_teeth",
+    teeth,
+    module: effectiveModule,
+    innerRing: true,
+  };
+  group.add(mesh);
+  return group;
+}
+
+export function buildGearFromRecipe(gear) {
   const teeth = Math.max(6, Math.min(200, Math.round(gear.teeth || 16)));
   const module = gear.module != null && gear.module > 0 ? gear.module : null;
   const faceWidth = gear.faceWidth != null && gear.faceWidth > 0 ? gear.faceWidth : null;
   const boreRadius = gear.boreRadius != null && gear.boreRadius > 0 ? gear.boreRadius : 0;
-  const helixAngle = gear.helixAngle != null && gear.helixAngle > 0 ? Math.min(gear.helixAngle, 45) : 0;
-  const pressureAngleDeg = gear.pressureAngle != null && gear.pressureAngle > 0 ? Math.min(45, Math.max(5, gear.pressureAngle)) : 20;
+  const helixAngle = gear.helixAngle != null && gear.helixAngle !== 0
+    ? Math.max(-45, Math.min(45, gear.helixAngle))
+    : 0;
+  const outerDiameter = gear.outerDiameter != null && gear.outerDiameter > 0 ? gear.outerDiameter : null;
+  // A missing or unconfirmed type must never silently build spur/helical teeth.
+  // Render a neutral placeholder and let the confirmation flow pick the builder.
+  const rawGearType = gear.gearType ?? gear.type;
+  const gearType = rawGearType == null ? "unknown" : normalizeGearType(rawGearType);
 
   let outerR;
   let toothHeight;
-  if (module) {
+  if (outerDiameter) {
+    outerR = outerDiameter / 2;
+    const effectiveModule = module || outerDiameter / (teeth + 2);
+    toothHeight = 2.25 * effectiveModule;
+  } else if (module) {
     outerR = (teeth * module) / 2 + module;
     toothHeight = 2.25 * module;
   } else {
@@ -405,29 +521,118 @@ function buildGearFromRecipe(gear, holes) {
   const hubH = gear.hubLength != null && gear.hubLength > 0 ? gear.hubLength : height * 0.28;
   const rimInnerR = outerR * 0.72;
 
-  if (gear.gearType === "bevel" || gear.coneAngle) {
-    return buildBevelGearGroup({
-      teeth,
-      outerRadius: outerR,
-      faceWidth: height,
-      coneAngleDeg: gear.coneAngle || 45,
-      boreRadius: bore,
-      hubRadius: gear.hubDiameter ? gear.hubDiameter / 2 : hubR,
-      hubHeight: gear.hubLength || hubH,
+  if (gearType === "bevel") {
+    const prog = generateGeometryProgram({
+      componentType: "bevel gear",
+      geometryRecipe: {
+        style: "gear",
+        gear: {
+          gearType: "bevel",
+          teeth,
+          outerDiameter: outerR * 2,
+          faceWidth: height,
+          coneAngle: gear.coneAngle || 45,
+          boreRadius: bore,
+          hubDiameter: gear.hubDiameter,
+          hubLength: gear.hubLength,
+        },
+      },
     });
+    return executeGeometryProgram(prog);
   }
 
-  const lighteningHoles = [];
-  const explicitHoles = Array.isArray(holes)
-    ? holes.filter((h) => h && h.radius > 0 && Math.hypot(h.cx || 0, h.cy || 0) > 1e-6)
-    : [];
-  if (explicitHoles.length > 0) {
-    for (const h of explicitHoles) {
-      const path = new THREE.Path();
-      path.absarc(h.cx || 0, h.cy || 0, h.radius, 0, Math.PI * 2, true);
-      lighteningHoles.push(path);
-    }
-  } else if (spokes && spokes >= 3) {
+  if (gearType === "worm") {
+    const pitch = gear.pitch > 0 ? gear.pitch : Math.PI * (module || outerR * 0.14);
+    const starts = Math.max(1, Math.round(gear.starts || 1));
+    const rootR = gear.rootRadius > 0 ? Math.min(gear.rootRadius, outerR * 0.95) : outerR * 0.7;
+    const prog = generateGeometryProgram({
+      componentType: "worm gear",
+      geometryRecipe: {
+        style: "gear",
+        gear: {
+          gearType: "worm",
+          pitch,
+          starts,
+          rootRadius: rootR,
+          faceWidth: height,
+          outerDiameter: outerR * 2,
+        },
+      },
+    });
+    return executeGeometryProgram(prog);
+  }
+
+  if (gearType === "rack") {
+    return buildRackGearGroup(gear, teeth, module, height);
+  }
+
+  if (gearType === "internal" || gear.innerRing === true) {
+    return buildInternalGearGroup(gear, teeth, module, outerR, toothHeight, height);
+  }
+
+  if (gearType === "pinion") {
+    const prog = generateGeometryProgram({
+      componentType: "pinion shaft",
+      geometryRecipe: {
+        style: "pinion_shaft",
+        gear: {
+          teeth,
+          outerDiameter: outerR * 2,
+          faceWidth: height,
+          boreRadius: bore,
+          helixAngle: helixAngle || (gear.helixAngle ? Number(gear.helixAngle) : 0),
+        },
+        shaft: {
+          diameter: (bore || outerR * 0.35) * 2,
+          length: Math.max(height * 3, outerR * 4),
+        },
+      },
+    });
+    return executeGeometryProgram(prog);
+  }
+
+  if (gearType === "compound" || gearType === "stepped") {
+    const stages = Array.isArray(gear.stages) ? gear.stages : [];
+    const first = stages[0] || {};
+    const second = stages[1] || {};
+    const prog = generateGeometryProgram({
+      componentType: "compound gear",
+      geometryRecipe: {
+        style: "compound_gear",
+        gear: {
+          stages: [
+            {
+              teeth: first.teeth || teeth,
+              outerDiameter: first.outerDiameter || outerR * 2,
+              faceWidth: first.faceWidth || height * 0.55,
+            },
+            {
+              teeth: second.teeth || Math.max(8, Math.round(teeth * 0.65)),
+              outerDiameter: second.outerDiameter || outerR * 1.24,
+              faceWidth: second.faceWidth || height * 0.45,
+            },
+          ],
+          boreRadius: bore,
+        },
+      },
+    });
+    return executeGeometryProgram(prog);
+  }
+
+  if (gearType === "unknown") {
+    // A tooth count alone does not establish a tooth form. Show a neutral
+    // reconstruction and let the confirmation UI select the real builder.
+    const group = new THREE.Group();
+    const geo = new THREE.CylinderGeometry(outerR * 0.9, outerR * 0.9, height, 48);
+    geo.rotateX(Math.PI / 2);
+    const mesh = new THREE.Mesh(geo, matBody);
+    mesh.userData = { featureId: "feature-unconfirmed-gear-1", featureType: "unconfirmed_gear_type" };
+    group.add(mesh);
+    return group;
+  }
+
+  const cutouts = [];
+  if (spokes && spokes >= 3) {
     const N = Math.min(24, Math.max(3, spokes));
     for (let i = 0; i < N; i++) {
       const centerA = (i / N) * Math.PI * 2;
@@ -446,29 +651,84 @@ function buildGearFromRecipe(gear, holes) {
   }
 
   const group = new THREE.Group();
-  const shape = gearShape(teeth, outerR, toothHeight, bore, lighteningHoles, pressureAngleDeg);
+  const shape = gearShape(teeth, outerR, toothHeight, bore, cutouts);
 
-  const geo = extrude(shape, height);
-  geo.center();
-  const mesh = new THREE.Mesh(geo, matBody);
-  mesh.userData = { featureId: "feature-gear-teeth-1", featureType: "gear_teeth" };
-  group.add(mesh);
+  if (Math.abs(helixAngle) > 0.01) {
+    // Layered twisted extrusions approximate the helix while remaining
+    // compatible with three.js 0.128 (no newer post-processing APIs).
+    const slices = 10;
+    const sliceHeight = height / slices;
+    for (let i = 0; i < slices; i++) {
+      const geo = extrude(shape, sliceHeight * 1.02, false);
+      geo.rotateZ((helixAngle * Math.PI / 180) * (i / (slices - 1)));
+      geo.translate(0, 0, -height / 2 + i * sliceHeight);
+      const mesh = new THREE.Mesh(geo, matBody);
+      mesh.userData = {
+        featureId: `feature-helical-tooth-${i + 1}`,
+        featureType: "helical_gear_teeth",
+        teeth,
+        helixAngle,
+      };
+      group.add(mesh);
+    }
+  } else {
+    const geo = extrude(shape, height);
+    geo.center();
+    const mesh = new THREE.Mesh(geo, matBody);
+    mesh.userData = { featureId: "feature-gear-teeth-1", featureType: "gear_teeth", teeth };
+    group.add(mesh);
+  }
 
-  if (hubR > bore * 1.02 && hubH > 0) {
-    const hubGeo = bore > 0
-      ? extrude(ringShape(hubR, bore), hubH, false)
-      : new THREE.CylinderGeometry(hubR, hubR, hubH, 32);
-    if (bore > 0) {
-      hubGeo.center();
-    } else {
-      hubGeo.rotateX(Math.PI / 2);
+  if (gearType !== "flanged") {
+    if (hubR > bore * 1.02 && hubH > 0) {
+      const hubGeo = bore > 0
+        ? extrude(ringShape(hubR, bore), hubH, false)
+        : new THREE.CylinderGeometry(hubR, hubR, hubH, 32);
+      if (bore > 0) {
+        hubGeo.center();
+      } else {
+        hubGeo.rotateX(Math.PI / 2);
+      }
+      for (const z of [1, -1]) {
+        const hub = new THREE.Mesh(hubGeo, matAccent);
+        hub.position.z = z * (height / 2 + hubH / 2);
+        hub.userData = { featureId: "feature-boss-1", featureType: "boss" };
+        group.add(hub);
+      }
     }
-    for (const z of [1, -1]) {
-      const hub = new THREE.Mesh(hubGeo, matAccent);
-      hub.position.z = z * (height / 2 + hubH / 2);
-      hub.userData = { featureId: "feature-boss-1", featureType: "boss" };
-      group.add(hub);
+  } else {
+    const flangeThickness = Math.max(height * 0.18, outerR * 0.08);
+    const boltHoles = [];
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const hole = new THREE.Path();
+      hole.absarc(
+        Math.cos(a) * outerR * 0.82,
+        Math.sin(a) * outerR * 0.82,
+        Math.max(outerR * 0.05, 0.4),
+        0,
+        Math.PI * 2,
+        true
+      );
+      boltHoles.push(hole);
     }
+    const flangeShape = ringShape(outerR * 1.12, bore, boltHoles);
+    const flangeGeo = extrude(flangeShape, flangeThickness);
+    flangeGeo.center();
+    const flange = new THREE.Mesh(flangeGeo, matRim);
+    flange.position.z = -height / 2 - flangeThickness / 2;
+    flange.userData = { featureId: "feature-flange-1", featureType: "flange" };
+    group.add(flange);
+  }
+
+  if (gearType === "flanged") {
+    const flangeR = outerR * 1.35;
+    const flangeThick = Math.max(3, height * 0.35);
+    const flangeShape = ringShape(flangeR, bore);
+    const flangeMesh = new THREE.Mesh(extrude(flangeShape, flangeThick, false), matBody);
+    flangeMesh.position.z = -height / 2 - flangeThick / 2;
+    flangeMesh.userData = { featureId: "feature-flange-1", featureType: "flange" };
+    group.add(flangeMesh);
   }
 
   if (bore > 0) {
@@ -654,6 +914,7 @@ function buildMeshFromRecipe(meshData) {
   // Sharp technical CAD edges (threshold 35 deg avoids triangulated facet noise on curved walls)
   const edgesGeo = new THREE.EdgesGeometry(geo, 35);
   const edgesMat = new THREE.LineBasicMaterial({ color: "#181410", linewidth: 1 });
+  edgesMat.userData.appearanceRole = 'edges';
   const edgesLine = new THREE.LineSegments(edgesGeo, edgesMat);
   group.add(edgesLine);
 
@@ -702,70 +963,28 @@ export function executeRecipe(recipe) {
   const style = recipe?.style;
   let body = null;
 
-  // OPERATOR A: Generalised Axial Segment Assembly (Universal Continuous Rotational Engine)
+  // Runtime Geometry Engine Execution (Non-categorical declarative AST)
   if (style === "axial_segments" || (Array.isArray(recipe?.axialSegments) && recipe.axialSegments.length > 0)) {
-    const boreRadius =
-      recipe.boreRadius ||
-      recipe.gear?.boreRadius ||
-      recipe.shaft?.boreRadius ||
-      (recipe.holes && recipe.holes[0]?.radius) ||
-      0;
-    const keyway = recipe.keyway || recipe.gear?.keyway || recipe.shaft?.keyway || null;
-    body = buildAxialSegmentAssembly({
-      segments: recipe.axialSegments,
-      boreRadius,
-      keyway,
-      booleans: recipe.booleans || [],
-      modifiers: recipe.modifiers || [],
-    });
+    const prog = generateGeometryProgram({ geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
   } else if (style === "compound_gear" || (recipe?.gear?.stages && recipe.gear.stages.length >= 2)) {
-    const g = recipe.gear || {};
-    const stages = g.stages || [];
-    body = buildCompoundGearGroup({
-      stage1Teeth: stages[0]?.teeth || g.teeth || 24,
-      stage1Radius: (stages[0]?.outerDiameter ? stages[0].outerDiameter / 2 : (stages[0]?.teeth ? stages[0].teeth * 2.5 : 60)) || 60,
-      stage1FaceWidth: stages[0]?.faceWidth || 28,
-      stage2Teeth: stages[1]?.teeth || 16,
-      stage2Radius: (stages[1]?.outerDiameter ? stages[1].outerDiameter / 2 : (stages[1]?.teeth ? stages[1].teeth * 2.5 : 35)) || 35,
-      stage2FaceWidth: stages[1]?.faceWidth || 22,
-      boreRadius: recipe.boreRadius || g.boreRadius || (recipe.holes && recipe.holes[0]?.radius) || 15,
-      keywayWidth: (recipe.keyway && (recipe.keyway.width || recipe.keyway.w)) || g.keyway?.width || 6,
-      keywayHeight: (recipe.keyway && (recipe.keyway.height || recipe.keyway.depth || recipe.keyway.h)) || g.keyway?.height || 4,
-      pinHoles: false,
-    });
+    const prog = generateGeometryProgram({ geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
   } else if (
     style === "pinion_shaft" ||
     (recipe?.shaft && recipe?.gear && (recipe.shaft.length || 0) > (recipe.gear.faceWidth || 0))
   ) {
-    const s = recipe.shaft || {};
-    const g = recipe.gear || {};
-    body = buildPinionShaftGroup({
-      gearTeeth: g.teeth || 16,
-      gearRadius: (g.outerDiameter ? g.outerDiameter / 2 : (g.teeth ? g.teeth * 2.0 : 30)) || 30,
-      gearFaceWidth: g.faceWidth || 38,
-      helixAngle: g.helixAngle || 0,
-      shaftRadius: (s.diameter ? s.diameter / 2 : 14) || 14,
-      shaftLength: s.length || 180,
-      driveJournalRadius: s.driveJournalDiameter ? s.driveJournalDiameter / 2 : 12,
-      supportJournalRadius: s.supportJournalDiameter ? s.supportJournalDiameter / 2 : 11,
-      keywayWidth: g.keyway?.width || s.keyway?.width || 5,
-      keywayHeight: g.keyway?.height || s.keyway?.height || 3,
-      splineCount: s.splineCount || 0,
-    });
+    const prog = generateGeometryProgram({ geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
   } else if (style === "flanged_shaft" || (recipe?.shaft && recipe?.flange)) {
-    const s = recipe.shaft || {};
-    const f = recipe.flange || {};
-    body = buildFlangedShaftGroup({
-      shaftRadius: (s.diameter ? s.diameter / 2 : 12) || 12,
-      shaftLength: s.length || 180,
-      flangeRadius: (f.outerDiameter ? f.outerDiameter / 2 : 38) || 38,
-      flangeThickness: f.thickness || 16,
-      collarRadius: (f.bossDiameter ? f.bossDiameter / 2 : 22) || 22,
-      collarLength: f.bossHeight || 28,
-      boltCount: f.boltCount || 4,
-      boltHoleRadius: (f.boltHoleDiameter ? f.boltHoleDiameter / 2 : 3.5) || 3.5,
-      splineCount: s.splineCount || 6,
-    });
+    const prog = generateGeometryProgram({ geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
+  } else if (style === "cap_bushing" || style === "cap" || recipe?.capBushing) {
+    const prog = generateGeometryProgram({ componentType: "cap/bushing", geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
+  } else if (style === "bearing" || recipe?.bearing) {
+    const prog = generateGeometryProgram({ componentType: "bearing", geometryRecipe: recipe });
+    body = executeGeometryProgram(prog);
   } else if (style === "flange" || (recipe?.flange != null)) {
     body = buildFlangeFromRecipe(recipe.flange, recipe.outline, recipe.holes, recipe.depth);
   } else if (style === "revolved" && recipe.revolvedProfile) {

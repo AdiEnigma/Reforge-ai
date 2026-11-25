@@ -5,6 +5,9 @@
  */
 
 import { line, rect, circle, arc, path, centerMark, dimension, pt } from "./geometry.js";
+import { projectReconstructedGeometry, validateDrawingDimensions } from "./geometry-projection.js";
+
+export { validateDrawingDimensions };
 
 /**
  * Format a number for engineering dimension display (e.g. 50, 12.5).
@@ -22,7 +25,7 @@ export function extractBaseDimensions(analysis) {
   const dims = analysis?.dimensions || {};
   const recipe = analysis?.geometryRecipe || {};
 
-  let outerDia = dims.outerDiameter || null;
+  let outerDia = dims.outerDiameter || analysis?.outerDiameter || null;
   let innerDia = dims.innerDiameter || null;
   let height = dims.height || dims.length || null;
   let width = dims.width || dims.outerDiameter || null;
@@ -54,7 +57,13 @@ export function extractBaseDimensions(analysis) {
     if (recipe.gear.faceWidth) height = recipe.gear.faceWidth;
     if (recipe.gear.boreRadius) innerDia = recipe.gear.boreRadius * 2;
     if (recipe.gear.spokes) spokes = recipe.gear.spokes;
-    if (teeth && module) {
+    const explicitOuterDia = [recipe.gear.outerDiameter, analysis?.outerDiameter].find(
+      (value) => typeof value === "number" && Number.isFinite(value) && value > 0
+    );
+    if (explicitOuterDia != null) {
+      outerDia = explicitOuterDia;
+      width = outerDia;
+    } else if (teeth && module) {
       outerDia = (teeth * module) + (2 * module);
       width = outerDia;
     }
@@ -349,24 +358,20 @@ export function buildDrawingModel({
   drawingId = "RF-001",
 }) {
   const recipe = analysis?.geometryRecipe || {};
-  const style = recipe?.style || "fallback";
-  const dims = extractBaseDimensions(analysis);
+  const nominalDims = extractBaseDimensions(analysis);
   const compType = String(analysis?.componentType || "Component").trim();
   const isRecipeBacked = Boolean(recipe && (recipe.style || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange));
 
-  let views;
-  if (style === "flange" || compType.toLowerCase().includes("flange")) {
-    views = projectExtruded(recipe, dims, isRecipeBacked);
-  } else if (style === "revolved" || compType.toLowerCase().includes("shaft") || compType.toLowerCase().includes("cylinder")) {
-    views = projectRevolved(recipe, dims, isRecipeBacked);
-  } else if (style === "gear" || compType.toLowerCase().includes("gear")) {
-    views = projectGear(recipe, dims);
-  } else if (style === "extruded" || compType.toLowerCase().includes("bracket")) {
-    views = projectExtruded(recipe, dims, isRecipeBacked);
-  } else {
-    // Default parametric bounding projection
-    views = projectRevolved(recipe, dims, false);
-  }
+  // Orthographic views come from the same buildModel() geometry used by the
+  // 3D workbench. Nominal analysis dimensions are only used to convert the
+  // normalised model back to millimetres and to validate what may be shown.
+  const projected = projectReconstructedGeometry(analysis, nominalDims);
+  const views = projected?.views || {
+    front: { entities: [], dimensions: [], width: 0, height: 0 },
+    top: { entities: [], dimensions: [], width: 0, height: 0 },
+    side: { entities: [], dimensions: [], width: 0, height: 0 },
+  };
+  const dims = validateDrawingDimensions(nominalDims, projected?.facts || {});
 
   // Determine material name & source
   const mfgMaterial = manufacturingIntelligence?.material;
@@ -402,6 +407,7 @@ export function buildDrawingModel({
     manufacturingProcess: processName,
     views,
     dimensions: dims,
+    geometryFacts: projected?.facts || { valid: false, source: "reconstructedGeometry" },
     recipe,
   };
 }

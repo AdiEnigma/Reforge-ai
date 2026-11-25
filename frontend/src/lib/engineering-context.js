@@ -74,6 +74,7 @@ export function buildEngineeringContext({
   } else if (recipe.style === "gear" && recipe.gear) {
     recipeSummary = {
       style: "gear",
+      outerDiameter: recipe.gear.outerDiameter,
       teeth: recipe.gear.teeth,
       module: recipe.gear.module,
       faceWidth: recipe.gear.faceWidth,

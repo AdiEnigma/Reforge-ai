@@ -12,6 +12,11 @@
  */
 
 import { generateNeuralMesh, generateAxialManifoldMesh, buildVisualMeshFromVision } from './neural-mesh-generator.js';
+import {
+  inferGearType,
+  normalizeGearType,
+  gearTypeConfirmationMessage,
+} from './gear-types.js';
 
 export const STANDARD_MODULES = Object.freeze([
   0.5, 0.8, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.0,
@@ -241,6 +246,97 @@ export function buildSteppedShaftRecipe({
     revolvedProfile: profile,
   };
 }
+/**
+ * Builds a deep-groove ball-bearing recipe from concentric races and discrete
+ * rolling elements. Unlike a generic revolved annulus, the rolling elements are
+ * separate, countable geometry.
+ */
+export function buildBearingRecipe({
+  outerDiameter = 80,
+  innerDiameter = 40,
+  width = 18,
+  ballCount = 9,
+}) {
+  const od = Math.max(20, outerDiameter);
+  const id = Math.min(od * 0.82, Math.max(5, innerDiameter));
+  const w = Math.max(3, width);
+  const outerR = od / 2;
+  const innerR = id / 2;
+  const radialGap = outerR - innerR;
+  const raceTube = Math.max(0.6, radialGap * 0.17);
+  const ballRadius = Math.max(0.8, radialGap * 0.19);
+  const ballCircleRadius = (outerR + innerR) / 2;
+  const count = Math.max(5, Math.min(20, Math.round(ballCount || 9)));
+
+  const primitives = [
+    {
+      kind: 'torus',
+      radius: Math.round((outerR - raceTube) * 100) / 100,
+      tube: Math.round(raceTube * 100) / 100,
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+    },
+    {
+      kind: 'torus',
+      radius: Math.round((innerR + raceTube) * 100) / 100,
+      tube: Math.round(raceTube * 100) / 100,
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+    },
+  ];
+  for (let i = 0; i < count; i += 1) {
+    const angle = (i / count) * Math.PI * 2;
+    primitives.push({
+      kind: 'sphere',
+      radius: Math.round(ballRadius * 100) / 100,
+      position: {
+        x: Math.round(Math.cos(angle) * ballCircleRadius * 100) / 100,
+        y: Math.round(Math.sin(angle) * ballCircleRadius * 100) / 100,
+        z: 0,
+      },
+      rotation: { x: 0, y: 0, z: 0 },
+    });
+  }
+
+  return { style: 'combination', primitives };
+}
+
+/**
+ * Builds an L-bracket with an explicit outline and mounting holes. It is only
+ * selected when bearing/bracket evidence already exists; it is never used as a
+ * catch-all for unknown components.
+ */
+export function buildBracketRecipe({ width = 90, height = 60, thickness = 12, boltCount = 2 }) {
+  const w = Math.max(20, width);
+  const h = Math.max(20, height);
+  const t = Math.max(3, thickness);
+  const count = Math.max(1, Math.min(6, Math.round(boltCount || 2)));
+  const outline = [
+    { x: 0, y: 0 },
+    { x: w, y: 0 },
+    { x: w, y: h * 0.32 },
+    { x: w * 0.36, y: h * 0.32 },
+    { x: w * 0.36, y: h },
+    { x: 0, y: h },
+  ].map((point) => ({ x: Math.round(point.x * 100) / 100, y: Math.round(point.y * 100) / 100 }));
+  const holeRadius = Math.round(Math.min(w, h) * 0.055 * 100) / 100;
+  const holes = [];
+  const locations = [
+    { cx: w * 0.18, cy: h * 0.16 },
+    { cx: w * 0.18, cy: h * 0.72 },
+    { cx: w * 0.72, cy: h * 0.16 },
+    { cx: w * 0.84, cy: h * 0.16 },
+  ];
+  for (let i = 0; i < count && i < locations.length; i += 1) {
+    holes.push({
+      cx: Math.round(locations[i].cx * 100) / 100,
+      cy: Math.round(locations[i].cy * 100) / 100,
+      radius: holeRadius,
+    });
+  }
+  return { style: 'extruded', outline, holes, depth: t };
+}
+
 export function extractVisionObservations(visionResult) {
   if (!visionResult || !Array.isArray(visionResult.images) || visionResult.images.length === 0) {
     return null;
@@ -312,40 +408,109 @@ export function buildParameterConfidence({
   const uncertainties = [];
   const ref = reference && typeof reference === 'object' ? reference : {};
   const hasCalibration = Boolean(obs?.calibrations?.length && obs.calibrations[0]?.mm_per_pixel > 0);
-
-  // 1. Outer Diameter / Major Width
   const calSource = obs?.calibrations?.[0]?.source || '';
   const isA4Calibrated = calSource === 'iso_216_a4_paper';
 
-  if (typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0) {
-    paramConf.outerDiameter = {
-      status: 'MEASURED',
-      confidence: 1.0,
-      source: 'user_reference',
-      value: ref.outerDiameter,
-      reason: 'User supplied verified physical diameter',
-    };
-  } else if (hasCalibration && obs?.circles?.length > 0) {
-    paramConf.outerDiameter = {
-      status: 'MEASURED',
-      confidence: isA4Calibrated ? 0.98 : 0.94,
-      source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
-      value: dimensions.outerDiameter,
-      reason: isA4Calibrated
-        ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
-        : `Calibrated from optical boundary (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
-    };
-  } else if (dimensions.outerDiameter) {
-    paramConf.outerDiameter = {
-      status: 'ESTIMATED',
-      confidence: 0.72,
-      source: provenance,
-      value: dimensions.outerDiameter,
-      reason: 'Estimated from visual envelope without absolute metric scale reference',
-    };
-    uncertainties.push('Overall envelope scale is uncalibrated without physical reference or multi-view baseline.');
+  const rawComp = String(componentType || '').toLowerCase();
+  const isPrismatic =
+    rawComp.includes('bracket') ||
+    rawComp.includes('box') ||
+    rawComp.includes('plate') ||
+    rawComp.includes('housing') ||
+    rawComp.includes('packaging') ||
+    rawComp.includes('block') ||
+    rawComp.includes('enclosure') ||
+    rawComp.includes('chassis') ||
+    rawComp.includes('extruded');
+
+  if (isPrismatic) {
+    if (typeof ref.length === 'number' && ref.length > 0) {
+      paramConf.length = {
+        status: 'MEASURED',
+        confidence: 1.0,
+        source: 'user_reference',
+        value: ref.length,
+        reason: 'User supplied verified physical length',
+      };
+    } else if (hasCalibration && obs?.boundingBoxes?.length > 0) {
+      paramConf.length = {
+        status: 'MEASURED',
+        confidence: isA4Calibrated ? 0.98 : 0.94,
+        source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
+        value: dimensions.length,
+        reason: isA4Calibrated
+          ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
+          : `Calibrated from optical bounding box (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
+      };
+    } else if (dimensions.length) {
+      paramConf.length = {
+        status: 'ESTIMATED',
+        confidence: 0.72,
+        source: provenance,
+        value: dimensions.length,
+        reason: 'Estimated from visual envelope span',
+      };
+    }
+
+    if (typeof ref.width === 'number' && ref.width > 0) {
+      paramConf.width = {
+        status: 'MEASURED',
+        confidence: 1.0,
+        source: 'user_reference',
+        value: ref.width,
+        reason: 'User supplied verified physical width',
+      };
+    } else if (hasCalibration && obs?.boundingBoxes?.length > 0) {
+      paramConf.width = {
+        status: 'MEASURED',
+        confidence: isA4Calibrated ? 0.98 : 0.94,
+        source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
+        value: dimensions.width,
+        reason: isA4Calibrated
+          ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
+          : `Calibrated from optical bounding box (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
+      };
+    } else if (dimensions.width) {
+      paramConf.width = {
+        status: 'ESTIMATED',
+        confidence: 0.72,
+        source: provenance,
+        value: dimensions.width,
+        reason: 'Estimated from visual envelope span',
+      };
+    }
   } else {
-    paramConf.outerDiameter = { status: 'UNKNOWN', confidence: 0.0, source: 'none' };
+    // 1. Outer Diameter / Major Width
+    if (typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0) {
+      paramConf.outerDiameter = {
+        status: 'MEASURED',
+        confidence: 1.0,
+        source: 'user_reference',
+        value: ref.outerDiameter,
+        reason: 'User supplied verified physical diameter',
+      };
+    } else if (hasCalibration && obs?.circles?.length > 0) {
+      paramConf.outerDiameter = {
+        status: 'MEASURED',
+        confidence: isA4Calibrated ? 0.98 : 0.94,
+        source: isA4Calibrated ? 'iso_216_a4_calibrated_cv' : 'calibrated_computer_vision',
+        value: dimensions.outerDiameter,
+        reason: isA4Calibrated
+          ? `Calibrated from ISO 216 A4 Paper benchmark (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`
+          : `Calibrated from optical boundary (${obs.calibrations[0].mm_per_pixel.toFixed(3)} mm/px)`,
+      };
+    } else if (dimensions.outerDiameter) {
+      paramConf.outerDiameter = {
+        status: 'ESTIMATED',
+        confidence: 0.72,
+        source: provenance,
+        value: dimensions.outerDiameter,
+        reason: 'Estimated from visual envelope without absolute metric scale reference',
+      };
+      uncertainties.push('Overall envelope scale is uncalibrated without physical reference or multi-view baseline.');
+    } else {
+      paramConf.outerDiameter = { status: 'UNKNOWN', confidence: 0.0, source: 'none' };
+    }
   }
 
   // 2. Inner Diameter / Central Bore
@@ -485,6 +650,9 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
     });
     ans.parameterConfidence = confResult.parameterConfidence;
     ans.uncertainties = [...new Set([...(ans.uncertainties || []), ...confResult.uncertainties])];
+    if (ans.gearType && normalizeGearType(ans.gearType) !== 'unknown') {
+      ans.requiresGearTypeConfirmation = false;
+    }
     return ans;
   };
 
@@ -511,6 +679,12 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
       }
     }
   }
+
+  const gearTypeEvidence = inferGearType({
+    reference: ref,
+    observations: obs,
+    text: [ref.componentType, ref.name, ref.notes].filter(Boolean).join(' '),
+  });
 
   // Detect circular diameters (outer and inner/bore)
   let outerDiameterMm = null;
@@ -565,21 +739,31 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
     const confidence = hasStrongSymmetry ? 0.94 : 0.82;
     const maxAspectRatio = obs?.aspectRatios?.length ? Math.max(...obs.aspectRatios) : 1.0;
     const isElongated = maxAspectRatio >= 1.75;
+    const explicitGearType = typeof ref.gearType === 'string' ? normalizeGearType(ref.gearType) : null;
+    const pinionCompatible = !explicitGearType || ['spur', 'helical', 'pinion'].includes(explicitGearType);
 
-    if (isElongated) {
+    if (isElongated && pinionCompatible) {
+      const branchGearType = explicitGearType || 'helical';
+      const branchHelix = branchGearType === 'helical'
+        ? (typeof ref.helixAngle === 'number' && Math.abs(ref.helixAngle) > 0.5 ? ref.helixAngle : 20.0)
+        : (typeof ref.helixAngle === 'number' ? ref.helixAngle : 0.0);
+      const branchLabel = branchGearType === 'helical' ? 'Helical' : branchGearType === 'spur' ? 'Spur' : 'Pinion';
       const totalLength = Math.round(standardOd * Math.max(3.2, maxAspectRatio) * 10) / 10;
       const journalR1 = Math.round(standardOd * 0.28 * 10) / 10;
       const journalR2 = Math.round(standardOd * 0.25 * 10) / 10;
       const axialSegments = [
         { zStart: -totalLength / 2, zEnd: -finalFaceWidth / 2, radius: journalR1, label: 'Drive Journal (Left)' },
-        { zStart: -finalFaceWidth / 2, zEnd: finalFaceWidth / 2, teeth: detectedTeeth, module: cleanModule || 3.0, helixAngle: ref.helixAngle || 20.0, radius: standardOd / 2, label: 'Integral Pinion Gear' },
+        { zStart: -finalFaceWidth / 2, zEnd: finalFaceWidth / 2, teeth: detectedTeeth, module: cleanModule || 3.0, helixAngle: branchHelix, radius: standardOd / 2, label: `Integral ${branchLabel} Pinion Gear` },
         { zStart: finalFaceWidth / 2, zEnd: totalLength / 2, radius: journalR2, label: 'Support Journal (Right)' },
       ];
       const analysis = {
-        componentType: 'helical pinion shaft',
-        componentName: `Integral ${detectedTeeth}T Pinion Shaft Ø${standardOd}x${totalLength}mm`,
-        label: `Helical Pinion Shaft (${detectedTeeth}T)`,
+        componentType: branchGearType === 'pinion' ? 'pinion shaft' : `${branchGearType} pinion shaft`,
+        componentName: `Integral ${detectedTeeth}T ${branchLabel} Pinion Shaft Ø${standardOd}x${totalLength}mm`,
+        label: `${branchLabel} Pinion Shaft (${detectedTeeth}T)`,
         confidence,
+        gearType: branchGearType,
+        classificationSource: 'vision_geometry',
+        requiresGearTypeConfirmation: false,
         geometryType: 'integral_pinion_shaft',
         dimensions: {
           outerDiameter: standardOd,
@@ -591,9 +775,9 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
         },
         teeth: detectedTeeth,
         module: cleanModule || 3.0,
-        helixAngle: ref.helixAngle || 20.0,
+        helixAngle: branchHelix,
         features: [
-          `Integrated ${detectedTeeth}T Helical Pinion Section`,
+          `Integrated ${detectedTeeth}T ${branchLabel} Pinion Section`,
           `Left Drive Journal Ø${journalR1 * 2}mm`,
           `Right Support Journal Ø${journalR2 * 2}mm`,
           'Continuous Solid Steel Core',
@@ -607,9 +791,10 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
           operator: 'axial_segments',
           axialSegments,
           gear: {
+            gearType: branchGearType,
             teeth: detectedTeeth,
             module: cleanModule || 3.0,
-            helixAngle: ref.helixAngle || 20.0,
+            helixAngle: branchHelix,
             faceWidth: finalFaceWidth,
             outerDiameter: standardOd,
           },
@@ -629,23 +814,38 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
       };
     }
 
+    const detectedGearType = gearTypeEvidence.gearType;
+    const typeConfirmed = detectedGearType !== 'unknown';
+    const helixAngle = typeof ref.helixAngle === 'number' && Math.abs(ref.helixAngle) > 0.5
+      ? ref.helixAngle
+      : (detectedGearType === 'helical' ? 20.0 : 0.0);
+    const deterministicTypes = new Set(['spur', 'helical']);
+
     const recipe = {
       style: 'gear',
       gear: {
+        gearType: typeConfirmed ? detectedGearType : 'unknown',
         teeth: detectedTeeth,
         module: cleanModule || Math.round(rawModule * 1000) / 1000,
         pressureAngle: 20.0,
-        helixAngle: ref.helixAngle || 0.0,
+        helixAngle,
         faceWidth: finalFaceWidth,
         boreRadius: id > 0 ? Math.round((id / 2) * 10) / 10 : 0,
       },
     };
 
     const analysis = {
-      componentType: 'spur gear',
-      componentName: `${detectedTeeth}T Industrial Spur Gear`,
-      label: `Spur Gear (${detectedTeeth}T)`,
-      confidence,
+      componentType: typeConfirmed ? `${detectedGearType} gear` : 'gear (type unconfirmed)',
+      componentName: typeConfirmed
+        ? `${detectedTeeth}T Industrial ${detectedGearType.charAt(0).toUpperCase() + detectedGearType.slice(1)} Gear`
+        : `${detectedTeeth}T Toothed Component (type unconfirmed)`,
+      label: typeConfirmed
+        ? `${detectedGearType.charAt(0).toUpperCase() + detectedGearType.slice(1)} Gear (${detectedTeeth}T)`
+        : `Gear Type Unconfirmed (${detectedTeeth}T)`,
+      confidence: typeConfirmed ? confidence : Math.min(confidence, 0.65),
+      gearType: detectedGearType,
+      classificationSource: gearTypeEvidence.source,
+      requiresGearTypeConfirmation: !typeConfirmed,
       geometryType: 'toothed_gear',
       dimensions: {
         outerDiameter: standardOd,
@@ -657,7 +857,7 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
       },
       teeth: detectedTeeth,
       module: cleanModule || Math.round(rawModule * 1000) / 1000,
-      helixAngle: ref.helixAngle || 0.0,
+      helixAngle,
       features: [
         id > 0 ? `Central Bore Ø${id}mm` : 'Solid Hub (No Bore)',
         `${detectedTeeth} Precision Involute Teeth`,
@@ -667,15 +867,17 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
       materialEstimate: 'AISI 4140 Alloy Steel',
       manufacturingProcess: 'Hobbing + CNC Finish',
       reasoning: `Mathematically resolved from vision contours and rotational symmetry: ${detectedTeeth} teeth with standard module ${cleanModule}mm and tip diameter ${standardOd}mm.`,
-      uncertainties: [],
+      uncertainties: typeConfirmed ? [] : [gearTypeConfirmationMessage(detectedGearType)],
       geometryRecipe: recipe,
       provenance: 'computer_vision_direct',
     };
 
     return {
-      canResolveWithoutGemini: true,
+      // Only explicit, deterministic types may bypass Gemini. A tooth count
+      // alone proves "gear", not the tooth form, and must not become spur.
+      canResolveWithoutGemini: typeConfirmed && deterministicTypes.has(detectedGearType),
       analysis: finalize(analysis),
-      confidence,
+      confidence: analysis.confidence,
     };
   }
 
@@ -822,6 +1024,61 @@ export function inferDefensibleDimensions(reconciled, obs = null, ref = {}) {
   let derivedLength = null;
   let derivedBore = null;
 
+  const rawCompType = String(reconciled.componentType || '').toLowerCase();
+  const rawGeoType = String(reconciled.geometryType || '').toLowerCase();
+  const isPrismatic =
+    rawCompType.includes('bracket') ||
+    rawCompType.includes('box') ||
+    rawCompType.includes('plate') ||
+    rawCompType.includes('housing') ||
+    rawCompType.includes('packaging') ||
+    rawCompType.includes('block') ||
+    rawCompType.includes('enclosure') ||
+    rawCompType.includes('chassis') ||
+    rawGeoType.includes('prismatic') ||
+    rawGeoType.includes('bracket') ||
+    recipe.style === 'extruded';
+
+  if (isPrismatic) {
+    reconciled.dimensions.outerDiameter = null;
+    if (!reconciled.dimensions.innerDiameter || reconciled.dimensions.innerDiameter <= 0) {
+      reconciled.dimensions.innerDiameter = null;
+    }
+
+    if (obs?.calibrations?.[0]?.mm_per_pixel > 0 && obs?.boundingBoxes?.length > 0) {
+      const bbox = obs.boundingBoxes[0];
+      const sz = bbox.rotated_size_px || (bbox.axis_aligned ? [bbox.axis_aligned[2], bbox.axis_aligned[3]] : null);
+      if (sz && sz[0] > 0 && sz[1] > 0) {
+        const mmPerPx = obs.calibrations[0].mm_per_pixel;
+        reconciled.dimensions.length = Math.round(Math.max(sz[0], sz[1]) * mmPerPx * 10) / 10;
+        reconciled.dimensions.width = Math.round(Math.min(sz[0], sz[1]) * mmPerPx * 10) / 10;
+      }
+    } else if (Array.isArray(recipe.outline) && recipe.outline.length >= 3) {
+      const xs = recipe.outline.map((pt) => pt.x || 0);
+      const ys = recipe.outline.map((pt) => pt.y || 0);
+      const spanX = Math.round((Math.max(...xs) - Math.min(...xs)) * 10) / 10;
+      const spanY = Math.round((Math.max(...ys) - Math.min(...ys)) * 10) / 10;
+      if (spanX > 0 && spanY > 0) {
+        reconciled.dimensions.length = reconciled.dimensions.length || Math.max(spanX, spanY);
+        reconciled.dimensions.width = reconciled.dimensions.width || Math.min(spanX, spanY);
+      }
+    }
+
+    if (typeof reconciled.dimensions.length !== 'number' || reconciled.dimensions.length <= 0) {
+      reconciled.dimensions.length = 120.0;
+    }
+    if (typeof reconciled.dimensions.width !== 'number' || reconciled.dimensions.width <= 0) {
+      reconciled.dimensions.width = Math.round(reconciled.dimensions.length * 0.65 * 10) / 10;
+    }
+    if (typeof reconciled.dimensions.height !== 'number' || reconciled.dimensions.height <= 0) {
+      reconciled.dimensions.height = recipe.depth || 20.0;
+    }
+    if (typeof reconciled.dimensions.thickness !== 'number' || reconciled.dimensions.thickness <= 0) {
+      reconciled.dimensions.thickness = reconciled.dimensions.height;
+    }
+    return;
+  }
+
   // 1. From Revolved Profile (style: 'revolved')
   if (recipe.style === 'revolved' && Array.isArray(recipe.revolvedProfile) && recipe.revolvedProfile.length > 0) {
     const validRadii = recipe.revolvedProfile.map((p) => Math.abs(p.radius || 0)).filter((r) => r > 0);
@@ -897,7 +1154,9 @@ export function inferDefensibleDimensions(reconciled, obs = null, ref = {}) {
   if (typeof reconciled.dimensions.thickness !== 'number' || !isFinite(reconciled.dimensions.thickness) || reconciled.dimensions.thickness <= 0) {
     reconciled.dimensions.thickness = reconciled.dimensions.length || 25.0;
   }
-  if (typeof currentBore !== 'number' || !isFinite(currentBore) || currentBore < 0) {
+  if (currentBore === null && !derivedBore) {
+    reconciled.dimensions.innerDiameter = null;
+  } else if (typeof currentBore !== 'number' || !isFinite(currentBore) || currentBore < 0) {
     reconciled.dimensions.innerDiameter = derivedBore ?? (recipe.boreRadius ? recipe.boreRadius * 2 : 0);
   }
 }
@@ -915,7 +1174,6 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   const ref = reference && typeof reference === 'object' ? reference : {};
   const obs = extractVisionObservations(visionResult);
   const reconciled = { ...geminiAnalysis };
-  delete reconciled.geometrySource;
   const hadGeminiRecipe = Boolean(geminiAnalysis?.geometryRecipe && typeof geminiAnalysis.geometryRecipe === 'object');
 
   // 1. Reconcile Dimensions: User Reference > Vision Calibration > Gemini Proposal
@@ -955,6 +1213,15 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   const rawFeatures = Array.isArray(reconciled.features)
     ? reconciled.features.map((f) => String(f).toLowerCase()).join(' ')
     : '';
+  const gearTypeEvidence = inferGearType({
+    reference: {
+      ...ref,
+      gearType: ref.gearType || geminiAnalysis?.gearType || geminiAnalysis?.geometryRecipe?.gear?.gearType,
+    },
+    observations: obs,
+    text: `${rawType} ${rawFeatures} ${String(ref.componentType || '')} ${String(ref.name || '')} ${String(ref.notes || '')}`,
+  });
+  const explicitGearType = gearTypeEvidence.gearType;
   const isBevel =
     rawType.includes('bevel') ||
     rawType.includes('miter') ||
@@ -963,7 +1230,8 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     rawFeatures.includes('miter') ||
     rawFeatures.includes('conical') ||
     geminiAnalysis?.gearType === 'bevel' ||
-    geminiAnalysis?.geometryRecipe?.gear?.gearType === 'bevel';
+    geminiAnalysis?.geometryRecipe?.gear?.gearType === 'bevel' ||
+    explicitGearType === 'bevel';
 
   const isWormDirect =
     rawType.includes('worm') ||
@@ -980,6 +1248,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     (typeof finalTeeth === 'number' && finalTeeth >= 4);
 
   if (isGear) {
+    reconciled.geometrySource = 'template_gear';
     if (typeof finalTeeth !== 'number' || finalTeeth < 4) {
       finalTeeth = Math.max(12, Math.round((reconciled.dimensions.outerDiameter || 100.0) / (reconciled.module || 4.5)));
     }
@@ -1001,6 +1270,13 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       Math.round((reconciled.module ? reconciled.module * 9 : 24) * 10) / 10;
     reconciled.dimensions.height = faceWidth;
     reconciled.dimensions.thickness = faceWidth;
+
+    const finalGearType = explicitGearType !== 'unknown'
+      ? explicitGearType
+      : ((reconciled.helixAngle && Math.abs(reconciled.helixAngle) > 0) ? 'helical' : 'unknown');
+    reconciled.gearType = finalGearType;
+    reconciled.classificationSource = gearTypeEvidence.source;
+    reconciled.requiresGearTypeConfirmation = finalGearType === 'unknown';
 
     let spokes = null;
     if (typeof ref.spokes === 'number' && ref.spokes >= 3) {
@@ -1057,24 +1333,25 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
         compTypeLower.includes('worm') ||
         rawType.includes('worm') ||
         rawFeatures.includes('worm') ||
-        geminiAnalysis?.gearType === 'worm';
+        explicitGearType === 'worm';
 
       const isExplicitCompound =
         !isWorm &&
         (compTypeLower.includes('compound') ||
-        compTypeLower.includes('cluster') ||
-        compTypeLower.includes('two-stage') ||
-        compTypeLower.includes('companion') ||
-        (compTypeLower.includes('double') && compTypeLower.includes('gear')) ||
-        (compTypeLower.includes('dual') && compTypeLower.includes('gear')) ||
-        rawType.includes('compound') ||
-        rawFeatures.includes('compound') ||
-        rawFeatures.includes('cluster') ||
-        rawFeatures.includes('stage 2') ||
-        rawFeatures.includes('dual-stage') ||
-        rawFeatures.includes('two-stage') ||
-        geminiAnalysis?.geometryRecipe?.style === 'compound_gear' ||
-        (geminiAnalysis?.geometryRecipe?.gear?.stages && geminiAnalysis.geometryRecipe.gear.stages.length >= 2));
+          compTypeLower.includes('cluster') ||
+          compTypeLower.includes('two-stage') ||
+          compTypeLower.includes('companion') ||
+          (compTypeLower.includes('double') && compTypeLower.includes('gear')) ||
+          (compTypeLower.includes('dual') && compTypeLower.includes('gear')) ||
+          rawType.includes('compound') ||
+          rawFeatures.includes('compound') ||
+          rawFeatures.includes('cluster') ||
+          rawFeatures.includes('stage 2') ||
+          rawFeatures.includes('dual-stage') ||
+          rawFeatures.includes('two-stage') ||
+          geminiAnalysis?.geometryRecipe?.style === 'compound_gear' ||
+          explicitGearType === 'compound' ||
+          (geminiAnalysis?.geometryRecipe?.gear?.stages && geminiAnalysis.geometryRecipe.gear.stages.length >= 2));
 
       const hasShaftExtension =
         !isExplicitCompound &&
@@ -1208,7 +1485,11 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           reconciled.dimensions.length = totalLength;
           reconciled.dimensions.height = totalLength;
           reconciled.dimensions.innerDiameter = 0; // Solid integral pinion shaft has no through-bore
-          reconciled.componentType = (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical pinion shaft' : 'gear shaft';
+          reconciled.componentType = finalGearType === 'unknown'
+            ? 'pinion shaft (gear type unconfirmed)'
+            : `${finalGearType} pinion shaft`;
+          reconciled.gearType = finalGearType;
+          reconciled.requiresGearTypeConfirmation = finalGearType === 'unknown';
           reconciled.geometryType = 'integral_pinion_shaft';
 
           const journalLen = Math.max(25, Math.round((totalLength - faceWidth) / 2));
@@ -1225,7 +1506,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
             operator: 'axial_segments',
             axialSegments,
             gear: {
-              gearType: (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical' : 'spur',
+              gearType: finalGearType,
               teeth: finalTeeth,
               module: reconciled.module,
               helixAngle: reconciled.helixAngle || 0.0,
@@ -1254,8 +1535,21 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           }
           reconciled.features = featuresList;
         } else {
-          reconciled.componentType = (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical gear' : 'spur gear';
-          reconciled.gearType = (reconciled.helixAngle && reconciled.helixAngle > 0) ? 'helical' : 'spur';
+          reconciled.componentType = finalGearType === 'unknown'
+            ? 'gear (type unconfirmed)'
+            : `${finalGearType} gear`;
+          reconciled.gearType = finalGearType;
+          if (finalGearType === 'helical' && !(reconciled.helixAngle > 0)) {
+            reconciled.helixAngle = 20.0;
+          }
+          if (finalGearType === 'unknown') {
+            reconciled.uncertainties = [
+              ...new Set([
+                ...(reconciled.uncertainties || []),
+                gearTypeConfirmationMessage(finalGearType),
+              ]),
+            ];
+          }
           const axialSegments = [
             { zStart: -faceWidth / 2, zEnd: faceWidth / 2, teeth: finalTeeth, module: reconciled.module, helixAngle: reconciled.helixAngle || 0.0, radius: od / 2, label: 'Gear Section' },
           ];
@@ -1386,6 +1680,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
 
     if (isFlange) {
       reconciled.componentType = 'flange';
+      reconciled.geometrySource = 'template_flange';
       const od = ref.outerDiameter || reconciled.dimensions.outerDiameter || 120.0;
       const id = ref.innerDiameter != null ? ref.innerDiameter : (reconciled.dimensions.innerDiameter || Math.round(od * 0.35 * 10) / 10);
       const th = ref.thickness || reconciled.dimensions.thickness || Math.round(od * 0.16 * 10) / 10;
@@ -1534,6 +1829,7 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       featuresList.unshift('Involute Spline / Keyed Drive Journal');
     }
     reconciled.features = featuresList;
+    reconciled.geometrySource = hasRichProfile ? 'image_recipe_refined' : 'template_shaft';
   }
 
   // 3d. Reconcile Prismatic / Extruded Mechanical Components (Brackets, Links, Connecting Rods, Levers, Plates, Mounts, Housings)
@@ -1582,7 +1878,12 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
       const w = reconciled.dimensions.width || 80;
       const l = reconciled.dimensions.length || 140;
       const th = reconciled.dimensions.thickness || reconciled.dimensions.height || 18;
-      const boreR = (reconciled.dimensions.innerDiameter || 20) / 2;
+      const explicitId = Number(reconciled.dimensions.innerDiameter);
+      const hasHoleEvidence = (Number.isFinite(explicitId) && explicitId > 0) ||
+        featuresStr.includes('hole') ||
+        featuresStr.includes('bore') ||
+        featuresStr.includes('eyelet');
+      const boreR = (hasHoleEvidence && explicitId > 0) ? explicitId / 2 : 0;
 
       const halfW = w / 2;
       const halfL = l / 2;
@@ -1600,10 +1901,12 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           holes.push({ cx: halfL * 0.65, cy: 0, radius: boreR * 1.15 });
         } else {
           holes.push({ cx: 0, cy: 0, radius: boreR });
-          const mR = Math.min(boreR * 0.45, 6);
-          if (mR > 2) {
-            holes.push({ cx: -halfL * 0.68, cy: 0, radius: mR });
-            holes.push({ cx: halfL * 0.68, cy: 0, radius: mR });
+          if (featuresStr.includes('mounting') || featuresStr.includes('bolt') || featuresStr.includes('holes')) {
+            const mR = Math.min(boreR * 0.45, 6);
+            if (mR > 2) {
+              holes.push({ cx: -halfL * 0.68, cy: 0, radius: mR });
+              holes.push({ cx: halfL * 0.68, cy: 0, radius: mR });
+            }
           }
         }
       }
@@ -1704,69 +2007,556 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
 
   reconciled.provenance = obs ? 'gemini_assisted_vision' : 'gemini_pure';
   return reconciled;
+}
+
+/**
+ * Universal 3-Layer Geometry Solver:
+ * Layer 1: True Optical Manifold (boundaryPolygon + depthGrid + circles -> buildVisualMeshFromVision)
+ * Layer 2: Extruded 2D Contour / Prismatic Manifold (outline + holes -> generateNeuralMesh)
+ * Layer 3: Parametric Engineering Synthesis (Compound Gear, Flanged Shaft, Involute Gear, Stepped Shaft)
+ */
+export function resolveUniversalGeometry(visionResult, geminiAnalysis = null, reference = {}) {
+  if (geminiAnalysis && typeof geminiAnalysis === 'object') {
+    return reconcileGeminiWithVision(geminiAnalysis, visionResult, reference);
   }
 
-  /**
-   * Universal 3-Layer Geometry Solver:
-   * Layer 1: True Optical Manifold (boundaryPolygon + depthGrid + circles -> buildVisualMeshFromVision)
-   * Layer 2: Extruded 2D Contour / Prismatic Manifold (outline + holes -> generateNeuralMesh)
-   * Layer 3: Parametric Engineering Synthesis (Compound Gear, Flanged Shaft, Involute Gear, Stepped Shaft)
-   */
-  export function resolveUniversalGeometry(visionResult, geminiAnalysis = null, reference = {}) {
-    if (geminiAnalysis && typeof geminiAnalysis === 'object') {
-      return reconcileGeminiWithVision(geminiAnalysis, visionResult, reference);
-    }
-
-    const cvRes = resolveGeometryFromVision(visionResult, reference);
-    if (cvRes.canResolveWithoutGemini && cvRes.analysis) {
-      return cvRes.analysis;
-    }
-
-    return fallbackDeterministicAnalysis(reference, 'Universal solver fallback');
+  const cvRes = resolveGeometryFromVision(visionResult, reference);
+  if (cvRes.canResolveWithoutGemini && cvRes.analysis) {
+    return cvRes.analysis;
   }
 
-  /**
-   * Builds a watertight geometry recipe from clean dimensions.
-   */
-  function buildRecipeFromDimensions(analysis) {
-    const type = String(analysis?.componentType || '').toLowerCase();
-    const dims = analysis?.dimensions || {};
-    const od = dims.outerDiameter || 100;
-    const id = dims.innerDiameter || 25;
-    const h = dims.height || dims.thickness || 30;
+  return fallbackDeterministicAnalysis(reference, 'Universal solver fallback');
+}
 
-    if (type.includes('compound') || type.includes('cluster') || type.includes('two-stage') || analysis?.geometryRecipe?.style === 'compound_gear') {
-      const stage1OD = od;
-      const stage2OD = Math.round(od * 0.60 * 10) / 10;
-      const s1w = Math.round(h * 0.55 * 10) / 10;
-      const s2w = Math.round(h * 0.45 * 10) / 10;
-      const t1 = analysis.teeth || 24;
-      const t2 = Math.max(8, Math.round(t1 * 0.65));
-      const m1 = snapToStandardModule(stage1OD / (t1 + 2)) || 4.5;
-      const m2 = snapToStandardModule(stage2OD / (t2 + 2)) || m1;
-      return {
+/**
+ * Builds a watertight geometry recipe from clean dimensions.
+ */
+function buildRecipeFromDimensions(analysis) {
+  const type = String(analysis?.componentType || '').toLowerCase();
+  const dims = analysis?.dimensions || {};
+  const od = dims.outerDiameter || 100;
+  const id = dims.innerDiameter || 25;
+  const h = dims.height || dims.thickness || 30;
+
+  if (type.includes('compound') || type.includes('cluster') || type.includes('two-stage') || analysis?.geometryRecipe?.style === 'compound_gear') {
+    const stage1OD = od;
+    const stage2OD = Math.round(od * 0.60 * 10) / 10;
+    const s1w = Math.round(h * 0.55 * 10) / 10;
+    const s2w = Math.round(h * 0.45 * 10) / 10;
+    const t1 = analysis.teeth || 24;
+    const t2 = Math.max(8, Math.round(t1 * 0.65));
+    const m1 = snapToStandardModule(stage1OD / (t1 + 2)) || 4.5;
+    const m2 = snapToStandardModule(stage2OD / (t2 + 2)) || m1;
+    return {
+      style: 'compound_gear',
+      gear: {
+        stages: [
+          { teeth: t1, module: m1, faceWidth: s1w },
+          { teeth: t2, module: m2, faceWidth: s2w },
+        ],
+        boreRadius: Math.round((id / 2) * 10) / 10,
+        keyway: { width: 8, depth: 4 },
+      },
+    };
+  }
+
+  if (
+    (type.includes('flange') || (Array.isArray(analysis?.features) && analysis.features.some((f) => /bolt\s*hole|mounting\s*hole/i.test(String(f))))) &&
+    (type.includes('shaft') || type.includes('spline') || type.includes('bushing'))
+  ) {
+    const sR = id ? id / 2 : 12;
+    const fR = od / 2;
+    const length = dims.length || h || 180;
+    const th = dims.thickness || 16;
+    const boltCount = extractBoltCount(analysis?.features, null, {}) || 4;
+    return {
+      style: 'flanged_shaft',
+      shaft: { diameter: sR * 2, length, splineCount: 6 },
+      flange: {
+        outerDiameter: fR * 2,
+        thickness: th,
+        boltCount,
+        boltCircleDiameter: Math.round((sR * 1.4 + fR) * 10) / 10,
+        boltHoleDiameter: 7,
+        bossDiameter: sR * 3,
+        bossHeight: 28,
+      },
+    };
+  }
+
+  if (type.includes('bevel')) {
+    const teeth = analysis.teeth || 20;
+    const m = snapToStandardModule(od / (teeth + 2)) || 3.0;
+    return {
+      style: 'gear',
+      gear: {
+        gearType: 'bevel',
+        teeth,
+        module: m,
+        coneAngle: analysis.coneAngle || 45,
+        pressureAngle: 20.0,
+        faceWidth: h || 20,
+        boreRadius: id / 2,
+        hubDiameter: Math.round(od * 0.62 * 10) / 10,
+        hubLength: Math.round((h || 20) * 0.85 * 10) / 10,
+      },
+    };
+  }
+
+  if (type.includes('gear') || (analysis?.teeth && analysis.teeth >= 6)) {
+    const teeth = analysis.teeth || 20;
+    const m = snapToStandardModule(od / (teeth + 2)) || 4.0;
+    return {
+      style: 'gear',
+      gear: {
+        gearType: normalizeGearType(analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType),
+        teeth,
+        module: m,
+        pressureAngle: 20.0,
+        helixAngle: analysis?.helixAngle || (normalizeGearType(analysis?.gearType) === 'helical' ? 20.0 : 0.0),
+        faceWidth: h,
+        boreRadius: id / 2,
+        spokes: analysis?.spokes || null,
+      },
+    };
+  }
+
+  if (type.includes('flange') || (Array.isArray(analysis?.features) && analysis.features.some((f) => /bolt\s*hole|mounting\s*hole/i.test(String(f))))) {
+    const boltCount = extractBoltCount(analysis?.features, null, {});
+    return buildFlangeRecipe({
+      outerDiameter: od,
+      innerDiameter: id,
+      thickness: dims.thickness || Math.round(od * 0.16 * 10) / 10,
+      height: h,
+      boltCount,
+    });
+  }
+
+  if (type.includes('shaft') || type.includes('spindle')) {
+    const length = dims.length || h || od * 3.5;
+    return buildSteppedShaftRecipe({ outerDiameter: od, length, innerDiameter: id });
+  }
+
+  // Prismatic / Extruded mechanical components (brackets, links, levers, plates, blocks)
+  if (
+    type.includes('bracket') ||
+    type.includes('rod') ||
+    type.includes('link') ||
+    type.includes('lever') ||
+    type.includes('plate') ||
+    type.includes('arm') ||
+    type.includes('mount') ||
+    type.includes('housing') ||
+    (dims.width && dims.length && Math.abs(dims.width - dims.length) > 5)
+  ) {
+    const w = dims.width || 80;
+    const l = dims.length || dims.width || 120;
+    const th = dims.thickness || dims.height || 18;
+    const boreR = (typeof id === 'number' && id > 0) ? id / 2 : 0;
+    const halfW = w / 2;
+    const halfL = l / 2;
+    const outline = [
+      { x: -halfL, y: -halfW },
+      { x: halfL, y: -halfW },
+      { x: halfL, y: halfW },
+      { x: -halfL, y: halfW },
+    ];
+    const holes = [];
+    if (boreR > 0) {
+      if (type.includes('rod') || type.includes('link')) {
+        holes.push({ cx: -halfL * 0.65, cy: 0, radius: boreR * 0.75 });
+        holes.push({ cx: halfL * 0.65, cy: 0, radius: boreR * 1.15 });
+      } else {
+        holes.push({ cx: 0, cy: 0, radius: boreR });
+        const mR = Math.min(boreR * 0.45, 6);
+        if (mR > 2) {
+          holes.push({ cx: -halfL * 0.68, cy: 0, radius: mR });
+          holes.push({ cx: halfL * 0.68, cy: 0, radius: mR });
+        }
+      }
+    }
+    return {
+      style: 'extruded',
+      outline,
+      holes,
+      depth: th,
+      meshData: generateNeuralMesh({
+        outline,
+        holes,
+        thickness: th,
+        componentType: type || 'prismatic component',
+      }),
+    };
+  }
+
+  // Default revolved cylinder/shaft
+  return {
+    style: 'revolved',
+    revolvedProfile: [
+      { z: -h / 2, radius: id > 0 ? id / 2 : 0 },
+      { z: -h / 2, radius: od / 2 },
+      { z: h / 2, radius: od / 2 },
+      { z: h / 2, radius: id > 0 ? id / 2 : 0 },
+    ],
+  };
+}
+
+/**
+ * Guaranteed deterministic engineering fallback when Gemini is completely offline
+ * or credentials fail. Generates zero errors and produces a valid CAD model.
+ */
+export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assist offline', images = []) {
+  const ref = reference && typeof reference === 'object' ? reference : {};
+  const refTypeLower = String(ref.componentType || '').toLowerCase();
+  // Strip default role names like 'primary gear' or 'companion gear' from misleading classification
+  const cleanName = String(ref.name || '').replace(/primary gear|companion gear|gear/gi, '').trim().toLowerCase();
+  const cleanNotes = String(ref.notes || '').toLowerCase();
+  const allText = `${refTypeLower} ${cleanName} ${cleanNotes}`.trim();
+  const gearTypeEvidence = inferGearType({ reference: ref, text: allText });
+  const gearType = gearTypeEvidence.gearType;
+  const explicitGearType = typeof ref.gearType === 'string' ? normalizeGearType(ref.gearType) : null;
+
+  // Inspect image aspect ratio directly from base64 if available
+  let detectedImgAspectRatio = 1.0;
+  if (Array.isArray(images) && images.length > 0) {
+    for (const img of images) {
+      if (img?.data) {
+        const dims = getImageDimensionsFromBase64(img.data);
+        if (dims && dims.aspectRatio > detectedImgAspectRatio) {
+          detectedImgAspectRatio = dims.aspectRatio;
+        }
+      }
+    }
+  }
+  const isImageElongated = detectedImgAspectRatio >= 1.6;
+
+  const finalize = (ans) => {
+    ans.geometrySource = 'template_fallback';
+    const confResult = buildParameterConfidence({
+      dimensions: ans.dimensions,
+      teeth: ans.teeth,
+      module: ans.module,
+      helixAngle: ans.helixAngle,
+      reference: ref,
+      obs: null,
+      provenance: 'deterministic_fallback_engine',
+      componentType: ans.componentType,
+    });
+    ans.parameterConfidence = confResult.parameterConfidence;
+    ans.uncertainties = [
+      ...new Set([
+        'Geometry synthesized from a standard template, not measured from this image.',
+        ...(ans.uncertainties || []),
+        ...confResult.uncertainties,
+      ]),
+    ];
+    if (ans.gearType && normalizeGearType(ans.gearType) !== 'unknown') {
+      ans.requiresGearTypeConfirmation = false;
+    }
+    return ans;
+  };
+
+  const isWorm = explicitGearType
+    ? explicitGearType === 'worm'
+    : (allText.includes('worm') ||
+      allText.includes('screw') ||
+      allText.includes('flight') ||
+      refTypeLower.includes('worm') ||
+      gearType === 'worm');
+
+  if (isWorm) {
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 60.0;
+    const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(od * Math.max(3.2, detectedImgAspectRatio) * 10) / 10);
+    const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.9 * 10) / 10;
+    const pitch = typeof ref.pitch === 'number' && ref.pitch > 0 ? ref.pitch : 8.0;
+    const starts = typeof ref.starts === 'number' && ref.starts >= 1 ? Math.round(ref.starts) : 1;
+    const lead = starts * pitch;
+    const rootR = Math.round(od * 0.35 * 10) / 10;
+    const journalR1 = Math.round(od * 0.28 * 10) / 10;
+    const journalR2 = Math.round(od * 0.25 * 10) / 10;
+    const collarR = Math.round(od * 0.32 * 10) / 10;
+    const studR = Math.round(od * 0.20 * 10) / 10;
+
+    const halfL = length / 2;
+    const halfW = faceWidth / 2;
+    const studLen = Math.min(22, Math.max(15, length * 0.1));
+    const collarLen = Math.min(10, Math.max(6, length * 0.05));
+    const tailLen = Math.min(25, Math.max(16, length * 0.12));
+
+    const axialSegments = [
+      { zStart: -halfL, zEnd: -halfL + studLen, radius: studR, featureType: 'threaded_stud', thread: 'M16x1.5', label: 'Threaded Nose Stud (M16)' },
+      { zStart: -halfL + studLen, zEnd: -halfW - collarLen, radius: journalR1, label: 'Drive Journal (Left)' },
+      { zStart: -halfW - collarLen, zEnd: -halfW, radius: collarR, label: 'Locator Collar (Left)' },
+      { zStart: -halfW, zEnd: halfW, radius: od / 2, rootRadius: rootR, pitch, starts, lead, featureType: 'worm_thread', label: `${starts}-Start Archimedean Worm Flight (p${pitch})` },
+      { zStart: halfW, zEnd: halfW + collarLen, radius: collarR, label: 'Locator Collar (Right)' },
+      { zStart: halfW + collarLen, zEnd: halfL - tailLen, radius: journalR2, label: 'Support Journal (Right)' },
+      { zStart: halfL - tailLen, zEnd: halfL, radius: Math.round(journalR2 * 0.82 * 10) / 10, label: 'Stepped Output Journal' },
+    ];
+
+    const modifiers = [
+      { type: 'keyway', x: -halfL + studLen + 18, z: 0, width: 6, depth: 3.5, length: 22, radius: journalR1, label: 'Drive Keyway Slot' },
+      { type: 'keyway', x: halfL - tailLen / 2, z: 0, width: 5, depth: 3.0, length: 18, radius: journalR2 * 0.82, label: 'Output Keyway Slot' },
+    ];
+
+    return finalize({
+      componentType: 'precision worm drive shaft',
+      componentName: `Precision Worm Drive Spindle Ø${od}x${length}mm (p${pitch})`,
+      label: `Worm Drive Shaft (${starts}-Start p${pitch} Ø${od}mm)`,
+      confidence: 0.94,
+      gearType: 'worm',
+      classificationSource: gearTypeEvidence.source,
+      requiresGearTypeConfirmation: false,
+      geometryType: 'worm_drive_spindle',
+      dimensions: {
+        outerDiameter: od,
+        innerDiameter: 0,
+        height: length,
+        length,
+        width: od,
+        thickness: faceWidth,
+      },
+      pitch,
+      lead,
+      starts,
+      helixAngle: Math.round((Math.atan(lead / (Math.PI * od * 0.8)) * 180 / Math.PI) * 10) / 10,
+      features: [
+        `${starts}-Start Archimedean Worm Thread (Pitch ${pitch}mm, Lead ${lead}mm)`,
+        `Threaded Nose Stud M16x1.5`,
+        `Drive Journal Ø${journalR1 * 2}mm with Keyway Slot`,
+        `Dual Ground Locator Shoulders Ø${collarR * 2}mm`,
+        `Support Journal Ø${journalR2 * 2}mm & Stepped Tail Extension`,
+        'Solid Core Alloy Steel Transmission Spindle',
+      ],
+      materialEstimate: '18CrNiMo7-6 Case-Hardened Alloy Steel',
+      manufacturingProcess: 'CNC Turning + Worm Thread Whirling / Milling + Carburizing & Cylindrical Grinding',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized multi-feature continuous worm spindle with integrated worm flight, dual keyways, and threaded stud.`,
+      uncertainties: [],
+      geometryRecipe: {
+        style: 'axial_segments',
+        operator: 'axial_segments',
+        axialSegments,
+        modifiers,
+        meshData: generateNeuralMesh({
+          axialSegments,
+          boreRadius: 0,
+          componentType: 'worm drive spindle',
+        }),
+      },
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
+
+  const pinionCompatible = !explicitGearType || ['spur', 'helical', 'pinion'].includes(explicitGearType);
+  const isPinionShaft =
+    pinionCompatible &&
+    !isWorm &&
+    (explicitGearType === 'pinion' || allText.includes('shaft') || allText.includes('spindle') || isImageElongated || (ref.length && ref.length > (ref.outerDiameter || 40) * 1.5)) &&
+    (allText.includes('gear') || allText.includes('pinion') || allText.includes('helical') || typeof ref.teeth === 'number' || typeof ref.helixAngle === 'number' || isImageElongated);
+
+  if (isPinionShaft) {
+    const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 16;
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 60.0;
+    const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(od * Math.max(3.2, detectedImgAspectRatio) * 10) / 10);
+    const resolvedGearType = explicitGearType
+      || (['spur', 'helical', 'pinion'].includes(gearType) ? gearType : 'helical');
+    const helixAngle = resolvedGearType === 'helical'
+      ? (typeof ref.helixAngle === 'number' && Math.abs(ref.helixAngle) > 0.5 ? ref.helixAngle : 22.0)
+      : (typeof ref.helixAngle === 'number' ? ref.helixAngle : 0.0);
+    const resolvedLabel = resolvedGearType === 'helical' ? 'Helical' : resolvedGearType === 'spur' ? 'Spur' : 'Pinion';
+    const resolvedComponentType = resolvedGearType === 'pinion'
+      ? 'pinion shaft'
+      : `${resolvedGearType} pinion shaft`;
+    const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.7 * 10) / 10;
+    const m = snapToStandardModule(od / (teeth + 2)) || 3.5;
+    const journalR1 = Math.round(od * 0.28 * 10) / 10;
+    const journalR2 = Math.round(od * 0.25 * 10) / 10;
+
+    const axialSegments = [
+      { zStart: -length / 2, zEnd: -faceWidth / 2, radius: journalR1, label: 'Drive Journal (Left)' },
+      { zStart: -faceWidth / 2, zEnd: faceWidth / 2, teeth, module: m, helixAngle, radius: od / 2, label: `${resolvedLabel} Pinion Gear` },
+      { zStart: faceWidth / 2, zEnd: length / 2, radius: journalR2, label: 'Support Journal (Right)' },
+    ];
+
+    return finalize({
+      componentType: resolvedComponentType,
+      componentName: `Integral ${teeth}T ${resolvedLabel} Pinion Shaft Ø${od}x${length}mm`,
+      label: `${resolvedLabel} Pinion Shaft (${teeth}T Ø${od}mm)`,
+      confidence: 0.93,
+      gearType: resolvedGearType,
+      classificationSource: explicitGearType ? 'user_reference' : gearTypeEvidence.source,
+      requiresGearTypeConfirmation: false,
+      geometryType: 'integral_pinion_shaft',
+      dimensions: {
+        outerDiameter: od,
+        innerDiameter: 0,
+        height: length,
+        length,
+        width: od,
+        thickness: faceWidth,
+      },
+      teeth,
+      module: m,
+      helixAngle,
+      features: [
+        `Integrated ${teeth}T ${resolvedLabel} Pinion (m${m}${helixAngle ? `, ${helixAngle}° Helix Angle` : ''})`,
+        `Left Drive Journal Ø${journalR1 * 2}mm`,
+        `Right Support Journal Ø${journalR2 * 2}mm`,
+        'Solid Core Continuous Alloy Steel Shaft',
+      ],
+      materialEstimate: '18CrNiMo7-6 Case-Hardened Alloy Steel',
+      manufacturingProcess: 'CNC Turning + Continuous Gear Hobbing + Carburizing & Cylindrical Grinding',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized integral ${resolvedLabel.toLowerCase()} pinion shaft with dual ground bearing journals.`,
+      uncertainties: [],
+      geometryRecipe: {
+        style: 'pinion_shaft',
+        operator: 'axial_segments',
+        axialSegments,
+        gear: {
+          gearType: resolvedGearType,
+          teeth,
+          module: m,
+          helixAngle,
+          faceWidth,
+          outerDiameter: od,
+        },
+        shaft: {
+          diameter: journalR1 * 2,
+          length,
+          driveJournalDiameter: journalR1 * 2,
+          supportJournalDiameter: journalR2 * 2,
+        },
+        meshData: generateNeuralMesh({
+          axialSegments,
+          boreRadius: 0,
+          componentType: resolvedComponentType,
+        }),
+      },
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
+
+  const isCompound = explicitGearType
+    ? explicitGearType === 'compound'
+    : (refTypeLower.includes('compound') ||
+      refTypeLower.includes('cluster') ||
+      refTypeLower.includes('two-stage') ||
+      refTypeLower.includes('companion') ||
+      refTypeLower.includes('dual') ||
+      refTypeLower.includes('double') ||
+      gearType === 'compound');
+
+  if (isCompound) {
+    const stage1OD = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 120.0;
+    const stage2OD = Math.round(stage1OD * 0.60 * 10) / 10;
+    const totalFaceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : 45.0);
+    const stage1FaceWidth = Math.round(totalFaceWidth * 0.55 * 10) / 10;
+    const stage2FaceWidth = Math.round(totalFaceWidth * 0.45 * 10) / 10;
+    const stage1Teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 24;
+    const stage2Teeth = Math.max(8, Math.round(stage1Teeth * 0.65));
+    const m1 = snapToStandardModule(stage1OD / (stage1Teeth + 2)) || 4.5;
+    const m2 = snapToStandardModule(stage2OD / (stage2Teeth + 2)) || m1;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : 28.0;
+    const boreRadius = Math.round((id / 2) * 10) / 10;
+    const keyway = { width: 8, height: 4 };
+
+    const axialSegments = [
+      { zStart: -stage1FaceWidth, zEnd: 0, teeth: stage1Teeth, module: m1, radius: stage1OD / 2, innerRadius: boreRadius, label: 'Stage 1 Bull Gear' },
+      { zStart: 0, zEnd: stage2FaceWidth, teeth: stage2Teeth, module: m2, radius: stage2OD / 2, innerRadius: boreRadius, label: 'Stage 2 Pinion Gear' },
+    ];
+
+    return finalize({
+      componentType: 'compound gear',
+      componentName: `Compound Cluster Gear (${stage1Teeth}T / ${stage2Teeth}T)`,
+      label: `Compound Gear (${stage1Teeth}T/${stage2Teeth}T Ø${stage1OD}mm)`,
+      confidence: 0.92,
+      gearType: 'compound',
+      geometryType: 'compound_gear_cluster',
+      dimensions: {
+        outerDiameter: stage1OD,
+        innerDiameter: id,
+        height: totalFaceWidth,
+        thickness: totalFaceWidth,
+        width: stage1OD,
+        length: stage1OD,
+      },
+      teeth: stage1Teeth,
+      module: m1,
+      helixAngle: 0.0,
+      features: [
+        `Stage 1 Base Spur Gear (${stage1Teeth}T m${m1} Ø${stage1OD}mm)`,
+        `Stage 2 Pinion Gear (${stage2Teeth}T m${m2} Ø${stage2OD}mm)`,
+        `Central Bore Ø${id}mm with Keyway Slot`,
+        'Dual-Stage Reduction Cluster Unit',
+      ],
+      materialEstimate: 'AISI 8620 / 20MnCr5 Case-Hardened Steel',
+      manufacturingProcess: 'Gear Hobbing + Secondary Pinion Shaping + Gas Carburizing',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized dual-stage compound gear cluster with integrated bore and keyway.`,
+      uncertainties: [],
+      geometryRecipe: {
         style: 'compound_gear',
+        operator: 'axial_segments',
+        axialSegments,
+        boreRadius,
+        keyway,
         gear: {
           stages: [
-            { teeth: t1, module: m1, faceWidth: s1w },
-            { teeth: t2, module: m2, faceWidth: s2w },
+            { teeth: stage1Teeth, module: m1, faceWidth: stage1FaceWidth },
+            { teeth: stage2Teeth, module: m2, faceWidth: stage2FaceWidth },
           ],
-          boreRadius: Math.round((id / 2) * 10) / 10,
-          keyway: { width: 8, depth: 4 },
+          boreRadius,
+          keyway,
         },
-      };
-    }
+        meshData: generateNeuralMesh({
+          axialSegments,
+          boreRadius,
+          keyway,
+          componentType: 'compound gear',
+        }),
+      },
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
 
-    if (
-      (type.includes('flange') || (Array.isArray(analysis?.features) && analysis.features.some((f) => /bolt\s*hole|mounting\s*hole/i.test(String(f))))) &&
-      (type.includes('shaft') || type.includes('spline') || type.includes('bushing'))
-    ) {
-      const sR = id ? id / 2 : 12;
-      const fR = od / 2;
-      const length = dims.length || h || 180;
-      const th = dims.thickness || 16;
-      const boltCount = extractBoltCount(analysis?.features, null, {}) || 4;
-      return {
+  const isFlangedShaft =
+    (refTypeLower.includes('flange') || typeof ref.boltCount === 'number') &&
+    (refTypeLower.includes('shaft') || refTypeLower.includes('spline') || refTypeLower.includes('bushing') || refTypeLower.includes('linear'));
+
+  if (isFlangedShaft) {
+    const sR = typeof ref.innerDiameter === 'number' && ref.innerDiameter > 0 ? ref.innerDiameter / 2 : 12;
+    const fR = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter / 2 : 38;
+    const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : 180);
+    const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : 16;
+    const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 3 ? Math.round(ref.boltCount) : 4;
+
+    return finalize({
+      componentType: 'flanged spline shaft',
+      componentName: `Precision Flanged Spline Shaft Ø${fR * 2}x${length}mm`,
+      label: `Flanged Spline Shaft (${boltCount}-Hole Flange)`,
+      confidence: 0.92,
+      geometryType: 'flanged_linear_shaft',
+      dimensions: {
+        outerDiameter: fR * 2,
+        innerDiameter: sR * 2,
+        length,
+        height: length,
+        width: fR * 2,
+        thickness: th,
+      },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      boltCount,
+      features: [
+        `Circular Mounting Flange Collar (${boltCount} Bolt Holes)`,
+        'Precision Linear Ball Spline Shaft (6 Keyway Grooves)',
+        `Shaft Core Ø${sR * 2}mm x ${length}mm`,
+        `Mounting Flange Ø${fR * 2}mm x ${th}mm`,
+      ],
+      materialEstimate: 'SUJ2 / 52100 Bearing Steel (Induction Hardened)',
+      manufacturingProcess: 'Cylindrical Grinding + Spline Milling + Induction Hardening',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized precision flanged spline shaft.`,
+      uncertainties: [],
+      geometryRecipe: {
         style: 'flanged_shaft',
         shaft: { diameter: sR * 2, length, splineCount: 6 },
         flange: {
@@ -1778,101 +2568,177 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           bossDiameter: sR * 3,
           bossHeight: 28,
         },
-      };
-    }
+        meshData: generateNeuralMesh({
+          axialSegments: [
+            { zStart: -length / 2, zEnd: -length * 0.15, radius: sR, splineCount: 6, label: 'Linear Spline Shaft Front' },
+            { zStart: -length * 0.15, zEnd: -length * 0.15 + th, radius: fR, flangeHoles: { count: boltCount, pcd: Math.round(sR * 1.4 + fR), holeRadius: 3.5 }, label: 'Circular Mounting Flange' },
+            { zStart: -length * 0.15 + th, zEnd: -length * 0.15 + th + 28, radius: sR * 1.5, label: 'Bushing Collar Boss' },
+            { zStart: -length * 0.15 + th + 28, zEnd: length / 2, radius: sR, splineCount: 6, label: 'Linear Spline Shaft Rear' },
+          ],
+          boreRadius: 0,
+          componentType: 'flanged spline shaft',
+        }),
+      },
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
 
-    if (type.includes('bevel')) {
-      const teeth = analysis.teeth || 20;
-      const m = snapToStandardModule(od / (teeth + 2)) || 3.0;
-      return {
+  const isFlange = refTypeLower.includes('flange') || typeof ref.boltCount === 'number';
+
+  if (isFlange) {
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 130.0;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.35 * 10) / 10;
+    const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.16 * 10) / 10;
+    const h = typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(th * 1.5 * 10) / 10;
+    const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 3 ? Math.round(ref.boltCount) : 4;
+
+    const recipe = buildFlangeRecipe({
+      outerDiameter: od,
+      innerDiameter: id,
+      thickness: th,
+      height: h,
+      boltCount,
+    });
+    const bcd = recipe.flange.boltCircleDiameter;
+    const bhd = recipe.flange.boltHoleDiameter;
+
+    return finalize({
+      componentType: 'flange',
+      componentName: `Standard ${boltCount}-Hole Flange Ø${od}mm`,
+      label: `Flange (${boltCount}-Hole Ø${od}mm)`,
+      confidence: 0.90,
+      boltCount,
+      geometryType: 'flange_with_bolt_pattern',
+      dimensions: {
+        outerDiameter: od,
+        innerDiameter: id,
+        height: h,
+        thickness: th,
+        width: od,
+        length: od,
+      },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `${boltCount} Mounting Bolt Holes (Ø${bhd}mm on PCD Ø${bcd}mm)`,
+        id > 0 ? `Central Bore Ø${id}mm` : 'Solid Center (Blind Flange)',
+        `Raised Face Hub Ø${recipe.flange.bossDiameter}mm`,
+      ],
+      materialEstimate: 'ASTM A105 Carbon Steel',
+      manufacturingProcess: 'Forging + CNC Turning & PCD Drilling',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized standard ${boltCount}-hole flange.`,
+      uncertainties: [],
+      geometryRecipe: recipe,
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
+
+  const isBevel = explicitGearType
+    ? explicitGearType === 'bevel'
+    : (String(ref.componentType || '').toLowerCase().includes('bevel') ||
+      String(ref.componentType || '').toLowerCase().includes('miter') ||
+      gearType === 'bevel');
+
+  if (isBevel) {
+    const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 20;
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 90.0;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.28 * 10) / 10;
+    const m = snapToStandardModule(od / (teeth + 2)) || 3.5;
+    const coneAngle = ref.coneAngle || 45;
+    const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(m * 6 * 10) / 10;
+    const hubD = Math.round(od * 0.62 * 10) / 10;
+    const hubL = Math.round(faceWidth * 0.85 * 10) / 10;
+    return finalize({
+      componentType: 'bevel gear',
+      componentName: `${teeth}T Industrial Bevel Pinion Gear`,
+      label: `Bevel Gear (${teeth}T Ø${od}mm)`,
+      confidence: 0.91,
+      gearType: 'bevel',
+      coneAngle,
+      geometryType: 'bevel_gear',
+      dimensions: { outerDiameter: od, innerDiameter: id, height: faceWidth, thickness: faceWidth, width: od, length: od },
+      teeth,
+      module: m,
+      helixAngle: 0.0,
+      features: [
+        `${teeth} Conical Bevel Teeth (Pitch Cone ${coneAngle}°)`,
+        `Central Mounting Bore Ø${id}mm`,
+        `Rear Shaft Hub Collar Ø${hubD}mm x ${hubL}mm`,
+        'Gleason Conical Tooth Profile',
+      ],
+      materialEstimate: 'AISI 8620 Case-Hardened Steel',
+      manufacturingProcess: 'Bevel Gear Generator (Gleason) + Case Hardening',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized miter bevel gear with ${coneAngle}° pitch cone.`,
+      uncertainties: [],
+      geometryRecipe: {
         style: 'gear',
         gear: {
           gearType: 'bevel',
           teeth,
           module: m,
-          coneAngle: analysis.coneAngle || 45,
+          coneAngle,
           pressureAngle: 20.0,
-          faceWidth: h || 20,
+          faceWidth,
           boreRadius: id / 2,
-          hubDiameter: Math.round(od * 0.62 * 10) / 10,
-          hubLength: Math.round((h || 20) * 0.85 * 10) / 10,
+          hubDiameter: hubD,
+          hubLength: hubL,
         },
-      };
-    }
+      },
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
 
-    if (type.includes('gear') || (analysis?.teeth && analysis.teeth >= 6)) {
-      const teeth = analysis.teeth || 20;
-      const m = snapToStandardModule(od / (teeth + 2)) || 4.0;
-      return {
-        style: 'gear',
-        gear: {
-          gearType: analysis?.gearType || 'spur',
-          teeth,
-          module: m,
-          pressureAngle: 20.0,
-          helixAngle: analysis?.helixAngle || 0.0,
-          faceWidth: h,
-          boreRadius: id / 2,
-          spokes: analysis?.spokes || null,
-        },
-      };
-    }
+  const isPrismatic =
+    String(ref.componentType || '').toLowerCase().includes('bracket') ||
+    String(ref.componentType || '').toLowerCase().includes('rod') ||
+    String(ref.componentType || '').toLowerCase().includes('link') ||
+    String(ref.componentType || '').toLowerCase().includes('lever') ||
+    String(ref.componentType || '').toLowerCase().includes('plate') ||
+    String(ref.componentType || '').toLowerCase().includes('arm') ||
+    String(ref.componentType || '').toLowerCase().includes('mount') ||
+    (typeof ref.width === 'number' && typeof ref.length === 'number' && Math.abs(ref.width - ref.length) > 10);
 
-    if (type.includes('flange') || (Array.isArray(analysis?.features) && analysis.features.some((f) => /bolt\s*hole|mounting\s*hole/i.test(String(f))))) {
-      const boltCount = extractBoltCount(analysis?.features, null, {});
-      return buildFlangeRecipe({
-        outerDiameter: od,
-        innerDiameter: id,
-        thickness: dims.thickness || Math.round(od * 0.16 * 10) / 10,
-        height: h,
-        boltCount,
-      });
+  if (isPrismatic) {
+    const w = typeof ref.width === 'number' && ref.width > 0 ? ref.width : 70.0;
+    const l = typeof ref.length === 'number' && ref.length > 0 ? ref.length : 140.0;
+    const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : 18.0);
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : 16.0;
+    const halfW = w / 2;
+    const halfL = l / 2;
+    const boreR = id / 2;
+    const outline = [
+      { x: -halfL, y: -halfW },
+      { x: halfL, y: -halfW },
+      { x: halfL, y: halfW },
+      { x: -halfL, y: halfW },
+    ];
+    const holes = [];
+    if (boreR > 0) {
+      holes.push({ cx: -halfL * 0.65, cy: 0, radius: boreR * 0.8 });
+      holes.push({ cx: halfL * 0.65, cy: 0, radius: boreR });
     }
-
-    if (type.includes('shaft') || type.includes('spindle')) {
-      const length = dims.length || h || od * 3.5;
-      return buildSteppedShaftRecipe({ outerDiameter: od, length, innerDiameter: id });
-    }
-
-    // Prismatic / Extruded mechanical components (brackets, links, levers, plates, blocks)
-    if (
-      type.includes('bracket') ||
-      type.includes('rod') ||
-      type.includes('link') ||
-      type.includes('lever') ||
-      type.includes('plate') ||
-      type.includes('arm') ||
-      type.includes('mount') ||
-      type.includes('housing') ||
-      (dims.width && dims.length && Math.abs(dims.width - dims.length) > 5)
-    ) {
-      const w = dims.width || 80;
-      const l = dims.length || dims.width || 120;
-      const th = dims.thickness || dims.height || 18;
-      const boreR = (id || 20) / 2;
-      const halfW = w / 2;
-      const halfL = l / 2;
-      const outline = [
-        { x: -halfL, y: -halfW },
-        { x: halfL, y: -halfW },
-        { x: halfL, y: halfW },
-        { x: -halfL, y: halfW },
-      ];
-      const holes = [];
-      if (boreR > 0) {
-        if (type.includes('rod') || type.includes('link')) {
-          holes.push({ cx: -halfL * 0.65, cy: 0, radius: boreR * 0.75 });
-          holes.push({ cx: halfL * 0.65, cy: 0, radius: boreR * 1.15 });
-        } else {
-          holes.push({ cx: 0, cy: 0, radius: boreR });
-          const mR = Math.min(boreR * 0.45, 6);
-          if (mR > 2) {
-            holes.push({ cx: -halfL * 0.68, cy: 0, radius: mR });
-            holes.push({ cx: halfL * 0.68, cy: 0, radius: mR });
-          }
-        }
-      }
-      return {
+    const cType = String(ref.componentType || 'machined bracket').toLowerCase();
+    return finalize({
+      componentType: cType,
+      componentName: `Machined ${cType.charAt(0).toUpperCase() + cType.slice(1)} ${l}x${w}x${th}mm`,
+      label: `${cType.charAt(0).toUpperCase() + cType.slice(1)} (${l}x${w}mm)`,
+      confidence: 0.88,
+      geometryType: 'prismatic_extruded',
+      dimensions: { outerDiameter: Math.max(w, l), innerDiameter: id, height: th, thickness: th, width: w, length: l },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `Machined Solid Perimeter ${l}x${w}mm`,
+        holes.length > 0 ? `${holes.length} Precision Mounting/Bore Holes (Ø${id}mm)` : 'Solid Plate Profile',
+        `Plate Thickness ${th}mm`,
+      ],
+      materialEstimate: '6061-T6 Aluminium / Mild Steel',
+      manufacturingProcess: 'CNC Milling / Waterjet Cutting',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Prismatic profile extruded with precision bores.`,
+      uncertainties: [],
+      geometryRecipe: {
         style: 'extruded',
         outline,
         holes,
@@ -1881,672 +2747,201 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
           outline,
           holes,
           thickness: th,
-          componentType: type || 'prismatic component',
+          componentType: cType,
         }),
-      };
-    }
-
-    // Default revolved cylinder/shaft
-    return {
-      style: 'revolved',
-      revolvedProfile: [
-        { z: -h / 2, radius: id > 0 ? id / 2 : 0 },
-        { z: -h / 2, radius: od / 2 },
-        { z: h / 2, radius: od / 2 },
-        { z: h / 2, radius: id > 0 ? id / 2 : 0 },
-      ],
-    };
+      },
+      provenance: 'deterministic_fallback_engine',
+    });
   }
 
-  /**
-   * Guaranteed deterministic engineering fallback when Gemini is completely offline
-   * or credentials fail. Generates zero errors and produces a valid CAD model.
-   */
-  export function fallbackDeterministicAnalysis(reference = {}, reason = 'AI assist offline', images = []) {
-    const ref = reference && typeof reference === 'object' ? reference : {};
-    const refTypeLower = String(ref.componentType || '').toLowerCase();
-    // Strip default role names like 'primary gear' or 'companion gear' from misleading classification
-    const cleanName = String(ref.name || '').replace(/primary gear|companion gear|gear/gi, '').trim().toLowerCase();
-    const cleanNotes = String(ref.notes || '').toLowerCase();
-    const allText = `${refTypeLower} ${cleanName} ${cleanNotes}`.trim();
+  const isShaft =
+    !isPrismatic &&
+    (String(ref.componentType || '').toLowerCase().includes('shaft') ||
+      String(ref.componentType || '').toLowerCase().includes('spindle') ||
+      (ref.length && ref.length > (ref.outerDiameter || 50)) ||
+      (ref.height && ref.height > (ref.outerDiameter || 50) * 1.5));
 
-    // Inspect image aspect ratio directly from base64 if available
-    let detectedImgAspectRatio = 1.0;
-    if (Array.isArray(images) && images.length > 0) {
-      for (const img of images) {
-        if (img?.data) {
-          const dims = getImageDimensionsFromBase64(img.data);
-          if (dims && dims.aspectRatio > detectedImgAspectRatio) {
-            detectedImgAspectRatio = dims.aspectRatio;
-          }
-        }
-      }
-    }
-    const isImageElongated = detectedImgAspectRatio >= 1.6;
+  if (isShaft) {
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 45.0;
+    const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(od * 3.5 * 10) / 10);
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : 0;
+    const recipe = buildSteppedShaftRecipe({ outerDiameter: od, length, innerDiameter: id });
+    recipe.meshData = generateNeuralMesh({
+      axialSegments: [
+        { zStart: -length / 2, zEnd: -length * 0.15, radius: od * 0.32, label: 'Drive Journal' },
+        { zStart: -length * 0.15, zEnd: length * 0.20, radius: od / 2, label: 'Main Center Shoulder' },
+        { zStart: length * 0.20, zEnd: length / 2, radius: od * 0.38, label: 'Bearing Seat' },
+      ],
+      boreRadius: id > 0 ? id / 2 : 0,
+      componentType: 'stepped shaft',
+    });
+    return finalize({
+      componentType: 'stepped shaft',
+      componentName: `Industrial Stepped Drive Shaft Ø${od}x${length}mm`,
+      label: `Stepped Shaft (Ø${od}x${length}mm)`,
+      confidence: 0.90,
+      geometryType: 'axisymmetric_stepped_shaft',
+      dimensions: { outerDiameter: od, innerDiameter: id, height: length, length, width: od, thickness: od },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `Main Center Shoulder Ø${od}mm`,
+        'Ground Bearing Journals with Transition Fillets',
+        'Drive Spline / Keyed Section',
+        id > 0 ? `Center Bore Ø${id}mm` : 'Solid Steel Core',
+      ],
+      materialEstimate: 'AISI 4340 / EN24 Quenched & Tempered Alloy Steel',
+      manufacturingProcess: 'CNC Turning + Induction Hardening & Cylindrical Grinding',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized multi-diameter stepped shaft with bearing seats.`,
+      uncertainties: [],
+      geometryRecipe: recipe,
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
 
-    const finalize = (ans) => {
-      const confResult = buildParameterConfidence({
-        dimensions: ans.dimensions,
-        teeth: ans.teeth,
-        module: ans.module,
-        helixAngle: ans.helixAngle,
-        reference: ref,
-        obs: null,
-        provenance: 'deterministic_fallback_engine',
-        componentType: ans.componentType,
-      });
-      ans.parameterConfidence = confResult.parameterConfidence;
-      ans.uncertainties = [...new Set([...(ans.uncertainties || []), ...confResult.uncertainties])];
-      return ans;
-    };
-
-    const isWorm =
-      allText.includes('worm') ||
-      allText.includes('screw') ||
-      allText.includes('flight') ||
-      refTypeLower.includes('worm') ||
-      ref.gearType === 'worm';
-
-    if (isWorm) {
-      const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 60.0;
-      const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(od * Math.max(3.2, detectedImgAspectRatio) * 10) / 10);
-      const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.9 * 10) / 10;
-      const pitch = typeof ref.pitch === 'number' && ref.pitch > 0 ? ref.pitch : 8.0;
-      const starts = typeof ref.starts === 'number' && ref.starts >= 1 ? Math.round(ref.starts) : 1;
-      const lead = starts * pitch;
-      const rootR = Math.round(od * 0.35 * 10) / 10;
-      const journalR1 = Math.round(od * 0.28 * 10) / 10;
-      const journalR2 = Math.round(od * 0.25 * 10) / 10;
-      const collarR = Math.round(od * 0.32 * 10) / 10;
-      const studR = Math.round(od * 0.20 * 10) / 10;
-
-      const halfL = length / 2;
-      const halfW = faceWidth / 2;
-      const studLen = Math.min(22, Math.max(15, length * 0.1));
-      const collarLen = Math.min(10, Math.max(6, length * 0.05));
-      const tailLen = Math.min(25, Math.max(16, length * 0.12));
-
-      const axialSegments = [
-        { zStart: -halfL, zEnd: -halfL + studLen, radius: studR, featureType: 'threaded_stud', thread: 'M16x1.5', label: 'Threaded Nose Stud (M16)' },
-        { zStart: -halfL + studLen, zEnd: -halfW - collarLen, radius: journalR1, label: 'Drive Journal (Left)' },
-        { zStart: -halfW - collarLen, zEnd: -halfW, radius: collarR, label: 'Locator Collar (Left)' },
-        { zStart: -halfW, zEnd: halfW, radius: od / 2, rootRadius: rootR, pitch, starts, lead, featureType: 'worm_thread', label: `${starts}-Start Archimedean Worm Flight (p${pitch})` },
-        { zStart: halfW, zEnd: halfW + collarLen, radius: collarR, label: 'Locator Collar (Right)' },
-        { zStart: halfW + collarLen, zEnd: halfL - tailLen, radius: journalR2, label: 'Support Journal (Right)' },
-        { zStart: halfL - tailLen, zEnd: halfL, radius: Math.round(journalR2 * 0.82 * 10) / 10, label: 'Stepped Output Journal' },
-      ];
-
-      const modifiers = [
-        { type: 'keyway', x: -halfL + studLen + 18, z: 0, width: 6, depth: 3.5, length: 22, radius: journalR1, label: 'Drive Keyway Slot' },
-        { type: 'keyway', x: halfL - tailLen / 2, z: 0, width: 5, depth: 3.0, length: 18, radius: journalR2 * 0.82, label: 'Output Keyway Slot' },
-      ];
-
-      return finalize({
-        componentType: 'precision worm drive shaft',
-        componentName: `Precision Worm Drive Spindle Ø${od}x${length}mm (p${pitch})`,
-        label: `Worm Drive Shaft (${starts}-Start p${pitch} Ø${od}mm)`,
-        confidence: 0.94,
-        geometryType: 'worm_drive_spindle',
-        dimensions: {
-          outerDiameter: od,
-          innerDiameter: 0,
-          height: length,
-          length,
-          width: od,
-          thickness: faceWidth,
-        },
-        pitch,
-        lead,
-        starts,
-        helixAngle: Math.round((Math.atan(lead / (Math.PI * od * 0.8)) * 180 / Math.PI) * 10) / 10,
-        features: [
-          `${starts}-Start Archimedean Worm Thread (Pitch ${pitch}mm, Lead ${lead}mm)`,
-          `Threaded Nose Stud M16x1.5`,
-          `Drive Journal Ø${journalR1 * 2}mm with Keyway Slot`,
-          `Dual Ground Locator Shoulders Ø${collarR * 2}mm`,
-          `Support Journal Ø${journalR2 * 2}mm & Stepped Tail Extension`,
-          'Solid Core Alloy Steel Transmission Spindle',
-        ],
-        materialEstimate: '18CrNiMo7-6 Case-Hardened Alloy Steel',
-        manufacturingProcess: 'CNC Turning + Worm Thread Whirling / Milling + Carburizing & Cylindrical Grinding',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized multi-feature continuous worm spindle with integrated worm flight, dual keyways, and threaded stud.`,
-        uncertainties: [],
-        geometryRecipe: {
-          style: 'axial_segments',
-          operator: 'axial_segments',
-          axialSegments,
-          modifiers,
-          meshData: generateNeuralMesh({
-            axialSegments,
-            boreRadius: 0,
-            componentType: 'worm drive spindle',
-          }),
-        },
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const isPinionShaft =
-      !isWorm &&
-      (allText.includes('shaft') || allText.includes('spindle') || isImageElongated || (ref.length && ref.length > (ref.outerDiameter || 40) * 1.5)) &&
-      (allText.includes('gear') || allText.includes('pinion') || allText.includes('helical') || typeof ref.teeth === 'number' || typeof ref.helixAngle === 'number' || isImageElongated);
-
-    if (isPinionShaft) {
-      const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 16;
-      const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 60.0;
-      const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(od * Math.max(3.2, detectedImgAspectRatio) * 10) / 10);
-      const helixAngle = typeof ref.helixAngle === 'number' ? ref.helixAngle : 22.0;
-      const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.7 * 10) / 10;
-      const m = snapToStandardModule(od / (teeth + 2)) || 3.5;
-      const journalR1 = Math.round(od * 0.28 * 10) / 10;
-      const journalR2 = Math.round(od * 0.25 * 10) / 10;
-
-      const axialSegments = [
-        { zStart: -length / 2, zEnd: -faceWidth / 2, radius: journalR1, label: 'Drive Journal (Left)' },
-        { zStart: -faceWidth / 2, zEnd: faceWidth / 2, teeth, module: m, helixAngle, radius: od / 2, label: 'Helical Pinion Gear' },
-        { zStart: faceWidth / 2, zEnd: length / 2, radius: journalR2, label: 'Support Journal (Right)' },
-      ];
-
-      return finalize({
-        componentType: helixAngle > 0 ? 'helical pinion shaft' : 'gear shaft',
-        componentName: `Integral ${teeth}T Helical Pinion Shaft Ø${od}x${length}mm`,
-        label: `Helical Pinion Shaft (${teeth}T Ø${od}mm)`,
-        confidence: 0.93,
-        geometryType: 'integral_pinion_shaft',
-        dimensions: {
-          outerDiameter: od,
-          innerDiameter: 0,
-          height: length,
-          length,
-          width: od,
-          thickness: faceWidth,
-        },
-        teeth,
-        module: m,
-        helixAngle,
-        features: [
-          `Integrated ${teeth}T Helical Pinion (${helixAngle}° Helix Angle m${m})`,
-          `Left Drive Journal Ø${journalR1 * 2}mm`,
-          `Right Support Journal Ø${journalR2 * 2}mm`,
-          'Solid Core Continuous Alloy Steel Shaft',
-        ],
-        materialEstimate: '18CrNiMo7-6 Case-Hardened Alloy Steel',
-        manufacturingProcess: 'CNC Turning + Continuous Gear Hobbing + Carburizing & Cylindrical Grinding',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized integral helical pinion shaft with dual ground bearing journals.`,
-        uncertainties: [],
-        geometryRecipe: {
-          style: 'pinion_shaft',
-          operator: 'axial_segments',
-          axialSegments,
-          gear: {
-            gearType: helixAngle > 0 ? 'helical' : 'spur',
-            teeth,
-            module: m,
-            helixAngle,
-            faceWidth,
-            outerDiameter: od,
-          },
-          shaft: {
-            diameter: journalR1 * 2,
-            length,
-            driveJournalDiameter: journalR1 * 2,
-            supportJournalDiameter: journalR2 * 2,
-          },
-          meshData: generateNeuralMesh({
-            axialSegments,
-            boreRadius: 0,
-            componentType: 'helical pinion shaft',
-          }),
-        },
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const isCompound =
-      refTypeLower.includes('compound') ||
-      refTypeLower.includes('cluster') ||
-      refTypeLower.includes('two-stage') ||
-      refTypeLower.includes('companion') ||
-      refTypeLower.includes('dual') ||
-      refTypeLower.includes('double') ||
-      ref.gearType === 'compound';
-
-    if (isCompound) {
-      const stage1OD = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 120.0;
-      const stage2OD = Math.round(stage1OD * 0.60 * 10) / 10;
-      const totalFaceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : 45.0);
-      const stage1FaceWidth = Math.round(totalFaceWidth * 0.55 * 10) / 10;
-      const stage2FaceWidth = Math.round(totalFaceWidth * 0.45 * 10) / 10;
-      const stage1Teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 24;
-      const stage2Teeth = Math.max(8, Math.round(stage1Teeth * 0.65));
-      const m1 = snapToStandardModule(stage1OD / (stage1Teeth + 2)) || 4.5;
-      const m2 = snapToStandardModule(stage2OD / (stage2Teeth + 2)) || m1;
-      const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : 28.0;
-      const boreRadius = Math.round((id / 2) * 10) / 10;
-      const keyway = { width: 8, height: 4 };
-
-      const axialSegments = [
-        { zStart: -stage1FaceWidth, zEnd: 0, teeth: stage1Teeth, module: m1, radius: stage1OD / 2, innerRadius: boreRadius, label: 'Stage 1 Bull Gear' },
-        { zStart: 0, zEnd: stage2FaceWidth, teeth: stage2Teeth, module: m2, radius: stage2OD / 2, innerRadius: boreRadius, label: 'Stage 2 Pinion Gear' },
-      ];
-
-      return finalize({
-        componentType: 'compound gear',
-        componentName: `Compound Cluster Gear (${stage1Teeth}T / ${stage2Teeth}T)`,
-        label: `Compound Gear (${stage1Teeth}T/${stage2Teeth}T Ø${stage1OD}mm)`,
-        confidence: 0.92,
-        gearType: 'compound',
-        geometryType: 'compound_gear_cluster',
-        dimensions: {
-          outerDiameter: stage1OD,
-          innerDiameter: id,
-          height: totalFaceWidth,
-          thickness: totalFaceWidth,
-          width: stage1OD,
-          length: stage1OD,
-        },
-        teeth: stage1Teeth,
-        module: m1,
-        helixAngle: 0.0,
-        features: [
-          `Stage 1 Base Spur Gear (${stage1Teeth}T m${m1} Ø${stage1OD}mm)`,
-          `Stage 2 Pinion Gear (${stage2Teeth}T m${m2} Ø${stage2OD}mm)`,
-          `Central Bore Ø${id}mm with Keyway Slot`,
-          'Dual-Stage Reduction Cluster Unit',
-        ],
-        materialEstimate: 'AISI 8620 / 20MnCr5 Case-Hardened Steel',
-        manufacturingProcess: 'Gear Hobbing + Secondary Pinion Shaping + Gas Carburizing',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized dual-stage compound gear cluster with integrated bore and keyway.`,
-        uncertainties: [],
-        geometryRecipe: {
-          style: 'compound_gear',
-          operator: 'axial_segments',
-          axialSegments,
-          boreRadius,
-          keyway,
-          gear: {
-            stages: [
-              { teeth: stage1Teeth, module: m1, faceWidth: stage1FaceWidth },
-              { teeth: stage2Teeth, module: m2, faceWidth: stage2FaceWidth },
-            ],
-            boreRadius,
-            keyway,
-          },
-          meshData: generateNeuralMesh({
-            axialSegments,
-            boreRadius,
-            keyway,
-            componentType: 'compound gear',
-          }),
-        },
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const isFlangedShaft =
-      (refTypeLower.includes('flange') || typeof ref.boltCount === 'number') &&
-      (refTypeLower.includes('shaft') || refTypeLower.includes('spline') || refTypeLower.includes('bushing') || refTypeLower.includes('linear'));
-
-    if (isFlangedShaft) {
-      const sR = typeof ref.innerDiameter === 'number' && ref.innerDiameter > 0 ? ref.innerDiameter / 2 : 12;
-      const fR = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter / 2 : 38;
-      const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : 180);
-      const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : 16;
-      const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 3 ? Math.round(ref.boltCount) : 4;
-
-      return finalize({
-        componentType: 'flanged spline shaft',
-        componentName: `Precision Flanged Spline Shaft Ø${fR * 2}x${length}mm`,
-        label: `Flanged Spline Shaft (${boltCount}-Hole Flange)`,
-        confidence: 0.92,
-        geometryType: 'flanged_linear_shaft',
-        dimensions: {
-          outerDiameter: fR * 2,
-          innerDiameter: sR * 2,
-          length,
-          height: length,
-          width: fR * 2,
-          thickness: th,
-        },
-        teeth: null,
-        module: null,
-        helixAngle: null,
-        boltCount,
-        features: [
-          `Circular Mounting Flange Collar (${boltCount} Bolt Holes)`,
-          'Precision Linear Ball Spline Shaft (6 Keyway Grooves)',
-          `Shaft Core Ø${sR * 2}mm x ${length}mm`,
-          `Mounting Flange Ø${fR * 2}mm x ${th}mm`,
-        ],
-        materialEstimate: 'SUJ2 / 52100 Bearing Steel (Induction Hardened)',
-        manufacturingProcess: 'Cylindrical Grinding + Spline Milling + Induction Hardening',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized precision flanged spline shaft.`,
-        uncertainties: [],
-        geometryRecipe: {
-          style: 'flanged_shaft',
-          shaft: { diameter: sR * 2, length, splineCount: 6 },
-          flange: {
-            outerDiameter: fR * 2,
-            thickness: th,
-            boltCount,
-            boltCircleDiameter: Math.round((sR * 1.4 + fR) * 10) / 10,
-            boltHoleDiameter: 7,
-            bossDiameter: sR * 3,
-            bossHeight: 28,
-          },
-          meshData: generateNeuralMesh({
-            axialSegments: [
-              { zStart: -length / 2, zEnd: -length * 0.15, radius: sR, splineCount: 6, label: 'Linear Spline Shaft Front' },
-              { zStart: -length * 0.15, zEnd: -length * 0.15 + th, radius: fR, flangeHoles: { count: boltCount, pcd: Math.round(sR * 1.4 + fR), holeRadius: 3.5 }, label: 'Circular Mounting Flange' },
-              { zStart: -length * 0.15 + th, zEnd: -length * 0.15 + th + 28, radius: sR * 1.5, label: 'Bushing Collar Boss' },
-              { zStart: -length * 0.15 + th + 28, zEnd: length / 2, radius: sR, splineCount: 6, label: 'Linear Spline Shaft Rear' },
-            ],
-            boreRadius: 0,
-            componentType: 'flanged spline shaft',
-          }),
-        },
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const isFlange = refTypeLower.includes('flange') || typeof ref.boltCount === 'number';
-
-    if (isFlange) {
-      const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 130.0;
-      const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.35 * 10) / 10;
-      const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.16 * 10) / 10;
-      const h = typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(th * 1.5 * 10) / 10;
-      const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 3 ? Math.round(ref.boltCount) : 4;
-
-      const recipe = buildFlangeRecipe({
-        outerDiameter: od,
-        innerDiameter: id,
-        thickness: th,
-        height: h,
-        boltCount,
-      });
-      const bcd = recipe.flange.boltCircleDiameter;
-      const bhd = recipe.flange.boltHoleDiameter;
-
-      return finalize({
-        componentType: 'flange',
-        componentName: `Standard ${boltCount}-Hole Flange Ø${od}mm`,
-        label: `Flange (${boltCount}-Hole Ø${od}mm)`,
-        confidence: 0.90,
-        boltCount,
-        geometryType: 'flange_with_bolt_pattern',
-        dimensions: {
-          outerDiameter: od,
-          innerDiameter: id,
-          height: h,
-          thickness: th,
-          width: od,
-          length: od,
-        },
-        teeth: null,
-        module: null,
-        helixAngle: null,
-        features: [
-          `${boltCount} Mounting Bolt Holes (Ø${bhd}mm on PCD Ø${bcd}mm)`,
-          id > 0 ? `Central Bore Ø${id}mm` : 'Solid Center (Blind Flange)',
-          `Raised Face Hub Ø${recipe.flange.bossDiameter}mm`,
-        ],
-        materialEstimate: 'ASTM A105 Carbon Steel',
-        manufacturingProcess: 'Forging + CNC Turning & PCD Drilling',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized standard ${boltCount}-hole flange.`,
-        uncertainties: [],
-        geometryRecipe: recipe,
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const isBevel =
-      String(ref.componentType || '').toLowerCase().includes('bevel') ||
-      String(ref.componentType || '').toLowerCase().includes('miter') ||
-      ref.gearType === 'bevel';
-
-    if (isBevel) {
-      const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 20;
-      const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 90.0;
-      const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.28 * 10) / 10;
-      const m = snapToStandardModule(od / (teeth + 2)) || 3.5;
-      const coneAngle = ref.coneAngle || 45;
-      const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(m * 6 * 10) / 10;
-      const hubD = Math.round(od * 0.62 * 10) / 10;
-      const hubL = Math.round(faceWidth * 0.85 * 10) / 10;
-      return finalize({
-        componentType: 'bevel gear',
-        componentName: `${teeth}T Industrial Bevel Pinion Gear`,
-        label: `Bevel Gear (${teeth}T Ø${od}mm)`,
-        confidence: 0.91,
-        gearType: 'bevel',
-        coneAngle,
-        geometryType: 'bevel_gear',
-        dimensions: { outerDiameter: od, innerDiameter: id, height: faceWidth, thickness: faceWidth, width: od, length: od },
-        teeth,
-        module: m,
-        helixAngle: 0.0,
-        features: [
-          `${teeth} Conical Bevel Teeth (Pitch Cone ${coneAngle}°)`,
-          `Central Mounting Bore Ø${id}mm`,
-          `Rear Shaft Hub Collar Ø${hubD}mm x ${hubL}mm`,
-          'Gleason Conical Tooth Profile',
-        ],
-        materialEstimate: 'AISI 8620 Case-Hardened Steel',
-        manufacturingProcess: 'Bevel Gear Generator (Gleason) + Case Hardening',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized miter bevel gear with ${coneAngle}° pitch cone.`,
-        uncertainties: [],
-        geometryRecipe: {
-          style: 'gear',
-          gear: {
-            gearType: 'bevel',
-            teeth,
-            module: m,
-            coneAngle,
-            pressureAngle: 20.0,
-            faceWidth,
-            boreRadius: id / 2,
-            hubDiameter: hubD,
-            hubLength: hubL,
-          },
-        },
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const isPrismatic =
-      String(ref.componentType || '').toLowerCase().includes('bracket') ||
-      String(ref.componentType || '').toLowerCase().includes('rod') ||
-      String(ref.componentType || '').toLowerCase().includes('link') ||
-      String(ref.componentType || '').toLowerCase().includes('lever') ||
-      String(ref.componentType || '').toLowerCase().includes('plate') ||
-      String(ref.componentType || '').toLowerCase().includes('arm') ||
-      String(ref.componentType || '').toLowerCase().includes('mount') ||
-      (typeof ref.width === 'number' && typeof ref.length === 'number' && Math.abs(ref.width - ref.length) > 10);
-
-    if (isPrismatic) {
-      const w = typeof ref.width === 'number' && ref.width > 0 ? ref.width : 70.0;
-      const l = typeof ref.length === 'number' && ref.length > 0 ? ref.length : 140.0;
-      const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : 18.0);
-      const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : 16.0;
-      const halfW = w / 2;
-      const halfL = l / 2;
-      const boreR = id / 2;
-      const outline = [
-        { x: -halfL, y: -halfW },
-        { x: halfL, y: -halfW },
-        { x: halfL, y: halfW },
-        { x: -halfL, y: halfW },
-      ];
-      const holes = [];
-      if (boreR > 0) {
-        holes.push({ cx: -halfL * 0.65, cy: 0, radius: boreR * 0.8 });
-        holes.push({ cx: halfL * 0.65, cy: 0, radius: boreR });
-      }
-      const cType = String(ref.componentType || 'machined bracket').toLowerCase();
-      return finalize({
-        componentType: cType,
-        componentName: `Machined ${cType.charAt(0).toUpperCase() + cType.slice(1)} ${l}x${w}x${th}mm`,
-        label: `${cType.charAt(0).toUpperCase() + cType.slice(1)} (${l}x${w}mm)`,
-        confidence: 0.88,
-        geometryType: 'prismatic_extruded',
-        dimensions: { outerDiameter: Math.max(w, l), innerDiameter: id, height: th, thickness: th, width: w, length: l },
-        teeth: null,
-        module: null,
-        helixAngle: null,
-        features: [
-          `Machined Solid Perimeter ${l}x${w}mm`,
-          holes.length > 0 ? `${holes.length} Precision Mounting/Bore Holes (Ø${id}mm)` : 'Solid Plate Profile',
-          `Plate Thickness ${th}mm`,
-        ],
-        materialEstimate: '6061-T6 Aluminium / Mild Steel',
-        manufacturingProcess: 'CNC Milling / Waterjet Cutting',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Prismatic profile extruded with precision bores.`,
-        uncertainties: [],
-        geometryRecipe: {
-          style: 'extruded',
-          outline,
-          holes,
-          depth: th,
-          meshData: generateNeuralMesh({
-            outline,
-            holes,
-            thickness: th,
-            componentType: cType,
-          }),
-        },
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const isShaft =
-      !isPrismatic &&
-      (String(ref.componentType || '').toLowerCase().includes('shaft') ||
-        String(ref.componentType || '').toLowerCase().includes('spindle') ||
-        (ref.length && ref.length > (ref.outerDiameter || 50)) ||
-        (ref.height && ref.height > (ref.outerDiameter || 50) * 1.5));
-
-    if (isShaft) {
-      const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 45.0;
-      const length = typeof ref.length === 'number' && ref.length > 0 ? ref.length : (typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(od * 3.5 * 10) / 10);
-      const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : 0;
-      const recipe = buildSteppedShaftRecipe({ outerDiameter: od, length, innerDiameter: id });
-      recipe.meshData = generateNeuralMesh({
-        axialSegments: [
-          { zStart: -length / 2, zEnd: -length * 0.15, radius: od * 0.32, label: 'Drive Journal' },
-          { zStart: -length * 0.15, zEnd: length * 0.20, radius: od / 2, label: 'Main Center Shoulder' },
-          { zStart: length * 0.20, zEnd: length / 2, radius: od * 0.38, label: 'Bearing Seat' },
-        ],
-        boreRadius: id > 0 ? id / 2 : 0,
-        componentType: 'stepped shaft',
-      });
-      return finalize({
-        componentType: 'stepped shaft',
-        componentName: `Industrial Stepped Drive Shaft Ø${od}x${length}mm`,
-        label: `Stepped Shaft (Ø${od}x${length}mm)`,
-        confidence: 0.90,
-        geometryType: 'axisymmetric_stepped_shaft',
-        dimensions: { outerDiameter: od, innerDiameter: id, height: length, length, width: od, thickness: od },
-        teeth: null,
-        module: null,
-        helixAngle: null,
-        features: [
-          `Main Center Shoulder Ø${od}mm`,
-          'Ground Bearing Journals with Transition Fillets',
-          'Drive Spline / Keyed Section',
-          id > 0 ? `Center Bore Ø${id}mm` : 'Solid Steel Core',
-        ],
-        materialEstimate: 'AISI 4340 / EN24 Quenched & Tempered Alloy Steel',
-        manufacturingProcess: 'CNC Turning + Induction Hardening & Cylindrical Grinding',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized multi-diameter stepped shaft with bearing seats.`,
-        uncertainties: [],
-        geometryRecipe: recipe,
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const hasTeethIndicator = typeof ref.teeth === 'number' && ref.teeth >= 4;
-    if (!hasTeethIndicator) {
-      const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 130.0;
-      const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.35 * 10) / 10;
-      const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.16 * 10) / 10;
-      const h = typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(th * 1.5 * 10) / 10;
-      const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 3 ? Math.round(ref.boltCount) : 4;
-
-      const recipe = buildFlangeRecipe({ outerDiameter: od, innerDiameter: id, thickness: th, height: h, boltCount });
-      return finalize({
-        componentType: 'flange',
-        componentName: `Standard ${boltCount}-Hole Flange Ø${od}mm`,
-        label: `Flange (${boltCount}-Hole Ø${od}mm)`,
-        confidence: 0.88,
-        geometryType: 'flange_with_bolt_pattern',
-        dimensions: { outerDiameter: od, innerDiameter: id, height: h, thickness: th, width: od, length: od },
-        teeth: null,
-        module: null,
-        helixAngle: null,
-        features: [
-          `${boltCount} Mounting Bolt Holes (Ø${recipe.flange.boltHoleDiameter}mm on PCD Ø${recipe.flange.boltCircleDiameter}mm)`,
-          id > 0 ? `Central Bore Ø${id}mm` : 'Solid Center (Blind Flange)',
-          `Raised Face Hub Ø${recipe.flange.bossDiameter}mm`,
-        ],
-        materialEstimate: 'ASTM A105 / 316 Stainless Steel',
-        manufacturingProcess: 'Forging + CNC Turning & PCD Drilling',
-        reasoning: `Deterministic engineering solver engaged (${reason}). Non-toothed component resolved as circular flange with bolt circle.`,
-        uncertainties: [],
-        geometryRecipe: recipe,
-        provenance: 'deterministic_fallback_engine',
-      });
-    }
-
-    const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 24;
+  if (gearType === 'rack' || gearType === 'internal') {
+    const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : (gearType === 'internal' ? 36 : 20);
     const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 120.0;
-    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.25 * 10) / 10;
-    const m = snapToStandardModule(od / (teeth + 2)) || 4.5;
-    const standardOd = Math.round(m * (teeth + 2) * 10) / 10;
+    const module = snapToStandardModule(ref.module || od / (teeth + 2)) || 4.0;
     const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0
       ? ref.thickness
-      : typeof ref.height === 'number' && ref.height > 0
-        ? ref.height
-        : Math.round(m * 9 * 10) / 10;
-
+      : typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(module * 8 * 10) / 10;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : od * 0.58;
+    const name = gearType === 'rack' ? 'Rack Gear' : 'Internal Ring Gear';
     return finalize({
-      componentType: 'spur gear',
-      componentName: `${teeth}T Precision Spur Gear`,
-      label: `Spur Gear (${teeth}T)`,
-      confidence: 0.90,
-      geometryType: 'toothed_gear',
+      componentType: `${gearType} gear`,
+      componentName: `${teeth}T ${name}`,
+      label: `${name} (${teeth}T)`,
+      confidence: 0.92,
+      gearType,
+      classificationSource: gearTypeEvidence.source,
+      requiresGearTypeConfirmation: false,
+      geometryType: gearType === 'rack' ? 'linear_rack' : 'internal_ring_gear',
       dimensions: {
-        outerDiameter: standardOd,
-        innerDiameter: id,
+        outerDiameter: od,
+        innerDiameter: gearType === 'internal' ? id : 0,
         height: faceWidth,
         thickness: faceWidth,
-        width: standardOd,
-        length: standardOd,
+        width: gearType === 'rack' ? teeth * Math.PI * module : od,
+        length: gearType === 'rack' ? teeth * Math.PI * module : od,
       },
       teeth,
-      module: m,
+      module,
       helixAngle: 0.0,
-      features: [
-        `Central Bore Ø${id}mm`,
-        `${teeth} Involute Gear Teeth`,
-        `Module ${m}mm (ISO standard)`,
-        'Precision Ground Flanks',
-      ],
+      features: gearType === 'rack'
+        ? [`${teeth} Straight Rack Teeth`, `Module ${module}mm`, `Rack Length ${Math.round(teeth * Math.PI * module * 10) / 10}mm`]
+        : [`${teeth} Internal Ring Teeth`, `Module ${module}mm`, `Root Bore Ø${id}mm`],
       materialEstimate: 'AISI 4140 Alloy Steel',
-      manufacturingProcess: 'Hobbing + Wire EDM Bore',
-      reasoning: `Deterministic engineering solver engaged (${reason}). Parameters synthesized according to ISO 54 gear specifications.`,
+      manufacturingProcess: gearType === 'rack' ? 'Gear Shaping + Surface Grinding' : 'Internal Gear Broaching + Heat Treatment',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Synthesized explicit ${name} geometry.`,
       uncertainties: [],
       geometryRecipe: {
         style: 'gear',
         gear: {
+          gearType,
           teeth,
-          module: m,
-          pressureAngle: 20.0,
-          helixAngle: 0.0,
+          module,
           faceWidth,
-          boreRadius: id / 2,
+          boreRadius: gearType === 'internal' ? id / 2 : 0,
+          outerDiameter: od,
         },
       },
       provenance: 'deterministic_fallback_engine',
     });
   }
+
+  const hasTeethIndicator = typeof ref.teeth === 'number' && ref.teeth >= 4;
+  const hasExplicitGearType = explicitGearType && explicitGearType !== 'unknown';
+  if (!hasTeethIndicator && !hasExplicitGearType) {
+    const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 130.0;
+    const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.35 * 10) / 10;
+    const th = typeof ref.thickness === 'number' && ref.thickness > 0 ? ref.thickness : Math.round(od * 0.16 * 10) / 10;
+    const h = typeof ref.height === 'number' && ref.height > 0 ? ref.height : Math.round(th * 1.5 * 10) / 10;
+    const boltCount = typeof ref.boltCount === 'number' && ref.boltCount >= 3 ? Math.round(ref.boltCount) : 4;
+
+    const recipe = buildFlangeRecipe({ outerDiameter: od, innerDiameter: id, thickness: th, height: h, boltCount });
+    return finalize({
+      componentType: 'flange',
+      componentName: `Standard ${boltCount}-Hole Flange Ø${od}mm`,
+      label: `Flange (${boltCount}-Hole Ø${od}mm)`,
+      confidence: 0.88,
+      geometryType: 'flange_with_bolt_pattern',
+      dimensions: { outerDiameter: od, innerDiameter: id, height: h, thickness: th, width: od, length: od },
+      teeth: null,
+      module: null,
+      helixAngle: null,
+      features: [
+        `${boltCount} Mounting Bolt Holes (Ø${recipe.flange.boltHoleDiameter}mm on PCD Ø${recipe.flange.boltCircleDiameter}mm)`,
+        id > 0 ? `Central Bore Ø${id}mm` : 'Solid Center (Blind Flange)',
+        `Raised Face Hub Ø${recipe.flange.bossDiameter}mm`,
+      ],
+      materialEstimate: 'ASTM A105 / 316 Stainless Steel',
+      manufacturingProcess: 'Forging + CNC Turning & PCD Drilling',
+      reasoning: `Deterministic engineering solver engaged (${reason}). Non-toothed component resolved as circular flange with bolt circle.`,
+      uncertainties: [],
+      geometryRecipe: recipe,
+      provenance: 'deterministic_fallback_engine',
+    });
+  }
+
+  const teeth = typeof ref.teeth === 'number' && ref.teeth >= 6 ? Math.round(ref.teeth) : 24;
+  const od = typeof ref.outerDiameter === 'number' && ref.outerDiameter > 0 ? ref.outerDiameter : 120.0;
+  const id = typeof ref.innerDiameter === 'number' && ref.innerDiameter >= 0 ? ref.innerDiameter : Math.round(od * 0.25 * 10) / 10;
+  const m = snapToStandardModule(od / (teeth + 2)) || 4.5;
+  const standardOd = Math.round(m * (teeth + 2) * 10) / 10;
+  const faceWidth = typeof ref.thickness === 'number' && ref.thickness > 0
+    ? ref.thickness
+    : typeof ref.height === 'number' && ref.height > 0
+      ? ref.height
+      : Math.round(m * 9 * 10) / 10;
+
+  const finalGearType = gearType === 'unknown' ? 'unknown' : gearType;
+  const typeConfirmed = finalGearType !== 'unknown';
+  const finalHelix = finalGearType === 'helical' ? (typeof ref.helixAngle === 'number' && Math.abs(ref.helixAngle) > 0.5 ? ref.helixAngle : 20.0) : 0.0;
+
+  return finalize({
+    componentType: typeConfirmed ? `${finalGearType} gear` : 'gear (type unconfirmed)',
+    componentName: typeConfirmed ? `${teeth}T Precision ${finalGearType.charAt(0).toUpperCase() + finalGearType.slice(1)} Gear` : `${teeth}T Toothed Component (type unconfirmed)`,
+    label: typeConfirmed ? `${finalGearType.charAt(0).toUpperCase() + finalGearType.slice(1)} Gear (${teeth}T)` : `Gear Type Unconfirmed (${teeth}T)`,
+    confidence: typeConfirmed ? 0.90 : 0,
+    gearType: finalGearType,
+    classificationSource: gearTypeEvidence.source,
+    requiresGearTypeConfirmation: !typeConfirmed,
+    geometryType: 'toothed_gear',
+    dimensions: {
+      outerDiameter: standardOd,
+      innerDiameter: id,
+      height: faceWidth,
+      thickness: faceWidth,
+      width: standardOd,
+      length: standardOd,
+    },
+    teeth,
+    module: m,
+    helixAngle: finalHelix,
+    features: [
+      `Central Bore Ø${id}mm`,
+      `${teeth} Involute Gear Teeth`,
+      `Module ${m}mm (ISO standard)`,
+      'Precision Ground Flanks',
+    ],
+    materialEstimate: 'AISI 4140 Alloy Steel',
+    manufacturingProcess: 'Hobbing + Wire EDM Bore',
+    reasoning: `Deterministic engineering solver engaged (${reason}). Parameters synthesized according to ISO 54 gear specifications.`,
+    uncertainties: typeConfirmed ? [] : [gearTypeConfirmationMessage(finalGearType)],
+    geometryRecipe: {
+      style: 'gear',
+      gear: {
+        gearType: finalGearType,
+        teeth,
+        module: m,
+        pressureAngle: 20.0,
+        helixAngle: finalHelix,
+        faceWidth,
+        boreRadius: id / 2,
+      },
+    },
+    provenance: 'deterministic_fallback_engine',
+  });
+}

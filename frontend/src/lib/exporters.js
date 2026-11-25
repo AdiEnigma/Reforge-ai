@@ -375,7 +375,7 @@ export function exportDWG(analysis) {
 
 export function exportDrawingSVG(analysis, mfgData) {
   const slug = getPartSlug(analysis);
-  const model = buildDrawingModel(analysis, mfgData);
+  const model = buildDrawingModel({ analysis, manufacturingIntelligence: mfgData });
   const svg = renderDrawingToSvg(model);
   return downloadFile(svg, `${slug}-technical-drawing.svg`, "image/svg+xml;charset=utf-8");
 }
@@ -385,7 +385,7 @@ export function exportDrawingPDF(analysis, mfgData) {
   if (typeof document === 'undefined' || typeof window === 'undefined') {
     return { content: "PDF_MOCK", filename: `${slug}-drawing.pdf`, mimeType: "application/pdf" };
   }
-  const model = buildDrawingModel(analysis, mfgData);
+  const model = buildDrawingModel({ analysis, manufacturingIntelligence: mfgData });
   const svg = renderDrawingToSvg(model);
   
   const doc = new jsPDF({

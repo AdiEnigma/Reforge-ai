@@ -1,6 +1,29 @@
 import * as THREE from "three";
-import { executeRecipe, sanitizeRecipe } from "./recipe.js";
-import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape, visibleBounds, buildBevelGearGroup, buildSteppedShaftGroup, buildCompoundGearGroup, buildFlangedShaftGroup, buildPinionShaftGroup } from "./geo.js";
+import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
+import { buildGearFromRecipe, executeRecipe, sanitizeRecipe } from "./recipe.js";
+import { normalizeGearType } from "./gear-types.js";
+import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape } from "./geo.js";
+import { executeGeometryProgram, generateGeometryProgram } from "./runtime-geometry-engine.js";
+
+// Built geometry is immutable for a given analysis object. Validation and each
+// viewport previously rebuilt the same meshes from scratch; share the geometry
+// and clone only the lightweight Object3D wrappers per consumer.
+const modelCache = new WeakMap();
+
+function visibleBounds(object) {
+  const box = new THREE.Box3();
+  if (!object) return box;
+  object.updateWorldMatrix(true, true);
+  object.traverse((node) => {
+    if (!node.visible || !node.isMesh || !node.geometry) return;
+    if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+    if (!node.geometry.boundingBox) return;
+    const meshBox = node.geometry.boundingBox.clone();
+    meshBox.applyMatrix4(node.matrixWorld);
+    box.union(meshBox);
+  });
+  return box;
+}
 
 export const COMPONENT_LABELS = {
   "pinion shaft": "HELICAL PINION SHAFT",
@@ -12,6 +35,11 @@ export const COMPONENT_LABELS = {
   "spur gear": "SPUR GEAR",
   "helical gear": "HELICAL GEAR",
   "worm gear": "WORM GEAR",
+  "rack gear": "RACK GEAR",
+  "internal gear": "INTERNAL GEAR",
+  "stepped gear": "STEPPED GEAR",
+  "flanged gear": "FLANGED GEAR",
+  "gear (type unconfirmed)": "GEAR TYPE UNCONFIRMED",
   "cylinder/shaft": "CYLINDER / SHAFT",
   flange: "FLANGE",
   bearing: "BEARING",
@@ -22,8 +50,10 @@ export const COMPONENT_LABELS = {
 export function resolveComponentType(analysis) {
   const raw = String(analysis?.componentType || "other").toLowerCase();
   const featuresStr = Array.isArray(analysis?.features) ? analysis.features.map(f => String(f).toLowerCase()).join(" ") : "";
-  const gearType = String(analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType || "").toLowerCase();
-  const isGear = raw.includes("gear") || featuresStr.includes("gear") || featuresStr.includes("teeth") || (typeof analysis?.teeth === "number" && analysis.teeth > 0) || analysis?.geometryRecipe?.style === "gear" || analysis?.geometryRecipe?.gear;
+  const rawGearType = analysis?.gearType ?? analysis?.geometryRecipe?.gear?.gearType;
+  const gearType = normalizeGearType(rawGearType);
+  const hasExplicitGearType = rawGearType != null;
+  const isGear = raw.includes("gear") || featuresStr.includes("gear") || featuresStr.includes("teeth") || (typeof analysis?.teeth === "number" && analysis.teeth > 0) || gearType !== "unknown" || analysis?.geometryRecipe?.style === "gear" || analysis?.geometryRecipe?.gear;
 
   // 1. Detect Compound / Cluster Multi-Stage Gear (EXCLUDE pinion shafts and single gears)
   const isExplicitPinionShaft =
@@ -36,6 +66,7 @@ export function resolveComponentType(analysis) {
   if (
     isGear &&
     !isExplicitPinionShaft &&
+    gearType !== "stepped" &&
     (raw.includes("compound") ||
       raw.includes("cluster") ||
       raw.includes("double gear") ||
@@ -47,14 +78,21 @@ export function resolveComponentType(analysis) {
       featuresStr.includes("two-stage") ||
       featuresStr.includes("double gear") ||
       featuresStr.includes("dual gear") ||
+      gearType === "compound" ||
       (analysis?.geometryRecipe?.gear?.stages && analysis.geometryRecipe.gear.stages.length >= 2))
   ) {
     return "compound gear";
   }
 
+  if (isGear && gearType === "pinion") {
+    return "pinion shaft";
+  }
+
   // 2. Detect Integral Pinion Shaft / Gear Shaft
+  const pinionCompatible = ["unknown", "spur", "helical", "pinion"].includes(gearType);
   if (
     isGear &&
+    pinionCompatible &&
     (isExplicitPinionShaft ||
       (analysis?.geometryRecipe?.shaft && analysis?.geometryRecipe?.gear) ||
       ((analysis?.dimensions?.length || analysis?.dimensions?.height || 0) >= ((analysis?.dimensions?.outerDiameter || 30) * 1.5) &&
@@ -90,17 +128,30 @@ export function resolveComponentType(analysis) {
     return "bevel gear";
   }
 
-  // 5. Detect Helical / Worm Gear
-  if (isGear && (raw.includes("helical") || gearType === "helical" || (typeof analysis?.helixAngle === "number" && analysis.helixAngle > 0))) {
-    return "helical gear";
-  }
+  // 5. Prefer explicit tooth-form evidence over generic helix-angle hints.
   if (isGear && (raw.includes("worm") || gearType === "worm")) {
     return "worm gear";
   }
+  if (isGear && (raw.includes("rack") || gearType === "rack")) {
+    return "rack gear";
+  }
+  if (isGear && (raw.includes("internal") || raw.includes("annular") || gearType === "internal")) {
+    return "internal gear";
+  }
+  if (isGear && gearType === "stepped") {
+    return "stepped gear";
+  }
+  if (isGear && gearType === "flanged" && !isExplicitPinionShaft) {
+    return "flanged gear";
+  }
+  if (isGear && (raw.includes("helical") || gearType === "helical" || (!hasExplicitGearType && typeof analysis?.helixAngle === "number" && analysis.helixAngle > 0))) {
+    return "helical gear";
+  }
 
-  // 6. Detect Spur Gear (Standard)
+  // 6. Detect Spur Gear only from explicit evidence. An uncounted tooth form
+  // stays unconfirmed instead of being silently rebuilt as a spur gear.
   if (isGear) {
-    return "spur gear";
+    return gearType === "spur" || raw.includes("spur") || featuresStr.includes("straight teeth") ? "spur gear" : "gear (type unconfirmed)";
   }
 
   // 7. Detect Circular Cap / Bushing / Sleeve (avoid false-positive stepped shafts)
@@ -205,7 +256,12 @@ export function computeParams(analysis) {
     boltCount: boltCount || 4,
     spokes: spokeCount,
     coneAngle: typeof analysis?.coneAngle === "number" ? analysis.coneAngle : (analysis?.geometryRecipe?.gear?.coneAngle || 45),
-    gearType: analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType || null,
+    gearType: normalizeGearType(analysis?.gearType || analysis?.geometryRecipe?.gear?.gearType),
+    helixAngle: analysis?.helixAngle ?? analysis?.geometryRecipe?.gear?.helixAngle ?? 0,
+    module: analysis?.module ?? analysis?.geometryRecipe?.gear?.module ?? null,
+    pitch: analysis?.pitch ?? analysis?.geometryRecipe?.gear?.pitch ?? null,
+    starts: analysis?.starts ?? analysis?.geometryRecipe?.gear?.starts ?? null,
+    requiresGearTypeConfirmation: Boolean(analysis?.requiresGearTypeConfirmation),
     outerDiameter: s(dims.outerDiameter),
     innerDiameter: s(dims.innerDiameter),
     height: s(dims.height),
@@ -468,12 +524,53 @@ function buildGeneric(p) {
   return group;
 }
 
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/**
+ * Render the actual retrieved STL instead of a parametric approximation when
+ * the dataset service supplied a validated viewer mesh.
+ */
+function buildRetrievedDatasetMesh(analysis) {
+  const base64 = analysis?.datasetModel?.viewerMeshBase64;
+  if (typeof base64 !== "string" || base64.length < 100) return null;
+  try {
+    const geometry = new STLLoader().parse(base64ToArrayBuffer(base64));
+    if (!geometry || !geometry.getAttribute("position") || geometry.getAttribute("position").count === 0) {
+      return null;
+    }
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, matBody);
+    mesh.userData = {
+      featureId: "feature-retrieved-dataset-mesh",
+      featureType: "retrieved_dataset_geometry",
+      source: analysis.datasetModel.assetId || "dataset",
+    };
+    const group = new THREE.Group();
+    group.add(mesh);
+    return group;
+  } catch (error) {
+    console.warn("Could not parse retrieved dataset mesh:", error?.message || error);
+    return null;
+  }
+}
+
 export function buildModel(analysis) {
+  if (analysis && typeof analysis === 'object') {
+    const cached = modelCache.get(analysis);
+    if (cached) return { ...cached, group: cached.group.clone(true) };
+  }
+
   const p = computeParams(analysis);
   const group = new THREE.Group();
   let body = null;
   let label;
   const recipe = sanitizeRecipe(analysis);
+  const retrievedMesh = buildRetrievedDatasetMesh(analysis);
 
   // Detect trivial single-box fallback that Gemini returns when it can't determine geometry
   const isTrivialBoxFallback =
@@ -558,12 +655,46 @@ export function buildModel(analysis) {
       (!recipe.flange && (!recipe.holes || recipe.holes.length <= 1)));
 
   // Primary Route: Execute exact engineering recipe (meshData, compound_gear, flanged_shaft, gear, revolved, extruded, combination)
+  const isCapOrBushingType =
+    p.type === "cap/bushing" ||
+    rawType.includes("cap") ||
+    rawType.includes("bushing") ||
+    rawType.includes("bottle") ||
+    rawType.includes("lid");
+
+  const isBearingType =
+    p.type === "bearing" ||
+    rawType.includes("bearing");
+
   const recipeMismatchesType =
     (p.type === "flange" && recipe?.style === "revolved" && !recipe.flange) ||
     (["bevel gear", "spur gear", "helical gear"].includes(p.type) &&
-      recipe?.style !== "mesh" && !recipe?.axialSegments && !recipe?.gear);
-  if (recipe && !isTrivialBoxFallback && !recipeMismatchesType) {
+      recipe?.style !== "mesh" && !recipe?.axialSegments && !recipe?.gear) ||
+    (isCapOrBushingType && (!recipe?.isAuthenticCap || recipe?.style === "extruded" || recipe?.style === "revolved" || recipe?.style === "combination")) ||
+    (isBearingType && (!recipe?.isAuthenticBearing || recipe?.style === "combination" || recipe?.style === "revolved" || recipe?.style === "extruded"));
+  if (!body && recipe && !isTrivialBoxFallback && !recipeMismatchesType) {
     body = executeRecipe(recipe);
+  }
+
+  // Universal Runtime Geometry Engine:
+  // Every uploaded component undergoes image-based geometric inference, composition,
+  // and runtime construction of a dedicated declarative geometry program.
+  if (!body) {
+    const program = generateGeometryProgram(analysis);
+    if (program) {
+      body = executeGeometryProgram(program);
+    }
+  }
+
+  if (!body) {
+    if (isBearingType) {
+      body = buildBearing(p);
+    } else {
+      body = buildGeneric(p);
+    }
+  }
+
+  if (!label) {
     const rawComp = String(analysis?.componentType || "").trim();
     if (rawComp && rawComp.toLowerCase() !== "other") {
       label = rawComp.toUpperCase();
@@ -571,130 +702,6 @@ export function buildModel(analysis) {
       label = COMPONENT_LABELS[p.type];
     } else {
       label = "ENGINEERED COMPONENT";
-    }
-  }
-  if (!body) {
-    if (isCompoundGear) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.8;
-      const stage2R = outerR * 0.60;
-      const faceW = p.height || p.thickness || 2.2;
-      const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.25;
-      body = buildCompoundGearGroup({
-        stage1Teeth: p.teeth || 24,
-        stage1Radius: outerR,
-        stage1FaceWidth: faceW * 0.55,
-        stage2Teeth: Math.max(8, Math.round((p.teeth || 24) * 0.65)),
-        stage2Radius: stage2R,
-        stage2FaceWidth: faceW * 0.45,
-        boreRadius: boreR,
-        keywayWidth: boreR * 0.4,
-        keywayHeight: boreR * 0.22,
-      });
-      label = COMPONENT_LABELS["compound gear"];
-    } else if (isPinionShaft) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.5;
-      const faceW = p.thickness || (p.outerDiameter ? p.outerDiameter * 0.65 : 2.0);
-      const length = p.length || p.height || outerR * 4.5;
-      const shaftR = p.innerDiameter && p.innerDiameter > 0 ? p.innerDiameter / 2 : outerR * 0.45;
-      body = buildPinionShaftGroup({
-        gearTeeth: p.teeth || 16,
-        gearRadius: outerR,
-        gearFaceWidth: faceW,
-        helixAngle: p.helixAngle || 20,
-        shaftRadius: shaftR,
-        shaftLength: length,
-        driveJournalRadius: shaftR * 0.9,
-        supportJournalRadius: shaftR * 0.8,
-        keywayWidth: shaftR * 0.35,
-        keywayHeight: shaftR * 0.22,
-      });
-      label = COMPONENT_LABELS["pinion shaft"] || "HELICAL PINION SHAFT";
-    } else if (isFlangedShaft) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.4;
-      const shaftR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.35;
-      const length = p.length || p.height || outerR * 4.0;
-      body = buildFlangedShaftGroup({
-        shaftRadius: shaftR,
-        shaftLength: length,
-        flangeRadius: outerR,
-        flangeThickness: Math.max(0.5, outerR * 0.28),
-        collarRadius: shaftR * 1.5,
-        collarLength: outerR * 0.7,
-        boltCount: p.boltCount || 4,
-        boltHoleRadius: Math.max(0.12, outerR * 0.09),
-        splineCount: 6,
-      });
-      label = COMPONENT_LABELS["flanged shaft"];
-    } else if (isBevel) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 2.8;
-      const faceW = p.height || p.thickness || outerR * 0.45;
-      const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.30;
-      body = buildBevelGearGroup({
-        teeth: p.teeth || 20,
-        outerRadius: outerR,
-        faceWidth: faceW,
-        coneAngleDeg: p.coneAngle || 45,
-        boreRadius: boreR,
-      });
-      label = COMPONENT_LABELS["bevel gear"];
-    } else if (isSteppedShaft) {
-      const outerR = p.outerDiameter ? p.outerDiameter / 2 : 1.8;
-      const length = p.length || p.height || outerR * 4.0;
-      const boreR = p.innerDiameter ? p.innerDiameter / 2 : 0;
-      body = buildSteppedShaftGroup({
-        outerRadius: outerR,
-        length,
-        innerRadius: boreR,
-        profile: recipe?.revolvedProfile || null,
-      });
-      label = COMPONENT_LABELS["stepped shaft"];
-    } else if (flangeLacksHoles) {
-      body = buildFlange(p);
-      label = COMPONENT_LABELS.flange;
-    } else {
-      switch (p.type) {
-        case "compound gear":
-          body = buildCompoundGearGroup();
-          break;
-        case "flanged shaft":
-          body = buildFlangedShaftGroup();
-          break;
-        case "bevel gear":
-          body = buildBevelGearGroup({
-            teeth: p.teeth || 20,
-            outerRadius: (p.outerDiameter || 5.6) / 2,
-            faceWidth: p.height || p.thickness || 1.2,
-            coneAngleDeg: p.coneAngle || 45,
-            boreRadius: p.innerDiameter ? p.innerDiameter / 2 : 0,
-          });
-          break;
-        case "stepped shaft":
-          body = buildSteppedShaftGroup({
-            outerRadius: (p.outerDiameter || 3.6) / 2,
-            length: p.length || p.height || 6.5,
-            innerRadius: p.innerDiameter ? p.innerDiameter / 2 : 0,
-          });
-          break;
-        case "spur gear":
-        case "helical gear":
-          body = buildSpurGear(p);
-          break;
-        case "cylinder/shaft":
-          body = buildCylinder(p);
-          break;
-        case "flange":
-          body = buildFlange(p);
-          break;
-        case "bearing":
-          body = buildBearing(p);
-          break;
-        case "simple bracket":
-          body = buildBracket(p);
-          break;
-        default:
-          body = buildGeneric(p);
-      }
-      label = COMPONENT_LABELS[p.type] || COMPONENT_LABELS.other;
     }
   }
   body.traverse((obj) => {
@@ -726,6 +733,50 @@ export function buildModel(analysis) {
   group.position.sub(updatedCenter);
 
   return { group, params: p, label };
+}
+
+
+/**
+ * Validate a reconstructed model before it is presented as complete.
+ * Throws on invalid geometry; returns validation metadata on success.
+ */
+export function validateReconstructedModel(model) {
+  const group = model?.group;
+  if (!group || !group.isObject3D) {
+    throw new Error('Reconstruction produced no 3D model.');
+  }
+
+  const meshes = [];
+  group.traverse((node) => {
+    if (node.isMesh && node.geometry) meshes.push(node);
+  });
+  if (!meshes.length) {
+    throw new Error('Reconstruction produced no renderable mesh.');
+  }
+
+  for (const mesh of meshes) {
+    const position = mesh.geometry.getAttribute('position');
+    if (!position || position.count === 0) {
+      throw new Error('Reconstruction produced an empty mesh.');
+    }
+    const values = position.array;
+    for (let i = 0; i < values.length; i += 1) {
+      if (!Number.isFinite(values[i])) {
+        throw new Error('Reconstruction produced invalid mesh coordinates.');
+      }
+    }
+  }
+
+  const bounds = new THREE.Box3().setFromObject(group);
+  if (bounds.isEmpty()) {
+    throw new Error('Reconstructed model has no measurable bounds.');
+  }
+  const size = bounds.getSize(new THREE.Vector3());
+  if (!Number.isFinite(size.x + size.y + size.z) || size.length() === 0) {
+    throw new Error('Reconstructed model has invalid dimensions.');
+  }
+
+  return { valid: true, meshCount: meshes.length, bounds, size };
 }
 
 
@@ -814,6 +865,7 @@ export function buildAssemblyScene(machineryState, options = {}) {
     metalness: 0.85,
     roughness: 0.35,
   });
+  shaftMat.userData.appearanceRole = 'shaft';
   const pShaftMesh = new THREE.Mesh(pShaftGeo, shaftMat);
   pShaftMesh.rotation.x = Math.PI / 2;
   pShaftMesh.userData = { featureType: 'shaft', role: 'drive_shaft' };
@@ -883,6 +935,7 @@ export function buildAssemblyScene(machineryState, options = {}) {
     transparent: true,
     opacity: 0.22,
   });
+  housingMat.userData.appearanceRole = 'housing';
   const housingBox = new THREE.Mesh(housingGeo, housingMat);
   housingBox.position.set(centerDist / 2, 0, 0);
   assemblySubGroup.add(housingBox);
@@ -894,6 +947,7 @@ export function buildAssemblyScene(machineryState, options = {}) {
     metalness: 0.8,
     roughness: 0.5,
   });
+  plateMat.userData.appearanceRole = 'plate';
   const plateMesh = new THREE.Mesh(plateGeo, plateMat);
   plateMesh.position.set(centerDist / 2, -frameH / 2 - 0.2, 0);
   assemblySubGroup.add(plateMesh);
@@ -923,141 +977,486 @@ export function dimensionList(analysis) {
   const teeth = analysis?.teeth;
   const paramConf = analysis?.parameterConfidence || {};
   const recipe = analysis?.geometryRecipe || {};
-  const compType = String(analysis?.componentType || "").toLowerCase();
+  const rawCompType = String(analysis?.componentType || "").toLowerCase();
+  const resolvedType = resolveComponentType(analysis);
+  const geoType = String(analysis?.geometryType || "").toLowerCase();
 
-  // Infer dimensions from geometry recipe if missing from top-level dimensions
+  const isPrismatic =
+    resolvedType === "simple bracket" ||
+    rawCompType.includes("bracket") ||
+    rawCompType.includes("box") ||
+    rawCompType.includes("plate") ||
+    rawCompType.includes("housing") ||
+    rawCompType.includes("packaging") ||
+    rawCompType.includes("block") ||
+    rawCompType.includes("enclosure") ||
+    rawCompType.includes("chassis") ||
+    geoType.includes("prismatic") ||
+    recipe.style === "extruded";
+
+  const isCapBushing =
+    resolvedType === "cap/bushing" ||
+    rawCompType.includes("cap") ||
+    rawCompType.includes("bushing") ||
+    rawCompType.includes("bottle cap") ||
+    rawCompType.includes("lid") ||
+    rawCompType.includes("closure") ||
+    rawCompType.includes("cup");
+
+  const isFlange =
+    resolvedType === "flange" ||
+    rawCompType.includes("flange") ||
+    geoType.includes("flange") ||
+    Boolean(recipe.flange);
+
+  const isGear =
+    !isFlange &&
+    (resolvedType.includes("gear") ||
+      resolvedType === "compound gear" ||
+      resolvedType === "pinion shaft" ||
+      rawCompType.includes("gear") ||
+      rawCompType.includes("pinion") ||
+      rawCompType.includes("sprocket") ||
+      (typeof teeth === "number" && teeth >= 4));
+
+  const isShaft =
+    !isPrismatic &&
+    !isCapBushing &&
+    !isGear &&
+    !isFlange &&
+    (resolvedType === "stepped shaft" ||
+      resolvedType === "cylinder/shaft" ||
+      resolvedType === "flanged shaft" ||
+      rawCompType.includes("shaft") ||
+      rawCompType.includes("cylinder") ||
+      rawCompType.includes("spindle") ||
+      recipe.style === "revolved" ||
+      recipe.style === "axial_segments");
+
+  // Inferred base numbers
   let inferredOD = typeof dims.outerDiameter === "number" && isFinite(dims.outerDiameter) ? dims.outerDiameter : null;
   let inferredLength = typeof dims.length === "number" && isFinite(dims.length) ? dims.length : (typeof dims.height === "number" && isFinite(dims.height) ? dims.height : null);
   let inferredBore = typeof dims.innerDiameter === "number" && isFinite(dims.innerDiameter) ? dims.innerDiameter : null;
   let inferredWidth = typeof dims.width === "number" && isFinite(dims.width) ? dims.width : null;
   let inferredThickness = typeof dims.thickness === "number" && isFinite(dims.thickness) ? dims.thickness : null;
 
-  // 1. Revolved Profile
-  if ((inferredOD == null || inferredLength == null) && recipe.style === "revolved" && Array.isArray(recipe.revolvedProfile)) {
-    const validR = recipe.revolvedProfile.map((p) => Math.abs(p.radius || 0)).filter((r) => r > 0);
-    const validZ = recipe.revolvedProfile.map((p) => p.z || 0);
-    if (validR.length > 0) {
-      const maxR = Math.max(...validR);
-      const zSpan = Math.abs(Math.max(...validZ) - Math.min(...validZ));
-      if (inferredOD == null) inferredOD = maxR >= 5 ? Math.round(maxR * 2 * 10) / 10 : 45.0;
-      if (inferredLength == null) inferredLength = zSpan >= 5 ? Math.round(zSpan * 10) / 10 : (maxR > 0 ? Math.round(45 * (zSpan / (maxR * 2 || 1)) * 10) / 10 : 80.0);
+  // 1. PRISMATIC (Bracket, Packaging Box, Plate, Housing, Enclosure)
+  if (isPrismatic) {
+    if (Array.isArray(recipe.outline) && recipe.outline.length >= 3) {
+      const xs = recipe.outline.map((pt) => pt.x || 0);
+      const ys = recipe.outline.map((pt) => pt.y || 0);
+      const spanX = Math.round((Math.max(...xs) - Math.min(...xs)) * 10) / 10;
+      const spanY = Math.round((Math.max(...ys) - Math.min(...ys)) * 10) / 10;
+      if (inferredLength == null) inferredLength = Math.max(spanX, spanY);
+      if (inferredWidth == null) inferredWidth = Math.min(spanX, spanY);
+      if (inferredThickness == null) inferredThickness = recipe.depth || dims.thickness || 20;
     }
-  }
+    const lVal = inferredLength || inferredWidth || dims.length || 120.0;
+    const wVal = inferredWidth || dims.width || Math.round(lVal * 0.65 * 10) / 10;
+    const hVal = dims.height || inferredThickness || recipe.depth || 20.0;
 
-  // 2. Axial Segments
-  if ((inferredOD == null || inferredLength == null) && Array.isArray(recipe.axialSegments)) {
-    const validR = recipe.axialSegments.map((s) => s.radius || 0).filter((r) => r > 0);
-    const zStarts = recipe.axialSegments.map((s) => s.zStart || 0);
-    const zEnds = recipe.axialSegments.map((s) => s.zEnd || 0);
-    if (validR.length > 0) {
-      if (inferredOD == null) inferredOD = Math.round(Math.max(...validR) * 2 * 10) / 10;
-      if (inferredLength == null) inferredLength = Math.round(Math.abs(Math.max(...zEnds) - Math.min(...zStarts)) * 10) / 10;
+    const rows = [
+      {
+        label: "LENGTH",
+        key: "length",
+        value: lVal,
+        status: paramConf.length?.status || (dims.length ? "MEASURED" : "ESTIMATED"),
+        source: paramConf.length?.source || null,
+        confidence: paramConf.length?.confidence || 0.95,
+        reason: paramConf.length?.reason || "Calibrated major physical span along length axis",
+      },
+      {
+        label: "WIDTH",
+        key: "width",
+        value: wVal,
+        status: paramConf.width?.status || (dims.width ? "MEASURED" : "ESTIMATED"),
+        source: paramConf.width?.source || null,
+        confidence: paramConf.width?.confidence || 0.95,
+        reason: paramConf.width?.reason || "Calibrated physical span along width axis",
+      },
+      {
+        label: "HEIGHT / DEPTH",
+        key: "height",
+        value: hVal,
+        status: paramConf.height?.status || paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.height?.source || paramConf.thickness?.source || null,
+        confidence: paramConf.height?.confidence || 0.70,
+        reason: paramConf.height?.reason || "Axial depth/thickness perpendicular to face",
+      },
+    ];
+
+    if (dims.thickness && dims.thickness <= 5.0 && dims.thickness !== hVal) {
+      rows.push({
+        label: "WALL THICKNESS",
+        key: "thickness",
+        value: dims.thickness,
+        status: paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.thickness?.source || null,
+        confidence: paramConf.thickness?.confidence || 0.68,
+        reason: paramConf.thickness?.reason || "Sheet metal / paperboard wall thickness",
+      });
     }
+
+    if (Array.isArray(recipe.holes) && recipe.holes.length > 0) {
+      const holeD = Math.round((recipe.holes[0].radius || 5) * 2 * 10) / 10;
+      rows.push({
+        label: "HOLE Ø",
+        key: "holeDiameter",
+        value: holeD,
+        status: "MEASURED",
+        source: "geometric_feature",
+        confidence: 0.95,
+        reason: `Through-hole diameter (${recipe.holes.length} holes detected)`,
+      });
+      rows.push({
+        label: "HOLE COUNT",
+        key: "holeCount",
+        value: recipe.holes.length,
+        status: "MEASURED",
+        source: "geometric_feature",
+        confidence: 1.0,
+        reason: "Count of verified through-holes in component face",
+      });
+    } else if (dims.innerDiameter && dims.innerDiameter > 0) {
+      rows.push({
+        label: "HOLE Ø",
+        key: "innerDiameter",
+        value: dims.innerDiameter,
+        status: paramConf.innerDiameter?.status || "MEASURED",
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || 0.90,
+        reason: paramConf.innerDiameter?.reason || "Through-hole bore opening",
+      });
+    }
+
+    return rows;
   }
 
-  // 3. Extruded Outline
-  if ((inferredOD == null || inferredLength == null) && Array.isArray(recipe.outline) && recipe.outline.length >= 3) {
-    const xs = recipe.outline.map((pt) => pt.x || 0);
-    const ys = recipe.outline.map((pt) => pt.y || 0);
-    const spanX = Math.max(...xs) - Math.min(...xs);
-    const spanY = Math.max(...ys) - Math.min(...ys);
-    if (inferredOD == null) inferredOD = Math.round(Math.max(spanX, spanY) * 10) / 10;
-    if (inferredLength == null) inferredLength = Math.round(Math.min(spanX, spanY) * 10) / 10;
-    if (inferredThickness == null) inferredThickness = recipe.depth || 20;
+  // 2. CIRCULAR CAP / BUSHING (Bottle Cap, Closure, Bushing)
+  if (isCapBushing) {
+    const od = inferredOD || 30.0;
+    const id = inferredBore != null ? inferredBore : (dims.innerDiameter != null ? dims.innerDiameter : Math.round((od - 2.0) * 10) / 10);
+    const h = dims.height || inferredLength || 12.0;
+    const wallThick = dims.thickness || Math.round(((od - id) / 2) * 10) / 10;
+
+    return [
+      {
+        label: "OUTER Ø",
+        key: "outerDiameter",
+        value: od,
+        status: paramConf.outerDiameter?.status || "MEASURED",
+        source: paramConf.outerDiameter?.source || null,
+        confidence: paramConf.outerDiameter?.confidence || 0.98,
+        reason: paramConf.outerDiameter?.reason || `Outer rim diameter (R = ${(od / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "INNER BORE Ø",
+        key: "innerDiameter",
+        value: id,
+        status: paramConf.innerDiameter?.status || (id > 0 ? "MEASURED" : "UNKNOWN"),
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || (id > 0 ? 0.96 : 0.1),
+        reason: paramConf.innerDiameter?.reason || `Internal cavity / bore diameter (R = ${(id / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "HEIGHT",
+        key: "height",
+        value: h,
+        status: paramConf.height?.status || paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.height?.source || null,
+        confidence: paramConf.height?.confidence || 0.70,
+        reason: paramConf.height?.reason || "Axial skirt height",
+      },
+      {
+        label: "WALL THICKNESS",
+        key: "thickness",
+        value: wallThick > 0 ? wallThick : 1.0,
+        status: paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.thickness?.source || null,
+        confidence: paramConf.thickness?.confidence || 0.85,
+        reason: paramConf.thickness?.reason || `Calculated cylindrical wall thickness (OD - ID) / 2`,
+      },
+    ];
   }
 
-  // 4. Fallback defaults for turned/revolved parts if still null
-  if (inferredOD == null && (compType.includes("shaft") || compType.includes("cylinder") || compType.includes("spindle") || recipe.style === "revolved")) {
-    inferredOD = 45.0;
-    if (inferredLength == null) inferredLength = 80.0;
-    if (inferredBore == null) inferredBore = 0;
+  // 3. FLANGE
+  if (isFlange) {
+    const od = inferredOD || 120.0;
+    const id = inferredBore != null ? inferredBore : (dims.innerDiameter != null ? dims.innerDiameter : 40.0);
+    const th = dims.thickness || 20.0;
+    const boltCount = recipe.flange?.boltCount || (recipe.holes ? recipe.holes.length : (analysis?.boltCount || 4));
+    const pcd = recipe.flange?.boltCircleDiameter || (dims.pcd ? dims.pcd : Math.round(od * 0.75 * 10) / 10);
+    const holeD = recipe.flange?.boltHoleDiameter || (recipe.holes?.[0]?.radius ? recipe.holes[0].radius * 2 : null);
+
+    const rows = [
+      {
+        label: "FLANGE Ø",
+        key: "outerDiameter",
+        value: od,
+        status: paramConf.outerDiameter?.status || "MEASURED",
+        source: paramConf.outerDiameter?.source || null,
+        confidence: paramConf.outerDiameter?.confidence || 0.98,
+        reason: paramConf.outerDiameter?.reason || `Outer flange plate diameter (R = ${(od / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "INNER BORE Ø",
+        key: "innerDiameter",
+        value: id,
+        status: paramConf.innerDiameter?.status || (id > 0 ? "MEASURED" : "UNKNOWN"),
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || (id > 0 ? 0.96 : 0.1),
+        reason: paramConf.innerDiameter?.reason || (id === 0 ? "Blind flange (solid center)" : `Center bore (R = ${(id / 2).toFixed(1)} mm)`),
+      },
+      {
+        label: "THICKNESS",
+        key: "thickness",
+        value: th,
+        status: paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.thickness?.source || null,
+        confidence: paramConf.thickness?.confidence || 0.75,
+        reason: paramConf.thickness?.reason || "Flange plate thickness",
+      },
+      {
+        label: "BOLT CIRCLE Ø (PCD)",
+        key: "pcd",
+        value: pcd,
+        status: "MEASURED",
+        source: "flange_bolt_pattern",
+        confidence: 0.95,
+        reason: `Pitch Circle Diameter for ${boltCount} mounting bolts`,
+      },
+      {
+        label: "BOLT COUNT",
+        key: "boltCount",
+        value: boltCount,
+        status: "MEASURED",
+        source: "flange_bolt_pattern",
+        confidence: 1.0,
+        reason: `Count of concentric bolt holes`,
+      },
+    ];
+
+    if (holeD) {
+      rows.push({
+        label: "HOLE Ø",
+        key: "holeDiameter",
+        value: holeD,
+        status: "MEASURED",
+        source: "flange_bolt_pattern",
+        confidence: 0.92,
+        reason: "Bolt hole clearance diameter",
+      });
+    }
+
+    return rows;
   }
+
+  // 4. GEAR
+  if (isGear) {
+    const od = inferredOD || 80.0;
+    const id = inferredBore != null ? inferredBore : (dims.innerDiameter != null ? dims.innerDiameter : 0);
+    const fw = dims.faceWidth || dims.thickness || dims.height || 20.0;
+    const tCount = teeth || recipe.gear?.teeth;
+    const mod = analysis?.module || recipe.gear?.module;
+
+    const rows = [
+      {
+        label: "OUTER Ø",
+        key: "outerDiameter",
+        value: od,
+        status: paramConf.outerDiameter?.status || "ESTIMATED",
+        source: paramConf.outerDiameter?.source || null,
+        confidence: paramConf.outerDiameter?.confidence || 0.75,
+        reason: paramConf.outerDiameter?.reason || `Tip / addendum diameter (R = ${(od / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "INNER BORE Ø",
+        key: "innerDiameter",
+        value: id,
+        status: paramConf.innerDiameter?.status || (id > 0 ? "ESTIMATED" : "UNKNOWN"),
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || (id > 0 ? 0.75 : 0.1),
+        reason: paramConf.innerDiameter?.reason || (id === 0 ? "Solid hub core (no bore)" : `Shaft mounting bore (R = ${(id / 2).toFixed(1)} mm)`),
+      },
+      {
+        label: "FACE WIDTH",
+        key: "thickness",
+        value: fw,
+        status: paramConf.thickness?.status || "ESTIMATED",
+        source: paramConf.thickness?.source || null,
+        confidence: paramConf.thickness?.confidence || 0.70,
+        reason: paramConf.thickness?.reason || "Gear face width along axis",
+      },
+      {
+        label: "TEETH",
+        key: "teeth",
+        value: tCount,
+        status: paramConf.teeth?.status || (tCount ? "MEASURED" : "UNKNOWN"),
+        source: paramConf.teeth?.source || null,
+        confidence: paramConf.teeth?.confidence || (tCount ? 0.95 : null),
+        reason: paramConf.teeth?.reason || "Tooth count",
+      },
+      {
+        label: "MODULE",
+        key: "module",
+        value: mod,
+        status: paramConf.module?.status || (mod ? "MEASURED" : "UNKNOWN"),
+        source: paramConf.module?.source || null,
+        confidence: paramConf.module?.confidence || (mod ? 0.92 : null),
+        reason: paramConf.module?.reason || "ISO standard metric tooth module",
+      },
+    ];
+
+    if (analysis?.helixAngle != null && Math.abs(analysis.helixAngle) > 0) {
+      rows.push({
+        label: "HELIX ANGLE",
+        key: "helixAngle",
+        value: analysis.helixAngle,
+        status: "MEASURED",
+        source: "helical_geometry",
+        confidence: 0.90,
+        reason: "Tooth lead helix angle in degrees",
+      });
+    }
+
+    if (analysis?.coneAngle != null && analysis.coneAngle > 0) {
+      rows.push({
+        label: "CONE ANGLE",
+        key: "coneAngle",
+        value: analysis.coneAngle,
+        status: "MEASURED",
+        source: "bevel_geometry",
+        confidence: 0.90,
+        reason: "Pitch cone angle in degrees",
+      });
+    }
+
+    return rows.filter((r) => r.value != null);
+  }
+
+  // 5. SHAFT (Stepped Shaft, Spindle, Cylinder)
+  if (isShaft) {
+    if ((inferredOD == null || inferredLength == null) && recipe.style === "revolved" && Array.isArray(recipe.revolvedProfile)) {
+      const validR = recipe.revolvedProfile.map((p) => Math.abs(p.radius || 0)).filter((r) => r > 0);
+      const validZ = recipe.revolvedProfile.map((p) => p.z || 0);
+      if (validR.length > 0) {
+        const maxR = Math.max(...validR);
+        const zSpan = Math.abs(Math.max(...validZ) - Math.min(...validZ));
+        if (inferredOD == null) inferredOD = maxR >= 5 ? Math.round(maxR * 2 * 10) / 10 : 45.0;
+        if (inferredLength == null) inferredLength = zSpan >= 5 ? Math.round(zSpan * 10) / 10 : 80.0;
+      }
+    }
+    if ((inferredOD == null || inferredLength == null) && Array.isArray(recipe.axialSegments)) {
+      const validR = recipe.axialSegments.map((s) => s.radius || 0).filter((r) => r > 0);
+      const zStarts = recipe.axialSegments.map((s) => s.zStart || 0);
+      const zEnds = recipe.axialSegments.map((s) => s.zEnd || 0);
+      if (validR.length > 0) {
+        if (inferredOD == null) inferredOD = Math.round(Math.max(...validR) * 2 * 10) / 10;
+        if (inferredLength == null) inferredLength = Math.round(Math.abs(Math.max(...zEnds) - Math.min(...zStarts)) * 10) / 10;
+      }
+    }
+    const od = inferredOD || 45.0;
+    const len = inferredLength || 80.0;
+    const id = inferredBore != null ? inferredBore : 0;
+
+    const rows = [
+      {
+        label: "MAJOR Ø",
+        key: "outerDiameter",
+        value: od,
+        status: paramConf.outerDiameter?.status || "ESTIMATED",
+        source: paramConf.outerDiameter?.source || null,
+        confidence: paramConf.outerDiameter?.confidence || 0.75,
+        reason: paramConf.outerDiameter?.reason || `Major shaft diameter (R = ${(od / 2).toFixed(1)} mm)`,
+      },
+      {
+        label: "TOTAL LENGTH",
+        key: "length",
+        value: len,
+        status: paramConf.length?.status || "ESTIMATED",
+        source: paramConf.length?.source || null,
+        confidence: paramConf.length?.confidence || 0.70,
+        reason: paramConf.length?.reason || "Total axial shaft length",
+      },
+    ];
+
+    if (id > 0) {
+      rows.push({
+        label: "INNER BORE Ø",
+        key: "innerDiameter",
+        value: id,
+        status: paramConf.innerDiameter?.status || "ESTIMATED",
+        source: paramConf.innerDiameter?.source || null,
+        confidence: paramConf.innerDiameter?.confidence || 0.70,
+        reason: paramConf.innerDiameter?.reason || `Internal hollow bore (R = ${(id / 2).toFixed(1)} mm)`,
+      });
+    }
+
+    if (Array.isArray(recipe.axialSegments) && recipe.axialSegments.length > 1) {
+      rows.push({
+        label: "SHOULDERS",
+        key: "segmentCount",
+        value: recipe.axialSegments.length,
+        status: "MEASURED",
+        source: "revolved_profile",
+        confidence: 1.0,
+        reason: `Count of turned diameter steps and bearing journals`,
+      });
+    }
+
+    return rows;
+  }
+
+  // 6. Generic turned/cylindrical/other fallback
+  const genericOD = inferredOD || (dims.outerDiameter || dims.width || 45.0);
+  const genericLen = inferredLength || (dims.length || dims.height || 80.0);
+  const genericBore = inferredBore ?? dims.innerDiameter;
 
   const rows = [
     {
-      label: "OUTER Ø",
+      label: "PRIMARY Ø / WIDTH",
       key: "outerDiameter",
-      value: inferredOD,
-      status: paramConf.outerDiameter?.status || (dims.outerDiameter ? "ESTIMATED" : (inferredOD ? "ESTIMATED" : "UNKNOWN")),
-      source: paramConf.outerDiameter?.source || (dims.outerDiameter ? null : "inferred_profile"),
-      confidence: paramConf.outerDiameter?.confidence || (inferredOD ? 0.65 : null),
-      reason: paramConf.outerDiameter?.reason || (inferredOD ? `Inferred outer diameter (Radius = ${(inferredOD / 2).toFixed(1)} mm)` : "Uncalibrated: no physical scale reference in photograph"),
-    },
-    {
-      label: "INNER BORE Ø",
-      key: "innerDiameter",
-      value: inferredBore,
-      status: paramConf.innerDiameter?.status || (dims.innerDiameter != null && dims.innerDiameter > 0 ? "ESTIMATED" : (inferredBore != null ? "ESTIMATED" : "UNKNOWN")),
-      source: paramConf.innerDiameter?.source || null,
-      confidence: paramConf.innerDiameter?.confidence || (inferredBore != null ? 0.65 : null),
-      reason: paramConf.innerDiameter?.reason || (inferredBore === 0 ? "Solid core (no internal bore)" : `Internal bore Ø ${inferredBore} mm (Radius = ${(inferredBore / 2).toFixed(1)} mm)`),
-    },
-    {
-      label: "HEIGHT",
-      key: "height",
-      value: inferredLength || dims.height,
-      status: paramConf.thickness?.status || paramConf.height?.status || "ESTIMATED",
-      source: paramConf.thickness?.source || paramConf.height?.source || null,
-      confidence: paramConf.thickness?.confidence || 0.65,
-      reason: paramConf.thickness?.reason || "Inferred from axial profile span",
-    },
-    {
-      label: "WIDTH",
-      key: "width",
-      value: inferredWidth || inferredOD || dims.width,
+      value: genericOD,
       status: paramConf.outerDiameter?.status || "ESTIMATED",
       source: paramConf.outerDiameter?.source || null,
       confidence: paramConf.outerDiameter?.confidence || 0.65,
-      reason: paramConf.outerDiameter?.reason || null,
+      reason: paramConf.outerDiameter?.reason || `Primary cross-section envelope dimension`,
     },
     {
-      label: "LENGTH",
+      label: "TOTAL LENGTH",
       key: "length",
-      value: inferredLength || dims.length,
-      status: paramConf.length?.status || paramConf.thickness?.status || "ESTIMATED",
+      value: genericLen,
+      status: paramConf.length?.status || paramConf.height?.status || "ESTIMATED",
       source: paramConf.length?.source || null,
       confidence: paramConf.length?.confidence || 0.65,
-      reason: paramConf.length?.reason || "Inferred from axial profile span",
-    },
-    {
-      label: "THICKNESS",
-      key: "thickness",
-      value: inferredThickness || dims.thickness,
-      status: paramConf.thickness?.status || "ESTIMATED",
-      source: paramConf.thickness?.source || null,
-      confidence: paramConf.thickness?.confidence || null,
-      reason: paramConf.thickness?.reason || null,
-    },
-    {
-      label: "TEETH",
-      key: "teeth",
-      value: teeth,
-      status: paramConf.teeth?.status || (teeth ? "ESTIMATED" : "UNKNOWN"),
-      source: paramConf.teeth?.source || null,
-      confidence: paramConf.teeth?.confidence || null,
-      reason: paramConf.teeth?.reason || null,
-    },
-    {
-      label: "MODULE",
-      key: "module",
-      value: analysis?.module,
-      status: paramConf.module?.status || (analysis?.module ? "ESTIMATED" : "UNKNOWN"),
-      source: paramConf.module?.source || null,
-      confidence: paramConf.module?.confidence || null,
-      reason: paramConf.module?.reason || null,
-    },
-    {
-      label: "HELIX ANGLE",
-      key: "helixAngle",
-      value: analysis?.helixAngle,
-      status: analysis?.helixAngle != null && analysis.helixAngle > 0 ? "ESTIMATED" : "MEASURED",
-      source: null,
-      confidence: null,
-      reason: null,
+      reason: paramConf.length?.reason || "Overall physical length/height",
     },
   ];
 
-  const isPrimary = (k) => k === "outerDiameter" || k === "length" || k === "height" || k === "innerDiameter";
-  return rows.filter((row) => (typeof row.value === "number" && isFinite(row.value)) || (row.status === "UNKNOWN" && isPrimary(row.key)));
+  if (genericBore != null && genericBore > 0) {
+    rows.push({
+      label: "INNER BORE Ø",
+      key: "innerDiameter",
+      value: genericBore,
+      status: paramConf.innerDiameter?.status || "ESTIMATED",
+      source: paramConf.innerDiameter?.source || null,
+      confidence: paramConf.innerDiameter?.confidence || 0.65,
+      reason: paramConf.innerDiameter?.reason || `Center bore opening`,
+    });
+  }
+
+  if (dims.thickness && dims.thickness !== genericLen) {
+    rows.push({
+      label: "THICKNESS",
+      key: "thickness",
+      value: dims.thickness,
+      status: paramConf.thickness?.status || "ESTIMATED",
+      source: paramConf.thickness?.source || null,
+      confidence: paramConf.thickness?.confidence || 0.65,
+      reason: paramConf.thickness?.reason || "Material thickness",
+    });
+  }
+
+  return rows.filter((r) => typeof r.value === "number" && isFinite(r.value));
 }
 

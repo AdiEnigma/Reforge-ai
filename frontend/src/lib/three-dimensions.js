@@ -197,6 +197,68 @@ export function build3DDimensionsGroup(mainGroup, analysis) {
       boreSprite.position.set(box.min.x - 0.9, center.y, center.z);
       dimGroup.add(boreSprite);
     }
+  } else if (
+    String(analysis?.componentType || "").toLowerCase().includes("bracket") ||
+    String(analysis?.componentType || "").toLowerCase().includes("box") ||
+    String(analysis?.componentType || "").toLowerCase().includes("plate") ||
+    String(analysis?.componentType || "").toLowerCase().includes("housing") ||
+    String(analysis?.componentType || "").toLowerCase().includes("packaging") ||
+    String(analysis?.componentType || "").toLowerCase().includes("block") ||
+    String(analysis?.componentType || "").toLowerCase().includes("enclosure") ||
+    String(analysis?.componentType || "").toLowerCase().includes("chassis") ||
+    String(analysis?.geometryType || "").toLowerCase().includes("prismatic") ||
+    analysis?.geometryRecipe?.style === "extruded"
+  ) {
+    // -------------------------------------------------------------
+    // PRISMATIC / EXTRUDED (Bracket, Packaging Box, Plate, Housing)
+    // -------------------------------------------------------------
+    const lenVal = length || width || (Math.max(size.x, size.y) * 20);
+    const lenLabel = `L = ${Number(lenVal).toFixed(1)} mm`;
+    const dimLength = createLinearDimension3D({
+      p1: new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+      p2: new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+      offsetVec: new THREE.Vector3(0, -0.75, 0.45),
+      label: lenLabel,
+      color: DIM_LINE_COLOR,
+      textColor: DIM_COLOR,
+    });
+    dimGroup.add(dimLength);
+
+    const widVal = width || (Math.min(size.x, size.y) * 20);
+    const widLabel = `W = ${Number(widVal).toFixed(1)} mm`;
+    const dimWidth = createLinearDimension3D({
+      p1: new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+      p2: new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+      offsetVec: new THREE.Vector3(-0.75, 0, 0.45),
+      label: widLabel,
+      color: DIM_LINE_COLOR,
+      textColor: DIM_COLOR,
+    });
+    dimGroup.add(dimWidth);
+
+    const hVal = height || thickness || (size.z * 20);
+    const hLabel = `H = ${Number(hVal).toFixed(1)} mm`;
+    const dimHeight = createLinearDimension3D({
+      p1: new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+      p2: new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+      offsetVec: new THREE.Vector3(0.65, -0.4, 0),
+      label: hLabel,
+      color: DIM_ACCENT_HEX,
+      textColor: DIM_ACCENT_COLOR,
+    });
+    dimGroup.add(dimHeight);
+
+    if (id && id > 0) {
+      const boreR = (Number(id) / 2).toFixed(1);
+      const boreSprite = createTextSprite(`HOLE Ø ${Number(id).toFixed(1)} mm (R = ${boreR} mm)`, {
+        color: '#c9f88d',
+        bg: 'rgba(12, 22, 10, 0.92)',
+        borderColor: '#b5e67e',
+        scale: 0.92,
+      });
+      boreSprite.position.set(center.x, box.max.y + 0.65, center.z);
+      dimGroup.add(boreSprite);
+    }
   } else {
     // -------------------------------------------------------------
     // GEAR / COMPOUND GEAR / DISC / REVOLVED / PRISMATIC PART

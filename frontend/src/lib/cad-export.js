@@ -46,12 +46,15 @@ export async function requestCadExport(analysis, format, options = {}) {
     throw new Error(`Unsupported CAD export format: ${format}`);
   }
   const baseName = options.baseName || cadExportSlug(analysis);
+  const wbId = options.workbenchId || (typeof window !== "undefined" ? window.__REFORGE_CURRENT_WB_ID__ : null);
+  const exportUrl = wbId ? `/api/workbenches/${wbId}/export-cad` : "/api/cad/export";
 
   let response;
   try {
-    response = await fetch("/api/cad/export", {
+    response = await fetch(exportUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ analysis, format, baseName }),
     });
   } catch {

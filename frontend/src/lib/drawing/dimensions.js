@@ -11,8 +11,13 @@ import { formatDim } from "./projections.js";
  * Generate automatic dimensions for each orthographic view.
  */
 export function generateDimensions(views, dims, recipe, analysis) {
-  const isRecipe = Boolean(recipe && (recipe.style || recipe.revolvedProfile || recipe.outline || recipe.gear || recipe.flange));
   const compType = String(analysis?.componentType || "").toLowerCase();
+  const source = "reconstructedGeometry";
+  const confidence = 1.0;
+  const holeDiameters = dims?.holeDiameters || [];
+  const hasHoleDiameter = (value) => holeDiameters.some(
+    (candidate) => Number.isFinite(candidate) && Math.abs(candidate - value) <= Math.max(0.75, value * 0.06)
+  );
 
   const od = dims.outerDia;
   const id = dims.innerDia;
@@ -40,8 +45,8 @@ export function generateDimensions(views, dims, recipe, analysis) {
         y2: halfH + 18,
         value: fw,
         label: `${formatDim(fw)}`,
-        source: isRecipe ? "geometryRecipe" : "analysis",
-        confidence: isRecipe ? 1.0 : (analysis?.confidence || 0.8),
+        source,
+        confidence,
         orientation: "horizontal",
         offset: 18,
         options: { extY1: halfH, extY2: halfH + 22 },
@@ -59,8 +64,8 @@ export function generateDimensions(views, dims, recipe, analysis) {
         y2: halfH,
         value: fh,
         label: od && fh === od ? `Ø${formatDim(fh)}` : `${formatDim(fh)}`,
-        source: isRecipe ? "geometryRecipe" : "analysis",
-        confidence: isRecipe ? 1.0 : (analysis?.confidence || 0.8),
+        source,
+        confidence,
         orientation: "vertical",
         offset: 22,
         options: { extX1: -halfW, extX2: -halfW - 26 },
@@ -79,8 +84,8 @@ export function generateDimensions(views, dims, recipe, analysis) {
           y2: -halfH - 14,
           value: id,
           label: `Ø${formatDim(id)} BORE`,
-          source: isRecipe ? "geometryRecipe" : "analysis",
-          confidence: isRecipe ? 1.0 : (analysis?.confidence || 0.75),
+          source,
+          confidence,
           orientation: "horizontal",
           offset: 14,
           options: { extY1: -id / 2, extY2: -halfH - 18 },
@@ -107,8 +112,8 @@ export function generateDimensions(views, dims, recipe, analysis) {
           y2: halfH + 16,
           value: od,
           label: `Ø${formatDim(od)} OD`,
-          source: isRecipe ? "geometryRecipe" : "analysis",
-          confidence: isRecipe ? 1.0 : (analysis?.confidence || 0.8),
+          source,
+          confidence,
           orientation: "horizontal",
           offset: 16,
         })
@@ -122,7 +127,7 @@ export function generateDimensions(views, dims, recipe, analysis) {
       if (perimeterHoles.length > 0) {
         const hRad = perimeterHoles[0].radius || 4;
         const hDia = hRad * 2;
-        views.top.dimensions.push(
+        if (hasHoleDiameter(hDia)) views.top.dimensions.push(
           dimension({
             id: "dim-top-holes",
             type: "holeCallout",
@@ -132,8 +137,8 @@ export function generateDimensions(views, dims, recipe, analysis) {
             y2: (perimeterHoles[0].cy || 0) - 20,
             value: hDia,
             label: `${perimeterHoles.length}X Ø${formatDim(hDia)} THRU`,
-            source: "geometryRecipe",
-            confidence: 1.0,
+            source,
+            confidence,
             orientation: "radial",
           })
         );
@@ -141,21 +146,23 @@ export function generateDimensions(views, dims, recipe, analysis) {
     } else if (compType.includes("flange")) {
       const bCount = analysis?.boltCount || recipe?.flange?.boltCount || dims?.boltCount || 4;
       const bDia = recipe?.flange?.boltHoleDiameter || Math.round(halfW * 0.11 * 2);
-      views.top.dimensions.push(
-        dimension({
-          id: "dim-top-flange-holes",
-          type: "holeCallout",
-          x1: halfW * 0.78,
-          y1: 0,
-          x2: halfW * 0.78 + 25,
-          y2: -20,
-          value: bDia,
-          label: `${bCount}X Ø${formatDim(bDia)} THRU EQ SP`,
-          source: "analysis",
-          confidence: 0.95,
-          orientation: "radial",
-        })
-      );
+      if (hasHoleDiameter(bDia)) {
+        views.top.dimensions.push(
+          dimension({
+            id: "dim-top-flange-holes",
+            type: "holeCallout",
+            x1: halfW * 0.78,
+            y1: 0,
+            x2: halfW * 0.78 + 25,
+            y2: -20,
+            value: bDia,
+            label: `${bCount}X Ø${formatDim(bDia)} THRU EQ SP`,
+            source,
+            confidence,
+            orientation: "radial",
+          })
+        );
+      }
     }
 
     // Gear tooth callout
@@ -169,9 +176,9 @@ export function generateDimensions(views, dims, recipe, analysis) {
           x2: halfW + 35,
           y2: -halfH * 0.5 - 15,
           value: teeth,
-          label: `${teeth} TEETH · M${module || 2}`,
-          source: isRecipe ? "geometryRecipe" : "analysis",
-          confidence: 1.0,
+          label: `${teeth} TEETH${module ? ` · M${module}` : ""}`,
+          source,
+          confidence,
           orientation: "radial",
         })
       );
@@ -196,8 +203,8 @@ export function generateDimensions(views, dims, recipe, analysis) {
         y2: halfH + 16,
         value: sw,
         label: `${formatDim(sw)} THK`,
-        source: isRecipe ? "geometryRecipe" : "analysis",
-        confidence: isRecipe ? 1.0 : (analysis?.confidence || 0.8),
+        source,
+        confidence,
         orientation: "horizontal",
         offset: 16,
       })

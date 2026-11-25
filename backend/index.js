@@ -1,4 +1,5 @@
 import express from "express";
+import cookieParser from "cookie-parser";
 import path from "node:path";
 import { createReadStream, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -8,14 +9,27 @@ import { computeMaterialAlternatives } from "./material-comparison.js";
 import { simulateEngineeringChange, analyzeDimensionSensitivity } from "./engineering-analysis.js";
 import { isVisionEnabled, callVisionService, buildVisionEvidenceSummary } from './vision-adapter.js';
 import { isReconstructionEnabled, callReconstructionService } from './reconstruction-adapter.js';
-import { storeSpatialEvidence, getSpatialEvidence } from './src/spatial-evidence-store.js';
+import { applyPixelEvidence, assessVisualCondition, unknownConditionAssessment } from './condition-assessment.js';
+import { generateDamageMasks } from './damage-mask-adapter.js';
 import { exportCadModel, isCadExportScriptPresent } from './cad-export-adapter.js';
+import { retrieveDatasetModel, getDatasetServiceStatus } from './dataset-adapter.js';
+import {
+  getCatalogSummary,
+  resolveAssetForDatasetModel,
+  resolveDatasetAsset,
+} from './dataset-catalog.js';
+import { storeSpatialEvidence, getSpatialEvidence } from './src/spatial-evidence-store.js';
 import {
   resolveGeometryFromVision,
   reconcileGeminiWithVision,
   fallbackDeterministicAnalysis,
   extractVisionObservations,
 } from "./src/vision-geometry-resolver.js";
+import { gearTypeFromText, normalizeGearType } from "./src/gear-types.js";
+import { getDb } from "./src/db.js";
+import { seedDemoAccounts } from "./src/demo-seed.js";
+import { createAuthRouter } from "./src/auth-routes.js";
+import { createWorkbenchRouter } from "./src/workbench-routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,7 +37,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 for (const envFile of [".env.local", ".env"]) {
   const envPath = path.resolve(__dirname, envFile);
   if (existsSync(envPath) && typeof process.loadEnvFile === 'function') {
-    try { process.loadEnvFile(envPath); } catch {}
+    try { process.loadEnvFile(envPath); } catch { }
   }
 }
 
@@ -33,14 +47,33 @@ const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
 const app = express();
 app.disable("x-powered-by");
+app.use(cookieParser());
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-Requested-With");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 app.use(express.json({ limit: `${MAX_BODY_BYTES}` }));
+
+// Initialize SQLite DB and seed demo accounts in development/demo mode
+const db = getDb();
+await seedDemoAccounts(db).catch((err) => {
+  console.error("Failed to seed demo accounts:", err);
+});
+
+// Authentication routes
+app.use("/api/auth", createAuthRouter(db));
+
+// Workbench persistence routes
+app.use("/api/workbenches", createWorkbenchRouter(db));
 
 function validateImages(images) {
   if (!Array.isArray(images) || images.length === 0) {
@@ -75,7 +108,7 @@ function validateImages(images) {
   return clean;
 }
 
-const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle", "boltCount"];
+const REFERENCE_KEYS = ["outerDiameter", "innerDiameter", "height", "length", "thickness", "width", "teeth", "module", "helixAngle", "coneAngle", "pitch", "starts", "boltCount"];
 
 function sanitizeReference(raw) {
   if (!raw || typeof raw !== "object") return {};
@@ -84,6 +117,7 @@ function sanitizeReference(raw) {
   if (typeof raw.notes === "string") clean.notes = raw.notes.slice(0, 500);
   if (typeof raw.componentType === "string") clean.componentType = raw.componentType.slice(0, 100);
   if (typeof raw.role === "string") clean.role = raw.role.slice(0, 50);
+  if (typeof raw.gearType === "string") clean.gearType = normalizeGearType(raw.gearType);
 
   for (const key of REFERENCE_KEYS) {
     const value = raw[key];
@@ -94,6 +128,10 @@ function sanitizeReference(raw) {
       if (value >= 0 && value <= 60) clean[key] = value;
     } else if (key === "module") {
       if (value > 0 && value <= 100) clean[key] = value;
+    } else if (key === "coneAngle") {
+      if (value > 0 && value <= 90) clean[key] = value;
+    } else if (key === "starts") {
+      if (value >= 1 && value <= 32) clean[key] = Math.round(value);
     } else if (key === "boltCount") {
       if (value >= 2 && value <= 64) clean[key] = Math.round(value);
     } else if (value > 0 && value <= 100000) {
@@ -103,95 +141,277 @@ function sanitizeReference(raw) {
   return clean;
 }
 
-app.post("/api/analyze-component", async (req, res) => {
+const ANALYSIS_STAGES = Object.freeze({
+  IMAGE: 'image-analysis',
+  GEOMETRY: 'geometry-extraction',
+  DATASET: 'dataset-matching',
+  GEMINI: 'gemini-reconstruction',
+});
+
+async function attachConditionAssessment({ analysis, images }) {
+  // Visual condition and pixel masks are image-space diagnostics, not geometry.
+  // They are computed on demand (health panel / heatmap) so initial 3D
+  // reconstruction never waits for a second Gemini call or OpenCV segmentation.
   try {
-    const images = validateImages(req.body?.images);
-    const reference = sanitizeReference(req.body?.reference);
+    analysis.conditionAssessment = await assessVisualCondition({ images, analysis });
+  } catch (conditionError) {
+    console.warn('[analyze-component] Visual condition assessment failed:', conditionError?.message);
+    analysis.conditionAssessment = unknownConditionAssessment();
+  }
 
-    // Optional vision preprocessing — fail-open by default (null if disabled/offline/error)
-    let visionEvidence = null;
-    let rawVisionResult = null;
-    let spatialEvidenceRef = null;
-    if (isVisionEnabled()) {
-      try {
-        const visionResult = await callVisionService(images, reference);
-        if (visionResult) {
-          rawVisionResult = visionResult;
-          spatialEvidenceRef = storeSpatialEvidence(visionResult);
-          visionEvidence = buildVisionEvidenceSummary(visionResult, spatialEvidenceRef);
-        }
-      } catch (visionError) {
-        // callVisionService should never throw (resolves null on error), but guard anyway
-        console.warn('[analyze-component] Unexpected vision error (continuing without vision):', visionError?.message);
+  analysis.conditionAssessment.damageMasks = [];
+  try {
+    const masks = await generateDamageMasks({
+      images,
+      observedTypes: analysis.conditionAssessment.observedDefectTypes || [],
+    });
+    analysis.conditionAssessment.damageMasks = masks;
+    const primaryMask = masks.reduce((best, mask) => {
+      if (!best) return mask;
+      return mask.stats.damageRatioOfComponent > best.stats.damageRatioOfComponent ? mask : best;
+    }, null);
+    analysis.conditionAssessment = applyPixelEvidence(
+      analysis.conditionAssessment,
+      primaryMask?.stats
+    );
+  } catch (maskError) {
+    // Never fall back to broad rectangles: an unavailable mask simply means
+    // no areas are painted and no pixel-derived score is asserted.
+    console.warn('[analyze-component] Pixel damage segmentation failed:', maskError?.message);
+    analysis.conditionAssessment.damageMaskUnavailable = true;
+    analysis.conditionAssessment = applyPixelEvidence(analysis.conditionAssessment, null);
+  }
+  return analysis.conditionAssessment;
+}
+
+function summarizeDatasetResult(result) {
+  if (!result) return { status: 'not_attempted' };
+  return {
+    status: result.status,
+    confidence: result.confidence || 0,
+    provenance: result.analysis?.provenance || null,
+    validation: result.analysis?.validation || null,
+    candidates: (result.candidates || []).slice(0, 5).map((candidate) => ({
+      id: candidate.id,
+      dataset: candidate.dataset,
+      confidence: candidate.confidence,
+      accepted: candidate.accepted,
+      scores: candidate.scores,
+      violations: candidate.violations,
+    })),
+    diagnostics: result.diagnostics || {},
+  };
+}
+
+class ReconstructionCancelledError extends Error {
+  constructor() {
+    super('Reconstruction cancelled.');
+    this.name = 'ReconstructionCancelledError';
+    this.status = 499;
+  }
+}
+
+async function runComponentAnalysis({ body, onProgress = () => { }, isCancelled = () => false }) {
+  const emit = (stage, status, detail = {}) => {
+    if (!isCancelled()) onProgress({ stage, status, ...detail });
+  };
+  const checkCancelled = () => {
+    if (isCancelled()) throw new ReconstructionCancelledError();
+  };
+
+  emit(ANALYSIS_STAGES.IMAGE, 'running');
+  let images;
+  try {
+    images = validateImages(body?.images);
+  } catch (error) {
+    error.stage = ANALYSIS_STAGES.IMAGE;
+    throw error;
+  }
+  emit(ANALYSIS_STAGES.IMAGE, 'complete', { completed: images.length, total: images.length });
+  checkCancelled();
+
+  const reference = sanitizeReference(body?.reference);
+
+  emit(ANALYSIS_STAGES.GEOMETRY, 'running');
+  let visionEvidence = null;
+  let rawVisionResult = null;
+  let spatialEvidenceRef = null;
+  if (isVisionEnabled()) {
+    try {
+      const visionResult = await callVisionService(images, reference);
+      if (visionResult) {
+        rawVisionResult = visionResult;
+        spatialEvidenceRef = storeSpatialEvidence(visionResult);
+        visionEvidence = buildVisionEvidenceSummary(visionResult, spatialEvidenceRef);
       }
+    } catch (visionError) {
+      // callVisionService should never throw (resolves null on error), but guard anyway
+      console.warn('[analyze-component] Unexpected vision error (continuing without vision):', visionError?.message);
     }
+  }
+  emit(ANALYSIS_STAGES.GEOMETRY, 'complete');
+  checkCancelled();
 
-    let analysis = null;
-    let solverMode = null;
+  let analysis = null;
+  let solverMode = null;
 
-    // 1. Deterministic Computer Vision & Geometry Solver
-    // If local vision (SAM 2, OpenCV, Depth Anything V2) and reference can resolve the component directly:
+  emit(ANALYSIS_STAGES.DATASET, 'running');
+  let datasetResult = null;
+  try {
+    datasetResult = await retrieveDatasetModel({ images, reference, visionEvidence });
+  } catch (datasetError) {
+    // The adapter is expected to fail open; this guard keeps a malformed
+    // service response from taking down the whole analysis pipeline.
+    console.warn('[analyze-component] Unexpected dataset retrieval error:', datasetError?.message);
+    datasetResult = {
+      status: 'unavailable',
+      confidence: 0,
+      candidates: [],
+      diagnostics: { reason: datasetError?.message || 'Dataset retrieval failed.' },
+    };
+  }
+
+  if (datasetResult.status === 'match' && datasetResult.analysis) {
+    analysis = datasetResult.analysis;
+    solverMode = 'dataset_retrieval';
+    emit(ANALYSIS_STAGES.DATASET, 'complete', {
+      message: `Matched ${datasetResult.analysis.datasetModel?.assetId || 'dataset asset'} with confidence ${Math.round((datasetResult.confidence || 0) * 100)}%.`,
+      confidence: datasetResult.confidence,
+      source: datasetResult.analysis.provenance?.dataset || 'dataset',
+    });
+    emit(ANALYSIS_STAGES.GEMINI, 'skipped', {
+      message: 'Dataset match supplied geometry; model reconstruction skipped.',
+    });
+  } else {
+    // No reliable dataset hit: keep the existing vision solver, then Gemini.
     const visionResolution = resolveGeometryFromVision(rawVisionResult, reference);
     if (visionResolution.canResolveWithoutGemini && visionResolution.confidence >= 0.80) {
       analysis = visionResolution.analysis;
       solverMode = "deterministic_cv";
+      emit(ANALYSIS_STAGES.DATASET, 'complete', {
+        message: 'No reliable dataset match; resolved from measured vision evidence.',
+      });
+      emit(ANALYSIS_STAGES.GEMINI, 'skipped', {
+        message: 'Measured vision evidence supplied geometry; model reconstruction skipped.',
+      });
+    } else {
+      emit(ANALYSIS_STAGES.DATASET, rawVisionResult ? 'complete' : 'skipped', {
+        message: datasetResult.diagnostics?.reason
+          || (rawVisionResult
+            ? 'No reliable dataset match; reconstructing model.'
+            : 'Dataset retrieval unavailable; reconstructing model.'),
+      });
     }
+  }
+  checkCancelled();
 
-    // 2. If vision alone is ambiguous or incomplete, use Gemini as assist
-    if (!analysis) {
-      try {
-        const geminiRaw = await analyzeComponent({ images, reference, visionEvidence });
-        // Reconcile Gemini's high-level semantic proposal with exact physical measurements & vision
-        analysis = reconcileGeminiWithVision(geminiRaw, rawVisionResult, reference);
-        solverMode = "gemini_assisted";
-      } catch (geminiError) {
-        console.warn('[analyze-component] Gemini assist failed or unavailable (falling back to deterministic solver):', geminiError?.message);
-        // 3. Guaranteed zero-crash fallback: synthesized engineering geometry adhering to ISO standards
-        analysis = fallbackDeterministicAnalysis(reference, geminiError?.message || 'Gemini assist offline', images);
-        solverMode = "deterministic_fallback";
-      }
+  if (!analysis) {
+    emit(ANALYSIS_STAGES.GEMINI, 'running');
+    try {
+      const geminiRaw = await analyzeComponent({ images, reference, visionEvidence });
+      // Reconcile Gemini's high-level semantic proposal with exact physical measurements & vision
+      analysis = reconcileGeminiWithVision(geminiRaw, rawVisionResult, reference);
+      solverMode = "gemini_assisted";
+      emit(ANALYSIS_STAGES.GEMINI, 'complete');
+    } catch (geminiError) {
+      console.warn('[analyze-component] Gemini assist failed or unavailable (falling back to deterministic solver):', geminiError?.message);
+      // Guaranteed zero-crash fallback: synthesized engineering geometry adhering to ISO standards
+      analysis = fallbackDeterministicAnalysis(reference, geminiError?.message || 'Gemini assist offline', images);
+      solverMode = "deterministic_fallback";
+      emit(ANALYSIS_STAGES.GEMINI, 'complete', {
+        warning: 'Gemini unavailable; deterministic fallback used.',
+      });
     }
+  }
+  checkCancelled();
 
-    // Anchor spatial evidence to analysis object
-    if (analysis && typeof analysis === 'object') {
-      if (spatialEvidenceRef) {
-        analysis.spatialEvidenceRef = spatialEvidenceRef;
-      }
-      if (rawVisionResult) {
-        analysis.spatialObservations = extractVisionObservations(rawVisionResult);
-      }
-      if (!analysis.geometrySource) {
-        analysis.geometrySource = solverMode === 'deterministic_cv' ? 'vision_template' : null;
-      }
+  if (body?.includeCondition === true) {
+    await attachConditionAssessment({ analysis, images });
+    checkCancelled();
+  }
+
+  // Anchor spatial evidence to analysis object
+  if (analysis && typeof analysis === 'object') {
+    if (spatialEvidenceRef) {
+      analysis.spatialEvidenceRef = spatialEvidenceRef;
     }
+    if (rawVisionResult) {
+      analysis.spatialObservations = extractVisionObservations(rawVisionResult);
+    }
+    if (!analysis.geometrySource) {
+      analysis.geometrySource = solverMode === 'deterministic_cv' ? 'vision_template' : null;
+    }
+  }
 
-    // Build response — visionDiagnostics is additive and optional
-    const responseBody = {
-      analysis,
-      solverMode,
-      spatialEvidenceRef,
+  const responseBody = {
+    analysis,
+    solverMode,
+    datasetRetrieval: summarizeDatasetResult(datasetResult),
+    spatialEvidenceRef,
+  };
+  if (visionEvidence) {
+    responseBody.visionDiagnostics = {
+      status: visionEvidence.status,
+      images: visionEvidence.images.map((img) => ({
+        image_index: img.image_index,
+        segmentation_status: img.segmentation?.status ?? 'unavailable',
+        candidate_count: img.segmentation?.candidate_count ?? 0,
+        depth_status: img.depth?.status ?? 'unavailable',
+        opencv_contour_count: img.opencv?.contour_count ?? 0,
+        warnings: [
+          ...(img.opencv?.warnings || []),
+          ...(img.depth?.warnings || []),
+        ],
+      })),
+      warnings: visionEvidence.warnings || [],
     };
-    if (visionEvidence) {
-      responseBody.visionDiagnostics = {
-        status: visionEvidence.status,
-        images: visionEvidence.images.map((img) => ({
-          image_index: img.image_index,
-          segmentation_status: img.segmentation?.status ?? 'unavailable',
-          candidate_count: img.segmentation?.candidate_count ?? 0,
-          depth_status: img.depth?.status ?? 'unavailable',
-          opencv_contour_count: img.opencv?.contour_count ?? 0,
-          warnings: [
-            ...(img.opencv?.warnings || []),
-            ...(img.depth?.warnings || []),
-          ],
-        })),
-        warnings: visionEvidence.warnings || [],
-      };
-    }
+  }
+  return responseBody;
+}
 
-    res.json(responseBody);
+
+app.post("/api/analyze-component", async (req, res) => {
+  try {
+    res.json(await runComponentAnalysis({ body: req.body }));
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || "Analysis failed." });
+  }
+});
+
+app.post("/api/analyze-component/stream", async (req, res) => {
+  res.status(200);
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  let cancelled = false;
+  res.on('close', () => {
+    if (!res.writableEnded) cancelled = true;
+  });
+
+  const emit = (event) => {
+    if (cancelled || res.destroyed || res.writableEnded) return;
+    res.write(`${JSON.stringify(event)}\n`);
+  };
+
+  try {
+    const result = await runComponentAnalysis({
+      body: req.body,
+      onProgress: emit,
+      isCancelled: () => cancelled,
+    });
+    if (cancelled || res.destroyed) return;
+    emit({ type: 'result', ...result });
+    res.end();
+  } catch (error) {
+    if (cancelled || res.destroyed) return;
+    emit({
+      type: 'failed',
+      stage: error.stage,
+      message: error.message || 'Analysis failed.',
+    });
+    res.end();
   }
 });
 
@@ -275,12 +495,12 @@ function validateEngineeringContext(raw) {
 
   const cleanFeatures = Array.isArray(raw.features)
     ? raw.features.slice(0, 15).map((f) => ({
-        id: typeof f.id === "string" ? f.id.slice(0, 40) : "feature",
-        type: typeof f.type === "string" ? f.type.slice(0, 30) : "other",
-        label: typeof f.label === "string" ? f.label.slice(0, 50) : "Feature",
-        confidence: typeof f.confidence === "number" ? Math.max(0, Math.min(1, f.confidence)) : 0.8,
-        metadata: f.metadata && typeof f.metadata === "object" ? f.metadata : null,
-      }))
+      id: typeof f.id === "string" ? f.id.slice(0, 40) : "feature",
+      type: typeof f.type === "string" ? f.type.slice(0, 30) : "other",
+      label: typeof f.label === "string" ? f.label.slice(0, 50) : "Feature",
+      confidence: typeof f.confidence === "number" ? Math.max(0, Math.min(1, f.confidence)) : 0.8,
+      metadata: f.metadata && typeof f.metadata === "object" ? f.metadata : null,
+    }))
     : [];
 
   return {
@@ -334,13 +554,46 @@ function validateAnalysisShape(raw) {
     const val = dims[key];
     cleanDims[key] = typeof val === "number" && isFinite(val) && val > 0 ? val : null;
   }
+  const cleanNumber = (value) => (
+    typeof value === "number" && isFinite(value) ? value : null
+  );
+  const geometryRecipe = sanitizeRecipe(raw.geometryRecipe);
+  const features = Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [];
+  const componentType = typeof raw.componentType === "string" ? raw.componentType : "other";
+  const rawExplicitType = raw.gearType ?? geometryRecipe?.gear?.gearType;
+  const explicitType = typeof rawExplicitType === "string" ? normalizeGearType(rawExplicitType) : null;
+  const inferredType = explicitType === null
+    ? gearTypeFromText(`${componentType} ${features.join(" ")}`)
+    : "unknown";
+  const isToothed = raw.teeth != null
+    || geometryRecipe?.gear != null
+    || /gear|tooth|teeth|cog|worm|rack/i.test(`${componentType} ${features.join(" ")}`);
+  const gearType = explicitType !== null && explicitType !== "unknown"
+    ? explicitType
+    : (inferredType !== "unknown" ? inferredType : (isToothed || explicitType === "unknown" ? "unknown" : null));
+  const requiresGearTypeConfirmation = Boolean(raw.requiresGearTypeConfirmation) || gearType === "unknown";
+  if (geometryRecipe?.gear && typeof geometryRecipe.gear === "object" && gearType) {
+    geometryRecipe.gear.gearType = gearType;
+  }
+  if (geometryRecipe && requiresGearTypeConfirmation) {
+    geometryRecipe.requiresGearTypeConfirmation = true;
+  }
 
   return {
-    componentType: typeof raw.componentType === "string" ? raw.componentType : "other",
+    componentType,
     dimensions: cleanDims,
-    features: Array.isArray(raw.features) ? raw.features.filter((f) => typeof f === "string") : [],
+    features,
     materialEstimate: typeof raw.materialEstimate === "string" ? raw.materialEstimate : "",
-    geometryRecipe: sanitizeRecipe(raw.geometryRecipe),
+    geometryRecipe,
+    gearType,
+    classificationSource: typeof raw.classificationSource === "string" ? raw.classificationSource.slice(0, 60) : null,
+    requiresGearTypeConfirmation,
+    teeth: cleanNumber(raw.teeth),
+    module: cleanNumber(raw.module),
+    helixAngle: cleanNumber(raw.helixAngle),
+    coneAngle: cleanNumber(raw.coneAngle),
+    pitch: cleanNumber(raw.pitch),
+    starts: cleanNumber(raw.starts),
   };
 }
 
@@ -453,6 +706,18 @@ function validateCadExportAnalysis(raw) {
     if (!isFinite(n)) return null;
     return Math.max(min, Math.min(max, n));
   };
+  const datasetModel = raw?.datasetModel && typeof raw.datasetModel === 'object'
+    ? {
+      assetId: typeof raw.datasetModel.assetId === 'string' ? raw.datasetModel.assetId.slice(0, 120) : '',
+      formats: Array.isArray(raw.datasetModel.formats)
+        ? raw.datasetModel.formats.filter((value) => typeof value === 'string').slice(0, 20)
+        : [],
+      validation: raw.datasetModel.validation && typeof raw.datasetModel.validation === 'object'
+        ? raw.datasetModel.validation
+        : null,
+    }
+    : null;
+
   return {
     ...base,
     componentName: typeof raw?.componentName === "string" ? raw.componentName.slice(0, 60) : "",
@@ -461,20 +726,53 @@ function validateCadExportAnalysis(raw) {
     helixAngle: pick(raw?.helixAngle, -60, 60),
     coneAngle: pick(raw?.coneAngle, 0, 90),
     boltCount: pick(raw?.boltCount, 3, 64),
-    gearType: typeof raw?.gearType === "string" ? raw.gearType.slice(0, 20) : null,
+    gearType: base.gearType,
+    requiresGearTypeConfirmation: base.requiresGearTypeConfirmation,
+    datasetModel,
   };
 }
 
 app.post("/api/cad/export", async (req, res) => {
-  let cleanup = () => {};
+  let cleanup = () => { };
   try {
     const analysis = validateCadExportAnalysis(req.body?.analysis);
     const format = String(req.body?.format || "step").toLowerCase();
     if (!CAD_EXPORT_FORMATS.includes(format)) {
       return res.status(400).json({ error: `Unsupported CAD export format: ${format}` });
     }
+    if (analysis.gearType === "unknown" || analysis.requiresGearTypeConfirmation) {
+      return res.status(422).json({
+        error: "Gear type is unconfirmed. Confirm spur, helical, bevel, worm, rack, internal, compound, pinion, stepped or flanged before exporting CAD.",
+      });
+    }
     const requested = typeof req.body?.baseName === "string" ? req.body.baseName.trim() : "";
     const baseName = requested || cadSlug(analysis);
+
+    // Dataset-backed reconstructions export their real acquired asset. Never
+    // substitute a parametric guess when the retrieved source format exists.
+    if (analysis.datasetModel) {
+      const asset = resolveAssetForDatasetModel(analysis.datasetModel, format);
+      if (!asset) {
+        return res.status(422).json({
+          error: `Retrieved dataset asset does not include a real ${format.toUpperCase()} file. Available formats: ${(analysis.datasetModel.formats || []).join(', ') || 'none'}.`,
+        });
+      }
+      const extension = path.extname(asset.path) || `.${format}`;
+      res.setHeader("Content-Type", asset.mimeType);
+      res.setHeader("Content-Disposition", `attachment; filename="${baseName}${extension}"`);
+      res.setHeader("Content-Length", String(asset.bytes));
+      res.setHeader("X-ReForge-CAD-Source", "dataset");
+      const datasetStream = createReadStream(asset.path);
+      datasetStream.on("error", (streamError) => {
+        if (!res.headersSent) {
+          res.status(500).json({ error: streamError.message || 'Dataset asset stream failed.' });
+        } else {
+          res.destroy(streamError);
+        }
+      });
+      datasetStream.pipe(res);
+      return undefined;
+    }
 
     const result = await exportCadModel({ analysis, format, baseName });
     cleanup = result.cleanup;
@@ -502,12 +800,88 @@ app.post("/api/cad/export", async (req, res) => {
   }
 });
 
+app.post("/api/analyze-condition", async (req, res) => {
+  try {
+    const images = validateImages(req.body?.images);
+    const rawAnalysis = req.body?.analysis && typeof req.body.analysis === 'object'
+      ? req.body.analysis
+      : {};
+    const recipe = sanitizeRecipe(rawAnalysis.geometryRecipe);
+    const rawExplicitType = rawAnalysis.gearType ?? recipe?.gear?.gearType;
+    const explicitType = typeof rawExplicitType === 'string' ? normalizeGearType(rawExplicitType) : null;
+    const componentType = typeof rawAnalysis.componentType === 'string'
+      ? rawAnalysis.componentType.slice(0, 60)
+      : '';
+    const inferredType = explicitType === null
+      ? gearTypeFromText(`${componentType} ${(rawAnalysis.features || []).join(' ')}`)
+      : 'unknown';
+    const numeric = (value) => typeof value === 'number' && isFinite(value) ? value : null;
+    const gearType = explicitType !== null && explicitType !== 'unknown'
+      ? explicitType
+      : (inferredType !== 'unknown' ? inferredType : (explicitType === 'unknown' ? 'unknown' : null));
+    const requiresGearTypeConfirmation = Boolean(rawAnalysis.requiresGearTypeConfirmation) || gearType === 'unknown';
+    if (recipe?.gear && typeof recipe.gear === 'object' && gearType) {
+      recipe.gear.gearType = gearType;
+    }
+    if (recipe && requiresGearTypeConfirmation) {
+      recipe.requiresGearTypeConfirmation = true;
+    }
+    const analysis = {
+      componentType,
+      gearType,
+      requiresGearTypeConfirmation,
+      teeth: numeric(rawAnalysis.teeth),
+      module: numeric(rawAnalysis.module),
+      helixAngle: numeric(rawAnalysis.helixAngle),
+      coneAngle: numeric(rawAnalysis.coneAngle),
+      geometryRecipe: recipe,
+    };
+    const conditionAssessment = await attachConditionAssessment({ analysis, images });
+    res.json({ conditionAssessment });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Condition analysis failed.' });
+  }
+});
+
 app.get("/api/health", (_req, res) => {
+  const catalog = getCatalogSummary();
   res.json({
     ok: true,
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
     cadExportAvailable: isCadExportScriptPresent(),
+    datasetRetrievalEnabled: catalog.enabled,
+    datasetCatalog: {
+      indexPresent: catalog.indexPresent,
+      manifestPresent: catalog.manifestPresent,
+      counts: catalog.counts,
+    },
   });
+});
+
+app.get("/api/dataset/status", async (_req, res) => {
+  try {
+    res.json(await getDatasetServiceStatus());
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Dataset status failed.' });
+  }
+});
+
+app.get("/api/dataset/asset/:assetId", (req, res) => {
+  const format = String(req.query.format || 'stl').toLowerCase();
+  const asset = resolveDatasetAsset(req.params.assetId, format);
+  if (!asset) {
+    return res.status(404).json({ error: 'Dataset asset not found or outside configured storage.' });
+  }
+  res.setHeader('Content-Type', asset.mimeType);
+  res.setHeader('Content-Disposition', `attachment; filename="${path.basename(asset.path)}"`);
+  if (asset.bytes) res.setHeader('Content-Length', String(asset.bytes));
+  const stream = createReadStream(asset.path);
+  stream.on('error', (error) => {
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+    else res.destroy(error);
+  });
+  stream.pipe(res);
+  return undefined;
 });
 
 const distDir = path.resolve(__dirname, "../frontend/dist");
@@ -524,7 +898,11 @@ if (existsSync(distDir)) {
 
 app.use((_req, res) => res.status(404).json({ error: "Not found." }));
 
-app.listen(PORT, () => {
-  console.log(`ReForge AI server listening on http://localhost:${PORT}`);
-  console.log(process.env.GEMINI_API_KEY ? "Gemini API key: configured" : "Gemini API key: NOT set — analysis/chat will fail until GEMINI_API_KEY is provided in .env.local");
-});
+export { app, db };
+
+if (process.env.NODE_ENV !== "test" && process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  app.listen(PORT, () => {
+    console.log(`ReForge AI server listening on http://localhost:${PORT}`);
+    console.log(process.env.GEMINI_API_KEY ? "Gemini API key: configured" : "Gemini API key: NOT set — analysis/chat will fail until GEMINI_API_KEY is provided in .env.local");
+  });
+}
