@@ -1,0 +1,7 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/python-engine/.venv/bin/python",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/python-engine"
+    ],
+    "python.analysis.autoSearchPaths": true
+}

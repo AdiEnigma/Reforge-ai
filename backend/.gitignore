@@ -6,3 +6,5 @@ env.local
 .env.*.local
 *.log
 .DS_Store
+data/demo-app.db*
+data/workbenches/
