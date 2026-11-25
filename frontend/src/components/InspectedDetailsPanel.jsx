@@ -1,5 +1,6 @@
 import React from 'react';
 import { dimensionList, resolveLabel } from '../lib/reconstruct.js';
+import { ToothCountOverlay } from './ToothCountOverlay.jsx';
 
 const Icon = ({ children, className = '' }) => (
   <span className={`icon material-symbols-outlined ${className}`} aria-hidden="true">{children}</span>
@@ -41,6 +42,7 @@ export function InspectedDetailsPanel({
   onHoverFeature,
   dims: dimsActive = false,
   onToggleDims,
+  images = [],
 }) {
   if (!analysis) {
     return (
@@ -143,6 +145,9 @@ export function InspectedDetailsPanel({
           )}
         </div>
       </div>
+
+      {/* 2B. Automatic tooth-tip count on the uploaded photograph */}
+      <ToothCountOverlay analysis={analysis} images={images} compact />
 
       {/* 3. Detected Features: High-Density Interactive List */}
       <div className="inspection-features-block">

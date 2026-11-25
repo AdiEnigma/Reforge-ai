@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
-import { buildGearFromRecipe, executeRecipe, sanitizeRecipe } from "./recipe.js";
+import { buildBearingFromRecipe, buildGearFromRecipe, executeRecipe, normalizeBearingRecipe, sanitizeRecipe } from "./recipe.js";
 import { normalizeGearType } from "./gear-types.js";
 import { extrude, gearShape, matAccent, matBody, matDark, matRim, matHighlight, ringShape } from "./geo.js";
 import { executeGeometryProgram, generateGeometryProgram } from "./runtime-geometry-engine.js";
@@ -54,6 +54,12 @@ export function resolveComponentType(analysis) {
   const gearType = normalizeGearType(rawGearType);
   const hasExplicitGearType = rawGearType != null;
   const isGear = raw.includes("gear") || featuresStr.includes("gear") || featuresStr.includes("teeth") || (typeof analysis?.teeth === "number" && analysis.teeth > 0) || gearType !== "unknown" || analysis?.geometryRecipe?.style === "gear" || analysis?.geometryRecipe?.gear;
+
+  // Bearing recipes and explicit ball-bearing classifications must never fall
+  // through to the cylinder/shaft or gear builders.
+  const isBearingRecipe = analysis?.geometryRecipe?.style === "bearing" || analysis?.geometryRecipe?.bearing != null;
+  const isBallBearingType = /\bball\b.*\bbearing|\bbearing\b.*\bball/i.test(raw);
+  if (isBearingRecipe || isBallBearingType) return "bearing";
 
   // 1. Detect Compound / Cluster Multi-Stage Gear (EXCLUDE pinion shafts and single gears)
   const isExplicitPinionShaft =
@@ -408,34 +414,25 @@ function buildFlange(p) {
   return group;
 }
 
-function buildBearing(p) {
-  const group = new THREE.Group();
-  const outerR = (p.outerDiameter || 2.4) / 2;
-  const boreR = p.innerDiameter ? p.innerDiameter / 2 : outerR * 0.55;
-  const width = p.thickness || p.height || outerR * 0.7;
-  const midR = (outerR + boreR) / 2;
-  const ballR = (outerR - boreR) / 4;
-  const outerRing = extrude(ringShape(outerR, midR + ballR), width);
-  outerRing.center();
-  const outerMesh = new THREE.Mesh(outerRing, matDark);
-  outerMesh.userData = { featureId: "feature-flange-1", featureType: "flange" };
-  group.add(outerMesh);
-
-  const innerRing = extrude(ringShape(midR - ballR, boreR), width);
-  innerRing.center();
-  const innerMesh = new THREE.Mesh(innerRing, matBody);
-  innerMesh.userData = { featureId: "feature-bore-1", featureType: "bore" };
-  group.add(innerMesh);
-
-  const ballCount = 10;
-  for (let i = 0; i < ballCount; i++) {
-    const a = (i / ballCount) * Math.PI * 2;
-    const ball = new THREE.Mesh(new THREE.SphereGeometry(ballR, 20, 20), matRim);
-    ball.position.set(Math.cos(a) * midR, Math.sin(a) * midR, 0);
-    ball.userData = { featureId: "feature-groove-1", featureType: "groove" };
-    group.add(ball);
-  }
-  return group;
+function buildBearing(p, analysis) {
+  const dims = analysis?.dimensions || {};
+  const rawBearing = analysis?.geometryRecipe?.bearing || {};
+  const bearing = normalizeBearingRecipe({
+    outerDiameter: dims.outerDiameter ?? p.outerDiameter,
+    innerDiameter: dims.innerDiameter ?? p.innerDiameter,
+    width: dims.thickness ?? dims.height ?? p.thickness ?? p.height,
+    pitchDiameter: rawBearing.pitchDiameter,
+    ballDiameter: rawBearing.ballDiameter,
+    ballCount: analysis?.ballCount ?? rawBearing.ballCount,
+    innerRaceOuterDiameter: rawBearing.innerRaceOuterDiameter,
+    outerRaceInnerDiameter: rawBearing.outerRaceInnerDiameter,
+    grooveDepth: rawBearing.grooveDepth,
+    grooveRadius: rawBearing.grooveRadius,
+    rows: rawBearing.rows,
+    shieldType: rawBearing.shieldType,
+  }, analysis);
+  const group = bearing ? buildBearingFromRecipe(bearing) : null;
+  return group || buildGeneric(p);
 }
 
 function buildBracket(p) {
@@ -671,9 +668,15 @@ export function buildModel(analysis) {
     (["bevel gear", "spur gear", "helical gear"].includes(p.type) &&
       recipe?.style !== "mesh" && !recipe?.axialSegments && !recipe?.gear) ||
     (isCapOrBushingType && (!recipe?.isAuthenticCap || recipe?.style === "extruded" || recipe?.style === "revolved" || recipe?.style === "combination")) ||
-    (isBearingType && (!recipe?.isAuthenticBearing || recipe?.style === "combination" || recipe?.style === "revolved" || recipe?.style === "extruded"));
+    (isBearingType && !recipe?.bearing && (recipe?.style === "combination" || recipe?.style === "revolved" || recipe?.style === "extruded"));
   if (!body && recipe && !isTrivialBoxFallback && !recipeMismatchesType) {
     body = executeRecipe(recipe);
+  }
+
+  // Bearing analyses without a dedicated recipe must keep the image-derived
+  // ball count; the generic runtime program does not model rolling elements.
+  if (!body && isBearingType && !recipe?.bearing) {
+    body = buildBearing(p, analysis);
   }
 
   // Universal Runtime Geometry Engine:
@@ -687,11 +690,7 @@ export function buildModel(analysis) {
   }
 
   if (!body) {
-    if (isBearingType) {
-      body = buildBearing(p);
-    } else {
-      body = buildGeneric(p);
-    }
+    body = buildGeneric(p);
   }
 
   if (!label) {
@@ -704,6 +703,7 @@ export function buildModel(analysis) {
       label = "ENGINEERED COMPONENT";
     }
   }
+
   body.traverse((obj) => {
     if (obj.isMesh) obj.castShadow = true;
   });

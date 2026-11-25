@@ -66,21 +66,106 @@ export async function getJson(url) {
   return payload;
 }
 
-export function fileToPayload(file) {
+const MAX_UPLOAD_IMAGE_BYTES = 12 * 1024 * 1024;
+const MAX_UPLOAD_IMAGE_DIMENSION = 2048;
+const COMPRESS_THRESHOLD_BYTES = 2.5 * 1024 * 1024;
+const MAX_UPLOAD_IMAGES = 8;
+
+function readFileAsDataURL(file) {
   return new Promise((resolve, reject) => {
-    if (!(file instanceof Blob)) {
-      reject(new ApiError("The selected image is no longer available. Remove it and select it again.", 400));
-      return;
-    }
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("Could not read image file."));
-    reader.onload = () => {
-      const dataUrl = reader.result;
-      const comma = dataUrl.indexOf(",");
-      resolve({ mimeType: file.type || "image/png", data: dataUrl.slice(comma + 1) });
-    };
+    reader.onload = () => resolve(String(reader.result || ""));
     reader.readAsDataURL(file);
   });
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Could not decode the selected image."));
+    img.src = src;
+  });
+}
+
+async function compressImageFile(file) {
+  const dataUrl = await readFileAsDataURL(file);
+  const originalMime = String(file.type || "image/png").toLowerCase();
+  const isAvif = originalMime === "image/avif" || /\.avif$/i.test(file.name || "");
+  let img;
+  try {
+    img = await loadImageElement(dataUrl);
+  } catch (error) {
+    if (isAvif) {
+      throw new ApiError(
+        `Image "${file.name || "upload"}" is AVIF but this browser could not decode it. Try another browser or convert it to JPEG/PNG/WebP.`,
+        400
+      );
+    }
+    throw error;
+  }
+
+  const maxDim = MAX_UPLOAD_IMAGE_DIMENSION;
+  const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+  const needsResize = scale < 1;
+  // Gemini does not accept AVIF inline data, so always transcode it to JPEG.
+  const needsTranscode = isAvif;
+  const needsCompress = file.size > COMPRESS_THRESHOLD_BYTES || needsResize || needsTranscode;
+  if (!needsCompress) {
+    const comma = dataUrl.indexOf(",");
+    return { mimeType: originalMime || "image/png", data: dataUrl.slice(comma + 1) };
+  }
+
+  const width = Math.max(1, Math.round((img.width || 1) * scale));
+  const height = Math.max(1, Math.round((img.height || 1) * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    const comma = dataUrl.indexOf(",");
+    return { mimeType: originalMime || "image/png", data: dataUrl.slice(comma + 1) };
+  }
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(img, 0, 0, width, height);
+
+  const mimeType = originalMime === "image/webp" && !needsTranscode ? "image/webp" : "image/jpeg";
+  let quality = 0.85;
+  let out = canvas.toDataURL(mimeType, quality);
+  while (out.length * 0.75 > MAX_UPLOAD_IMAGE_BYTES && quality > 0.5) {
+    quality -= 0.1;
+    out = canvas.toDataURL(mimeType, quality);
+  }
+  const comma = out.indexOf(",");
+  const data = out.slice(comma + 1);
+  const approxBytes = Math.floor((data.length * 3) / 4);
+  if (approxBytes > MAX_UPLOAD_IMAGE_BYTES) {
+    throw new ApiError(
+      `Image "${file.name || "upload"}" is too large after compression. Please use a smaller image (max ${Math.round(MAX_UPLOAD_IMAGE_BYTES / (1024 * 1024))} MB).`,
+      413
+    );
+  }
+  return { data, mimeType };
+}
+
+export async function fileToPayload(file) {
+  if (!(file instanceof Blob)) {
+    throw new ApiError("The selected image is no longer available. Remove it and select it again.", 400);
+  }
+  const mime = String(file.type || "").toLowerCase();
+  const nameOk = /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name || "");
+  if (mime && !mime.startsWith("image/") && !nameOk) {
+    throw new ApiError(`Unsupported file type: ${file.type || "unknown"}. Use JPEG, PNG, WebP, GIF, BMP, or AVIF images.`, 400);
+  }
+  if (file.size > 30 * 1024 * 1024) {
+    throw new ApiError(
+      `Image "${file.name || "upload"}" is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum 30 MB before compression.`,
+      413
+    );
+  }
+  return compressImageFile(file);
 }
 
 function cancellationError() {
@@ -157,9 +242,13 @@ async function postNdjson(url, body, { onEvent, signal, attempt = 1 } = {}) {
 
 export async function analyzeComponent(images, reference, options = {}) {
   const { onProgress, signal, retries = 0, includeCondition = false } = options;
-  const totalImages = images.length;
+  const totalImages = Array.isArray(images) ? images.length : 0;
 
   if (signal?.aborted) throw cancellationError();
+  if (!totalImages) throw new ApiError("No images provided. Add at least one component image.", 400);
+  if (totalImages > MAX_UPLOAD_IMAGES) {
+    throw new ApiError(`Too many images. Maximum ${MAX_UPLOAD_IMAGES} images per analysis.`, 400);
+  }
   onProgress?.({ stage: "image-analysis", status: "running", completed: 0, total: totalImages });
 
   let payloads;
@@ -192,15 +281,21 @@ export async function analyzeComponent(images, reference, options = {}) {
         { onEvent: onProgress, signal, attempt }
       );
       if (!result || !result.analysis) throw new ApiError("Server returned no analysis.", 502);
-      // Preserve the unified reconstruction envelope on the analysis object so
-      // existing consumers keep working while provenance/solver mode remain
-      // available to the viewer and engineering panels.
-      return {
+      const analysis = {
         ...result.analysis,
         solverMode: result.solverMode || result.analysis.solverMode || null,
         datasetRetrieval: result.datasetRetrieval || result.analysis.datasetRetrieval || null,
         visionDiagnostics: result.visionDiagnostics || result.analysis.visionDiagnostics || null,
       };
+      // Defense in depth: never present a deterministic template fallback as a
+      // successful image-derived reconstruction.
+      if (analysis.solverMode === "deterministic_fallback" || analysis.provenance === "deterministic_fallback_engine") {
+        throw new ApiError(
+          "Image analysis could not be completed by the AI model. A generic template was not used. Check GEMINI_API_KEY/model availability and retry with clear component photos.",
+          502
+        );
+      }
+      return analysis;
     } catch (error) {
       if (isCancellationError(error)) throw cancellationError();
       lastError = error;

@@ -110,6 +110,33 @@ SAMPLES = {
             ],
         },
     },
+    "bearing": {
+        "componentType": "deep groove ball bearing",
+        "ballCount": 9,
+        "dimensions": {"outerDiameter": 80, "innerDiameter": 30, "height": 18, "thickness": 18},
+        "geometryRecipe": {
+            "style": "bearing",
+            "bearing": {
+                "outerDiameter": 80,
+                "innerDiameter": 30,
+                "width": 18,
+                "outerRaceInnerDiameter": 63,
+                "innerRaceOuterDiameter": 47,
+                "pitchDiameter": 55,
+                "ballDiameter": 10,
+                "ballCount": 9,
+                "grooveDepth": 3,
+                "grooveRadius": 2.5,
+                "rows": 1,
+                "shieldType": "open",
+            },
+        },
+    },
+    "fallback_bearing": {
+        "componentType": "ball bearing",
+        "ballCount": 7,
+        "dimensions": {"outerDiameter": 70, "innerDiameter": 25, "height": 16, "thickness": 16},
+    },
     "fallback_cylinder": {
         "componentType": "cylinder/shaft",
         "dimensions": {"outerDiameter": 40, "innerDiameter": 16, "height": 90},

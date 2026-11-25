@@ -13,6 +13,8 @@ from typing import List, Optional
 import cv2
 import numpy as np
 
+from vision.tooth_count import detect_tooth_count
+
 logger = logging.getLogger(__name__)
 
 _CIRCULARITY_THRESHOLD = 0.75   # For considering a contour circle-like enough to fit ellipse
@@ -255,6 +257,7 @@ def extract_features(rgb: np.ndarray, mask: Optional[np.ndarray] = None, image_i
     # ------------------------------------------------------------------
     symmetry_hints = _compute_advanced_symmetry(gray, edges, circle_features, contour_features)
     radial_profile = _extract_radial_profile(mask if mask is not None else gray, bounding_box)
+    tooth_count = detect_tooth_count(rgb, mask=mask, image_index=image_index)
 
     return {
         "contours": contour_features,
@@ -264,6 +267,7 @@ def extract_features(rgb: np.ndarray, mask: Optional[np.ndarray] = None, image_i
         "bounding_box": bounding_box,
         "symmetry_hints": symmetry_hints,
         "radial_profile": radial_profile,
+        "tooth_count": tooth_count,
         "warnings": warnings_out,
     }
 

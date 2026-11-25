@@ -28,6 +28,9 @@ from schemas import (
     LineCandidate,
     BoundingBox,
     SymmetryHint,
+    ToothCountResult,
+    ToothMethod,
+    ToothTip,
 )
 from vision.image_io import decode_and_validate_image
 from vision.quality import compute_quality
@@ -140,6 +143,36 @@ def _build_opencv_result(cv_dict: dict) -> OpenCVResult:
             spectral_confidence=float(sh_raw.get("spectral_confidence", 0.0)),
             detected_frequencies=sh_raw.get("detected_frequencies", []),
         )
+    tooth_raw = cv_dict.get("tooth_count")
+    tooth_count = None
+    if tooth_raw:
+        tooth_count = ToothCountResult(
+            image_index=int(tooth_raw.get("image_index", 0)),
+            status=tooth_raw.get("status", "unavailable"),
+            count=tooth_raw.get("count"),
+            confidence=float(tooth_raw.get("confidence", 0.0)),
+            center_px=tooth_raw.get("center_px"),
+            outer_radius_px=tooth_raw.get("outer_radius_px"),
+            methods=[
+                ToothMethod(
+                    method=m.get("method", "unknown"),
+                    count=m.get("count"),
+                    confidence=float(m.get("confidence", 0.0)),
+                )
+                for m in tooth_raw.get("methods", [])
+            ],
+            teeth=[
+                ToothTip(
+                    angle_deg=float(t["angle_deg"]),
+                    x_px=float(t["x_px"]),
+                    y_px=float(t["y_px"]),
+                    radius_px=float(t["radius_px"]),
+                    confidence=float(t.get("confidence", 0.0)),
+                )
+                for t in tooth_raw.get("teeth", [])
+            ],
+            warnings=tooth_raw.get("warnings", []),
+        )
     return OpenCVResult(
         contours=contours,
         circles=circles,
@@ -148,6 +181,7 @@ def _build_opencv_result(cv_dict: dict) -> OpenCVResult:
         bounding_box=bounding_box,
         symmetry_hints=symmetry_hints,
         radial_profile=cv_dict.get("radial_profile"),
+        tooth_count=tooth_count,
         warnings=cv_dict.get("warnings", []),
     )
 
@@ -284,7 +318,7 @@ def _process_single_image(image_input: ImageInput, reference: Optional[dict]) ->
         mask = np.zeros((h, w), dtype=np.uint8)
         mask[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 255
 
-    cv_dict = {"contours": [], "circles": [], "ellipses": [], "lines": [], "bounding_boxes": [], "symmetry_hints": [], "warnings": []}
+    cv_dict = {"contours": [], "circles": [], "ellipses": [], "lines": [], "bounding_boxes": [], "symmetry_hints": [], "tooth_count": None, "warnings": []}
     try:
         cv_dict = extract_features(rgb, mask=mask, image_index=image_input.image_index)
     except Exception as exc:

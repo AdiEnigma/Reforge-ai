@@ -348,6 +348,7 @@ export function extractVisionObservations(visionResult) {
     ellipses: [],
     contours: [],
     symmetryHints: [],
+    toothCounts: [],
     boundingBoxes: [],
     aspectRatios: [],
     calibrations: [],
@@ -361,7 +362,24 @@ export function extractVisionObservations(visionResult) {
       if (Array.isArray(img.opencv.circles)) observations.circles.push(...img.opencv.circles);
       if (Array.isArray(img.opencv.ellipses)) observations.ellipses.push(...img.opencv.ellipses);
       if (Array.isArray(img.opencv.contours)) observations.contours.push(...img.opencv.contours);
-      if (Array.isArray(img.opencv.symmetry_hints)) observations.symmetryHints.push(...img.opencv.symmetry_hints);
+      const rawHints = img.opencv.symmetry_hints;
+      const hintList = Array.isArray(rawHints) ? rawHints : (rawHints ? [rawHints] : []);
+      for (const hint of hintList) {
+        if (hint && typeof hint === 'object') {
+          observations.symmetryHints.push(hint);
+        } else if (typeof hint === 'string') {
+          const match = hint.match(/(?:rotational_order|symmetry|teeth|order|peaks)[:=]\s*(\d+)/i);
+          if (match) {
+            observations.symmetryHints.push({ rotational_order: parseInt(match[1], 10), spectral_confidence: 0.5 });
+          }
+        }
+      }
+      if (img.opencv.tooth_count && typeof img.opencv.tooth_count === 'object') {
+        observations.toothCounts.push({
+          image_index: img.image_index ?? observations.toothCounts.length,
+          ...img.opencv.tooth_count,
+        });
+      }
       if (img.opencv.bounding_box) {
         observations.boundingBoxes.push(img.opencv.bounding_box);
         const bbox = img.opencv.bounding_box;
@@ -385,6 +403,58 @@ export function extractVisionObservations(visionResult) {
   }
 
   return observations;
+}
+
+export function selectConfirmedToothCount(obs) {
+  const confirmed = (obs?.toothCounts || [])
+    .filter((item) => item && item.status === 'ok' && Number.isFinite(item.count) && item.count >= 3)
+    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+  return confirmed[0] || null;
+}
+
+/**
+ * Compact, UI-ready tooth-count evidence from the raw vision response.
+ * Pixel markers stay in source-image coordinates so the frontend can overlay
+ * them on the exact uploaded photograph.
+ */
+export function summarizeToothCountVision(visionResult) {
+  const images = Array.isArray(visionResult?.images) ? visionResult.images : [];
+  const entries = images
+    .map((img) => ({ image: img, result: img?.opencv?.tooth_count }))
+    .filter((entry) => entry.result && typeof entry.result === 'object');
+
+  if (!entries.length) {
+    return {
+      status: 'unavailable',
+      count: null,
+      confidence: 0,
+      imageIndex: null,
+      imageWidth: null,
+      imageHeight: null,
+      centerPx: null,
+      outerRadiusPx: null,
+      methods: [],
+      teeth: [],
+      warnings: ['Automatic tooth counting was not available for this image set.'],
+    };
+  }
+
+  const confirmedEntry = entries.find((entry) => entry.result.status === 'ok' && Number.isFinite(entry.result.count))
+    || entries[0];
+  const result = confirmedEntry.result;
+  return {
+    status: result.status || 'unavailable',
+    count: result.status === 'ok' && Number.isFinite(result.count) ? Math.round(result.count) : null,
+    confidence: Number.isFinite(result.confidence) ? result.confidence : 0,
+    imageIndex: confirmedEntry.image.image_index ?? entries.indexOf(confirmedEntry),
+    imageWidth: confirmedEntry.image.width ?? null,
+    imageHeight: confirmedEntry.image.height ?? null,
+    centerPx: Array.isArray(result.center_px) ? result.center_px : null,
+    outerRadiusPx: Number.isFinite(result.outer_radius_px) ? result.outer_radius_px : null,
+    methods: Array.isArray(result.methods) ? result.methods : [],
+    teeth: Array.isArray(result.teeth) ? result.teeth : [],
+    warnings: Array.isArray(result.warnings) ? result.warnings : [],
+  };
 }
 
 /**
@@ -588,6 +658,13 @@ export function buildParameterConfidence({
 
   // 4. Tooth Count & Module (if rotational gear component)
   if (teeth != null && teeth >= 4) {
+    const visionTeeth = selectConfirmedToothCount(obs);
+    const hasUncertainVisionCount = (obs?.toothCounts || []).some(
+      (item) => item && item.status !== 'ok'
+    );
+    if (hasUncertainVisionCount && !(typeof ref.teeth === 'number' && ref.teeth >= 4)) {
+      uncertainties.push('Automatic tooth count was uncertain; the reported tooth count needs visual review.');
+    }
     if (typeof ref.teeth === 'number' && ref.teeth >= 4) {
       paramConf.teeth = {
         status: 'MEASURED',
@@ -595,6 +672,14 @@ export function buildParameterConfidence({
         source: 'user_reference',
         value: teeth,
         reason: 'User specified exact tooth count',
+      };
+    } else if (visionTeeth) {
+      paramConf.teeth = {
+        status: 'MEASURED',
+        confidence: Math.max(0.5, Math.min(0.98, visionTeeth.confidence || 0.8)),
+        source: 'cv_tooth_tip_count',
+        value: teeth,
+        reason: `Counted ${teeth} individual tooth tips across 360 degrees from ${Array.isArray(visionTeeth.methods) ? visionTeeth.methods.length : 0} cross-checks`,
       };
     } else if (obs?.symmetryHints?.length > 0) {
       paramConf.teeth = {
@@ -607,11 +692,12 @@ export function buildParameterConfidence({
     } else {
       paramConf.teeth = {
         status: 'ESTIMATED',
-        confidence: 0.75,
+        confidence: 0.55,
         source: provenance,
         value: teeth,
-        reason: 'Estimated from visible tooth spacing',
+        reason: 'Estimated from visible tooth spacing; not confirmed by automated tooth-tip counting',
       };
+      uncertainties.push('Tooth count was not confirmed by automated tooth-tip counting; verify against the image.');
     }
 
     if (module != null && module > 0) {
@@ -658,12 +744,16 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
 
   // Check for Gear indicators:
   // 1. Explicit user reference (teeth >= 4)
-  // 2. OpenCV symmetry hints (e.g. n_fold_symmetry: 24, periodic_teeth: 20)
-  // 3. Concentric circles with serrated/periodic outer boundary
+  // 2. Cross-checked automatic tooth-tip count from the uploaded photograph
+  // 3. Legacy OpenCV symmetry hints, only when tooth counting was not attempted
   let detectedTeeth = null;
+  const visionTeeth = selectConfirmedToothCount(obs);
+  const toothCountAttempted = Boolean(obs?.toothCounts?.length);
   if (typeof ref.teeth === 'number' && ref.teeth >= 4) {
     detectedTeeth = Math.round(ref.teeth);
-  } else if (obs && obs.symmetryHints.length > 0) {
+  } else if (visionTeeth) {
+    detectedTeeth = Math.round(visionTeeth.count);
+  } else if (!toothCountAttempted && obs && obs.symmetryHints.length > 0) {
     for (const hint of obs.symmetryHints) {
       if (hint && typeof hint === 'object' && typeof hint.rotational_order === 'number' && hint.rotational_order >= 3) {
         detectedTeeth = Math.round(hint.rotational_order);
@@ -735,7 +825,9 @@ export function resolveGeometryFromVision(visionResult, reference = {}) {
     const standardOd = cleanModule ? Math.round(cleanModule * (detectedTeeth + 2) * 10) / 10 : od;
     const finalFaceWidth = faceWidthMm || Math.round((cleanModule ? cleanModule * 9 : standardOd * 0.22) * 10) / 10;
 
-    const hasStrongSymmetry = obs?.symmetryHints?.length > 0 || (typeof ref.teeth === 'number' && typeof ref.outerDiameter === 'number');
+    const hasStrongSymmetry = Boolean(visionTeeth)
+      || obs?.symmetryHints?.length > 0
+      || (typeof ref.teeth === 'number' && typeof ref.outerDiameter === 'number');
     const confidence = hasStrongSymmetry ? 0.94 : 0.82;
     const maxAspectRatio = obs?.aspectRatios?.length ? Math.max(...obs.aspectRatios) : 1.0;
     const isElongated = maxAspectRatio >= 1.75;
@@ -1188,11 +1280,15 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
   // Infer defensible dimensions if uncalibrated/null from photograph
   inferDefensibleDimensions(reconciled, obs, ref);
 
-  // 2. Reconcile Teeth Count: User Reference > Vision Symmetry > Gemini Guess
+  // 2. Reconcile Teeth Count: User Reference > CV Tooth Count > Legacy Symmetry > Gemini Guess
+  const visionTeeth = selectConfirmedToothCount(obs);
+  const toothCountAttempted = Boolean(obs?.toothCounts?.length);
   let finalTeeth = reconciled.teeth;
   if (typeof ref.teeth === 'number' && ref.teeth >= 4) {
     finalTeeth = Math.round(ref.teeth);
-  } else if (obs && obs.symmetryHints.length > 0) {
+  } else if (visionTeeth) {
+    finalTeeth = Math.round(visionTeeth.count);
+  } else if (!toothCountAttempted && obs && obs.symmetryHints.length > 0) {
     for (const hint of obs.symmetryHints) {
       if (hint && typeof hint === 'object' && typeof hint.rotational_order === 'number' && hint.rotational_order >= 3) {
         finalTeeth = Math.round(hint.rotational_order);
@@ -1206,6 +1302,14 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     }
   }
   reconciled.teeth = finalTeeth;
+  if (toothCountAttempted && !visionTeeth && !(typeof ref.teeth === 'number' && ref.teeth >= 4)) {
+    reconciled.uncertainties = [
+      ...new Set([
+        ...(Array.isArray(reconciled.uncertainties) ? reconciled.uncertainties : []),
+        'Automatic tooth count was uncertain; do not treat the reported tooth count as confirmed.',
+      ]),
+    ];
+  }
 
   // 3. Reconcile Gear Involute Kinematics
   const rawType = String(reconciled.componentType || '').toLowerCase();
@@ -1249,9 +1353,9 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
 
   if (isGear) {
     reconciled.geometrySource = 'template_gear';
-    if (typeof finalTeeth !== 'number' || finalTeeth < 4) {
-      finalTeeth = Math.max(12, Math.round((reconciled.dimensions.outerDiameter || 100.0) / (reconciled.module || 4.5)));
-    }
+  }
+
+  if (isGear && typeof finalTeeth === 'number' && finalTeeth >= 4) {
     reconciled.teeth = finalTeeth;
     const od = reconciled.dimensions.outerDiameter || 100.0;
     const rawModule = reconciled.module || (od / (finalTeeth + 2));
@@ -1830,6 +1934,18 @@ export function reconcileGeminiWithVision(geminiAnalysis, visionResult, referenc
     }
     reconciled.features = featuresList;
     reconciled.geometrySource = hasRichProfile ? 'image_recipe_refined' : 'template_shaft';
+  }
+
+  if (isGear && (finalTeeth === null || finalTeeth === undefined)) {
+    // Never turn an absent tooth count into a preset number. An uncertain
+    // count from Gemini is kept only as an explicit unconfirmed estimate.
+    reconciled.teeth = null;
+    reconciled.uncertainties = [
+      ...new Set([
+        ...(Array.isArray(reconciled.uncertainties) ? reconciled.uncertainties : []),
+        'Tooth count could not be established; no automatic tooth count is reported.',
+      ]),
+    ];
   }
 
   // 3d. Reconcile Prismatic / Extruded Mechanical Components (Brackets, Links, Connecting Rods, Levers, Plates, Mounts, Housings)

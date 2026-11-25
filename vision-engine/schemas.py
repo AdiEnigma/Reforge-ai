@@ -139,6 +139,33 @@ class SymmetryHint(BaseModel):
     detected_frequencies: List[dict] = Field(default_factory=list)
 
 
+class ToothMethod(BaseModel):
+    method: str
+    count: Optional[int] = None
+    confidence: float = 0.0
+
+
+class ToothTip(BaseModel):
+    angle_deg: float
+    x_px: float
+    y_px: float
+    radius_px: float
+    confidence: float = 0.0
+
+
+class ToothCountResult(BaseModel):
+    """Agreed tooth count from multiple image-space methods, or an explicit uncertain result."""
+    image_index: int
+    status: str = Field(..., description="ok | uncertain | unavailable")
+    count: Optional[int] = Field(None, ge=1)
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    center_px: Optional[List[float]] = None
+    outer_radius_px: Optional[float] = None
+    methods: List[ToothMethod] = Field(default_factory=list)
+    teeth: List[ToothTip] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
 class OpenCVResult(BaseModel):
     """All OpenCV-extracted geometric features (pixels only — never mm)."""
     contours: List[ContourFeature] = Field(default_factory=list)
@@ -148,6 +175,7 @@ class OpenCVResult(BaseModel):
     bounding_box: Optional[BoundingBox] = None
     symmetry_hints: Optional[SymmetryHint] = None
     radial_profile: Optional[dict] = None
+    tooth_count: Optional[ToothCountResult] = None
     warnings: List[str] = Field(default_factory=list)
 
 

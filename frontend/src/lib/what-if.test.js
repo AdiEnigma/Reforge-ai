@@ -8,6 +8,7 @@ import {
   getParameterValue,
   isParamActive,
   getParameterRecommendations,
+  isRecommendationVisible,
   applyScenarioToAnalysis,
 } from './what-if.js';
 
@@ -189,4 +190,52 @@ test('flange and shaft recipe dimensions update only for confirmed values', () =
   const shaftApplied = applyScenarioToAnalysis(shaft, { length: 200, height: 200 });
   assert.equal(shaftApplied.geometryRecipe.revolvedProfile[1].z, 200);
   assert.equal(shaftApplied.dimensions.height, 200);
+});
+
+test('recommendations survive edits to their own target parameter', () => {
+  const flange = flangeAnalysis();
+  const fromOuterDiameter = getParameterRecommendations(flange, { outerDiameter: 180 });
+  const bore = fromOuterDiameter.find((item) => item.key === 'innerDiameter');
+  assert.equal(bore?.value, 60);
+
+  const afterOtherValue = getParameterRecommendations(flange, {
+    outerDiameter: 180,
+    innerDiameter: 70,
+  });
+  assert.equal(afterOtherValue.find((item) => item.key === 'innerDiameter')?.value, 60);
+
+  assert.equal(isRecommendationVisible(afterOtherValue.find((item) => item.key === 'innerDiameter'), 70), true);
+
+  const afterRecommendedValue = getParameterRecommendations(flange, {
+    outerDiameter: 180,
+    innerDiameter: 60,
+  });
+  const matched = afterRecommendedValue.find((item) => item.key === 'innerDiameter');
+  assert.equal(matched?.value, 60);
+  assert.equal(isRecommendationVisible(matched, 60), false);
+  assert.equal(isRecommendationVisible(matched, 70), true);
+});
+
+test('gear teeth recommendation for outside diameter survives an outside-diameter edit', () => {
+  const analysis = gearAnalysis();
+  const fromTeeth = getParameterRecommendations(analysis, { teeth: 30 });
+  assert.equal(fromTeeth.find((item) => item.key === 'outerDiameter')?.value, 128);
+
+  const afterOuterDiameterEdit = getParameterRecommendations(analysis, {
+    teeth: 30,
+    outerDiameter: 120,
+  });
+  assert.equal(afterOuterDiameterEdit.find((item) => item.key === 'outerDiameter')?.value, 128);
+});
+
+test('recommendation visibility follows the current value and manual dismissal', () => {
+  const recommendation = { key: 'innerDiameter', value: 60 };
+
+  assert.equal(isRecommendationVisible(recommendation, 40, {}), true);
+  assert.equal(isRecommendationVisible(recommendation, 70, {}), true);
+  assert.equal(isRecommendationVisible(recommendation, 60, {}), false);
+  assert.equal(isRecommendationVisible(recommendation, 60.00005, {}), false);
+  assert.equal(isRecommendationVisible(recommendation, 70, {}), true);
+  assert.equal(isRecommendationVisible(recommendation, 70, { innerDiameter: true }), false);
+  assert.equal(isRecommendationVisible(null, 70, {}), false);
 });

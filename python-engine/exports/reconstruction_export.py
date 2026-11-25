@@ -28,19 +28,22 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cadquery as cq
 
 FORMATS = ("step", "iges", "stl", "obj")
-STYLES = ("revolved", "extruded", "gear", "flange", "combination")
+STYLES = ("revolved", "extruded", "gear", "flange", "bearing", "combination")
 PRIMITIVE_KINDS = ("box", "cylinder", "sphere", "cone", "torus")
 LIMITS = {
     "maxProfilePoints": 200,
     "maxOutlinePoints": 200,
     "maxHoles": 50,
     "maxPrimitives": 30,
+    "maxDimensionRatio": 1000,
+    "maxBalls": 120,
 }
 
 
@@ -192,6 +195,34 @@ def _clean_recipe(raw: Any) -> Optional[Dict[str, Any]]:
         if clean_flange:
             recipe["flange"] = clean_flange
 
+    bearing = raw.get("bearing")
+    if isinstance(bearing, dict):
+        clean_bearing: Dict[str, Any] = {}
+        for key in (
+            "outerDiameter",
+            "innerDiameter",
+            "width",
+            "outerRaceInnerDiameter",
+            "innerRaceOuterDiameter",
+            "pitchDiameter",
+            "ballDiameter",
+            "grooveDepth",
+            "grooveRadius",
+        ):
+            value = _positive(bearing.get(key))
+            if value is not None:
+                clean_bearing[key] = value
+        ball_count = _num(bearing.get("ballCount"))
+        if ball_count is not None and ball_count >= 3:
+            clean_bearing["ballCount"] = int(round(min(ball_count, LIMITS["maxBalls"])))
+        rows = _num(bearing.get("rows"))
+        if rows is not None:
+            clean_bearing["rows"] = int(round(_clamp(rows, 1, 2)))
+        if bearing.get("shieldType") in ("open", "shielded", "sealed"):
+            clean_bearing["shieldType"] = bearing["shieldType"]
+        if clean_bearing:
+            recipe["bearing"] = clean_bearing
+
     primitives = raw.get("primitives")
     if isinstance(primitives, list):
         clean_prims = []
@@ -228,7 +259,9 @@ def _clean_recipe(raw: Any) -> Optional[Dict[str, Any]]:
             recipe["primitives"] = clean_prims
 
     if not recipe["style"]:
-        if recipe.get("flange"):
+        if recipe.get("bearing"):
+            recipe["style"] = "bearing"
+        elif recipe.get("flange"):
             recipe["style"] = "flange"
         elif recipe.get("gear"):
             recipe["style"] = "gear"
@@ -242,7 +275,8 @@ def _clean_recipe(raw: Any) -> Optional[Dict[str, Any]]:
     if not recipe["style"]:
         return None
     if not (
-        recipe.get("revolvedProfile")
+        recipe.get("bearing")
+        or recipe.get("revolvedProfile")
         or recipe.get("outline")
         or recipe.get("gear")
         or recipe.get("flange")
@@ -291,6 +325,175 @@ def _union_all(shapes: Sequence[cq.Workplane]) -> cq.Workplane:
     if leftovers:
         return cq.Workplane("XY").newObject(list(merged.solids().vals()) + leftovers)
     return merged
+
+
+def _bearing_ball_count(raw: Dict[str, Any], analysis: Dict[str, Any]) -> Optional[int]:
+    for candidate in (raw.get("ballCount"), analysis.get("ballCount")):
+        value = _num(candidate)
+        if value is not None and value >= 3:
+            return int(round(value))
+    for feature in analysis.get("features") or []:
+        match = re.search(r"(\d+)\s*(?:rolling\s*)?balls?", str(feature), re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _normalize_bearing(raw: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive a complete bearing spec from image-derived fields, mirroring recipe.js."""
+    dims = analysis.get("dimensions") if isinstance(analysis.get("dimensions"), dict) else {}
+    outer_diameter = _positive(raw.get("outerDiameter")) or _positive(dims.get("outerDiameter"))
+    if outer_diameter is None:
+        raise ExportError("Bearing outer diameter is missing from the image analysis.", stage="geometry")
+    cap = max(outer_diameter * LIMITS["maxDimensionRatio"], 1000.0)
+    limit = lambda value: max(0.0, min(float(value), cap))
+
+    inner_diameter = _positive(raw.get("innerDiameter")) or _positive(dims.get("innerDiameter"))
+    if inner_diameter is None or inner_diameter >= outer_diameter:
+        inner_diameter = outer_diameter * 0.5
+
+    width = (
+        _positive(raw.get("width"))
+        or _positive(raw.get("thickness"))
+        or _positive(dims.get("thickness"))
+        or _positive(dims.get("height"))
+        or outer_diameter * 0.25
+    )
+
+    pitch_diameter = _positive(raw.get("pitchDiameter") or raw.get("ballCircleDiameter"))
+    if pitch_diameter is None or pitch_diameter <= inner_diameter or pitch_diameter >= outer_diameter:
+        pitch_diameter = (outer_diameter + inner_diameter) / 2
+
+    ball_diameter = _positive(raw.get("ballDiameter")) or (outer_diameter - inner_diameter) / 4
+    ball_diameter = min(
+        ball_diameter,
+        min(pitch_diameter - inner_diameter, outer_diameter - pitch_diameter) * 0.75,
+    )
+
+    inner_race_od = _positive(raw.get("innerRaceOuterDiameter"))
+    if inner_race_od is None:
+        inner_race_od = max(inner_diameter * 1.01, pitch_diameter - ball_diameter * 0.55)
+    inner_race_od = max(inner_diameter * 1.01, min(inner_race_od, pitch_diameter))
+
+    outer_race_id = _positive(raw.get("outerRaceInnerDiameter"))
+    if outer_race_id is None:
+        outer_race_id = min(outer_diameter * 0.99, pitch_diameter + ball_diameter * 0.55)
+    outer_race_id = min(outer_diameter * 0.99, max(outer_race_id, pitch_diameter))
+
+    race_gap = min(pitch_diameter - inner_race_od, outer_race_id - pitch_diameter)
+    ball_diameter = min(ball_diameter, race_gap / 0.55)
+
+    rows_value = _num(raw.get("rows"))
+    rows = int(round(_clamp(rows_value, 1, 2))) if rows_value is not None else 1
+    if rows == 2:
+        ball_diameter = min(ball_diameter, width * 0.4)
+
+    ball_count = _bearing_ball_count(raw, analysis)
+    if ball_count is None and ball_diameter > 0:
+        ball_count = int(round((math.pi * pitch_diameter) / (ball_diameter * 1.25)))
+    ball_count = max(6, min(LIMITS["maxBalls"], ball_count or 6))
+
+    groove_depth = _positive(raw.get("grooveDepth")) or ball_diameter * 0.25
+    groove_radius = _positive(raw.get("grooveRadius")) or ball_diameter * 0.225
+    shield_type = raw.get("shieldType")
+    if shield_type not in ("shielded", "sealed"):
+        shield_type = "open"
+
+    return {
+        "outerDiameter": limit(outer_diameter),
+        "innerDiameter": limit(inner_diameter),
+        "width": limit(width),
+        "pitchDiameter": limit(pitch_diameter),
+        "ballDiameter": limit(ball_diameter),
+        "ballCount": ball_count,
+        "innerRaceOuterDiameter": limit(inner_race_od),
+        "outerRaceInnerDiameter": limit(outer_race_id),
+        "grooveDepth": limit(min(groove_depth, ball_diameter)),
+        "grooveRadius": limit(min(groove_radius, ball_diameter / 2)),
+        "rows": rows,
+        "shieldType": shield_type,
+    }
+
+
+def _bearing_solid(raw: Dict[str, Any], analysis: Dict[str, Any]) -> cq.Workplane:
+    """Build a real multi-solid bearing from the image-derived race/ball recipe."""
+    bearing = _normalize_bearing(raw, analysis)
+    outer_r = bearing["outerDiameter"] / 2
+    bore_r = bearing["innerDiameter"] / 2
+    pitch_r = bearing["pitchDiameter"] / 2
+    ball_r = max(0.05, bearing["ballDiameter"] / 2)
+    inner_race_r = bearing["innerRaceOuterDiameter"] / 2
+    outer_race_r = bearing["outerRaceInnerDiameter"] / 2
+    width = bearing["width"]
+    row_zs = (
+        [-width * 0.22, width * 0.22]
+        if bearing["rows"] == 2
+        else [0.0]
+    )
+
+    balls_per_row = int(math.ceil(bearing["ballCount"] / len(row_zs)))
+    ring_tube = max(
+        0.01,
+        min(
+            bearing["grooveRadius"],
+            bearing["grooveDepth"],
+            (outer_r - outer_race_r) * 0.65,
+            (inner_race_r - bore_r) * 0.65,
+        ),
+    )
+    inner_ring = (
+        cq.Workplane("XY")
+        .circle(inner_race_r)
+        .circle(bore_r)
+        .extrude(width)
+        .translate((0, 0, -width / 2))
+    )
+    outer_ring = (
+        cq.Workplane("XY")
+        .circle(outer_r)
+        .circle(outer_race_r)
+        .extrude(width)
+        .translate((0, 0, -width / 2))
+    )
+
+    solids: List[Any] = []
+    for z in row_zs:
+        inner_cut = cq.Solid.makeTorus(inner_race_r, ring_tube, cq.Vector(0, 0, z), cq.Vector(0, 0, 1))
+        outer_cut = cq.Solid.makeTorus(outer_race_r, ring_tube, cq.Vector(0, 0, z), cq.Vector(0, 0, 1))
+        inner_ring = inner_ring.cut(cq.Workplane("XY").newObject([inner_cut]))
+        outer_ring = outer_ring.cut(cq.Workplane("XY").newObject([outer_cut]))
+
+        for index in range(balls_per_row):
+            angle = (index / balls_per_row) * math.pi * 2
+            if z > 0:
+                angle += math.pi / balls_per_row
+            solids.append(
+                cq.Workplane("XY")
+                .sphere(ball_r)
+                .translate((math.cos(angle) * pitch_r, math.sin(angle) * pitch_r, z))
+                .val()
+            )
+
+    if not inner_ring.val().isValid() or not outer_ring.val().isValid():
+        raise ExportError("Bearing race geometry failed the OpenCASCADE validity check.", stage="geometry")
+    solids.extend([inner_ring.val(), outer_ring.val()])
+
+    if bearing["shieldType"] != "open":
+        shield_thickness = max(0.2, width * 0.04)
+        shield_outer = outer_r * 0.94
+        shield_inner = bore_r * 1.15
+        for side in (-1, 1):
+            shield = (
+                cq.Workplane("XY")
+                .circle(shield_outer)
+                .circle(shield_inner)
+                .extrude(shield_thickness)
+                .translate((0, 0, side * width * 0.52 - shield_thickness / 2))
+            )
+            solids.append(shield.val())
+
+    compound = cq.Compound.makeCompound(solids)
+    return cq.Workplane("XY").newObject([compound])
 
 
 def _dedupe(points: Sequence[Tuple[float, float]], tol: float = 1e-9) -> List[Tuple[float, float]]:
@@ -806,23 +1009,8 @@ def _fallback_solid(analysis: Dict[str, Any]) -> cq.Workplane:
         return _flange_solid({}, analysis)
 
     if kind == "bearing":
-        outer_r = (dims["od"] or 80.0) / 2
-        bore_r = (dims["id"] / 2) if dims["id"] else outer_r * 0.55
-        width = dims["thickness"] or dims["h"] or outer_r * 0.7
-        mid_r = (outer_r + bore_r) / 2
-        ball_r = max(0.5, (outer_r - bore_r) / 4)
-        outer_ring = cq.Workplane("XY").circle(outer_r).circle(mid_r + ball_r).extrude(width)
-        inner_ring = cq.Workplane("XY").circle(mid_r - ball_r).circle(bore_r).extrude(width)
-        bodies: List[cq.Workplane] = [outer_ring, inner_ring]
-        balls = 10
-        for i in range(balls):
-            a = (i / balls) * math.pi * 2
-            bodies.append(
-                cq.Workplane("XY")
-                .sphere(ball_r)
-                .translate((math.cos(a) * mid_r, math.sin(a) * mid_r, width / 2))
-            )
-        return _union_all(bodies).translate((0, 0, -width / 2))
+        recipe_bearing = (analysis.get("geometryRecipe") or {}).get("bearing") or {}
+        return _bearing_solid(recipe_bearing, analysis)
 
     if kind == "bracket":
         width = dims["width"] or 60.0
@@ -858,6 +1046,8 @@ def build_shape(analysis: Dict[str, Any]) -> Tuple[cq.Workplane, str]:
     if recipe:
         style = recipe["style"]
         try:
+            if style == "bearing" or recipe.get("bearing"):
+                return _bearing_solid(recipe.get("bearing") or {}, analysis), "bearing"
             if style == "gear" or recipe.get("gear"):
                 return _gear_solid(recipe.get("gear") or {}, analysis, recipe.get("holes")), "gear"
             if style == "flange" or recipe.get("flange"):
@@ -871,6 +1061,11 @@ def build_shape(analysis: Dict[str, Any]) -> Tuple[cq.Workplane, str]:
         except ExportError:
             raise
         except Exception as exc:
+            if style == "bearing" or recipe.get("bearing"):
+                raise ExportError(
+                    f"Bearing recipe geometry failed ({exc}); no placeholder export is available.",
+                    stage="geometry",
+                ) from exc
             # Fall through to the dimension fallback rather than failing outright.
             fallback_reason = f"recipe geometry failed ({exc}); used dimension fallback"
             shape = _fallback_solid(analysis)

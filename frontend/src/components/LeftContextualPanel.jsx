@@ -50,6 +50,7 @@ export function LeftContextualPanel({
   onRegenerate,
   // Inspection Props
   analysis,
+  images,
   features,
   selectedFeatureId,
   hoveredFeatureId,
@@ -327,6 +328,7 @@ export function LeftContextualPanel({
         {activeTab === 'inspection' && (
           <InspectedDetailsPanel
             analysis={analysis}
+            images={images}
             features={features}
             selectedFeatureId={selectedFeatureId}
             hoveredFeatureId={hoveredFeatureId}

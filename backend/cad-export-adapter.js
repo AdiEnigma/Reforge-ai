@@ -30,8 +30,15 @@ function interpreterCandidates() {
   if (configured) candidates.push(configured);
   candidates.push(path.resolve(__dirname, "../.venv/Scripts/python.exe"));
   candidates.push(path.resolve(__dirname, "../.venv/bin/python"));
-  candidates.push("python3");
-  candidates.push("python");
+  // On Windows, `python3` is often the Microsoft Store alias, which exits with
+  // "Python was not found" instead of handing off to the installed interpreter.
+  if (process.platform === "win32") {
+    candidates.push("python");
+    candidates.push("python3");
+  } else {
+    candidates.push("python3");
+    candidates.push("python");
+  }
   return candidates;
 }
 
